@@ -507,9 +507,9 @@ void threeGroupSP3::correct()
             if (boundaryConditionType_ == "larsen" && iter > 0)
             {
                 const scalar globalRefPhi1 = 
-                            max(mag(phi1_j_[j].primitiveField())) + SMALL;
+                            gMax(mag(phi1_j_[j].primitiveField())) + SMALL;
                 const scalar globalRefPhi2 = 
-                            max(mag(phi2_j_[j].primitiveField())) + SMALL;
+                            gMax(mag(phi2_j_[j].primitiveField())) + SMALL;
 
                 scalar relDelta1 = 0.0;
                 scalar relDelta2 = 0.0;
@@ -540,7 +540,13 @@ void threeGroupSP3::correct()
                     }
                 }
 
-                if (relDelta1 < larsenTol_ && relDelta2 < larsenTol_) break;
+                scalar globalDelta1 = returnReduce(relDelta1, maxOp<scalar>());
+                scalar globalDelta2 = returnReduce(relDelta2, maxOp<scalar>());
+
+                if (globalDelta1 < larsenTol_ && globalDelta2 < larsenTol_)
+                {
+                    break;
+                }
             }
         }
 
