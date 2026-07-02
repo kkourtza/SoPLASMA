@@ -24,7 +24,7 @@
 namespace Foam
 {
 
-// * * * * * * * * * * * * * * Runtime Type Information * * * * * * * * * * //
+// * * * * * * * * * * * * * * Static Data Members * * * * * * * * * * * * * //
 
 defineTypeNameAndDebug(threeGroupSP3, 0);
 addToRunTimeSelectionTable
@@ -36,33 +36,33 @@ addToRunTimeSelectionTable
 
 // * * * * * * * * * * * * * * SP3 Closure Constants  * * * * * * * * * * * //
 
-// kappa1^2 = 3/7 - (2/7)*sqrt(6/5)
-const scalar threeGroupSP3::kappa1Sqr_ = 3.0/7.0 - (2.0/7.0)*Foam::sqrt(6.0/5.0);
+// kappa^2_{1,2} = 3/7 -+ (2/7)*sqrt(6/5)
+const scalar threeGroupSP3::kappa1Sqr_ =
+    3.0/7.0 - (2.0/7.0)*Foam::sqrt(6.0/5.0);
 
-// kappa2^2 = 3/7 + (2/7)*sqrt(6/5)
-const scalar threeGroupSP3::kappa2Sqr_ = 3.0/7.0 + (2.0/7.0)*Foam::sqrt(6.0/5.0);
+const scalar threeGroupSP3::kappa2Sqr_ =
+    3.0/7.0 + (2.0/7.0)*Foam::sqrt(6.0/5.0);
 
-// gamma1 = (5/7)*[1 - 3*sqrt(6/5)]
-const scalar threeGroupSP3::gamma1_ = (5.0/7.0)*(1.0 - 3.0*Foam::sqrt(6.0/5.0));
+// gamma_n = (5/7)*[1 + (-1)^n * 3*sqrt(6/5)]
+const scalar threeGroupSP3::gamma1_ =
+    (5.0/7.0)*(1.0 - 3.0*Foam::sqrt(6.0/5.0));
 
-// gamma2 = (5/7)*[1 + 3*sqrt(6/5)]
-const scalar threeGroupSP3::gamma2_ = (5.0/7.0)*(1.0 + 3.0*Foam::sqrt(6.0/5.0));
+const scalar threeGroupSP3::gamma2_ =
+    (5.0/7.0)*(1.0 + 3.0*Foam::sqrt(6.0/5.0));
 
 // * * * * * * * * * * * * * * Larsen BC Constants  * * * * * * * * * * * * //
 
-// alpha1 = (5/96)*(34 + 11*sqrt(6/5))
+// alpha_{1,2} = (5/96)*(34 +- 11*sqrt(6/5))
 const scalar threeGroupSP3::alpha1_ =
     (5.0/96.0)*(34.0 + 11.0*Foam::sqrt(6.0/5.0));
 
-// alpha2 = (5/96)*(34 - 11*sqrt(6/5))
 const scalar threeGroupSP3::alpha2_ =
     (5.0/96.0)*(34.0 - 11.0*Foam::sqrt(6.0/5.0));
 
-// beta1 = (5/96)*(2 - sqrt(6/5))
+// beta_{1,2} = (5/96)*(2 -+ sqrt(6/5))
 const scalar threeGroupSP3::beta1_ =
     (5.0/96.0)*(2.0 - Foam::sqrt(6.0/5.0));
 
-// beta2 = (5/96)*(2 + sqrt(6/5))
 const scalar threeGroupSP3::beta2_ =
     (5.0/96.0)*(2.0 + Foam::sqrt(6.0/5.0));
 
@@ -77,11 +77,19 @@ threeGroupSP3::threeGroupSP3
     coefficientUnits_(word::null),
     boundaryConditionType_(word::null),
     p_("p", dimensionSet(1, 0, -2, 0, 0, 0, 0), 0.0),
-    IName_(word::null),
+    sourceMode_(word::null),
+    sourceName_(word::null),
+    quenchingFactor_(1.0),
+    xiNuRatio_(1.0),
+    C_(1.0),
     A_(),
     lambda_(),
     c_
-    ("c", dimensionSet(0, 1, -1, 0, 0, 0, 0), constant::plasma::cLight.value()),
+    (
+        "c",
+        dimensionSet(0, 1, -1, 0, 0, 0, 0),
+        constant::plasma::cLight.value()
+    ),
     larsenMaxIters_(1),
     larsenTol_(1e-6),
     phi1_j_(),
@@ -94,14 +102,15 @@ threeGroupSP3::threeGroupSP3
     {
         FatalIOErrorInFunction(*this)
             << "Missing required dictionary '" << coeffsName << "' in "
-            << objectPath() << nl << exit(FatalIOError);
+            << objectPath() << nl
+            << exit(FatalIOError);
     }
 
     const dictionary& coeffs(subDict(coeffsName));
 
     // Boundary condition type
     boundaryConditionType_ =
-        coeffs.getOrDefault<word>("boundaryConditionType", "marshak");
+        coeffs.getOrDefault<word>("boundaryConditionType", "larsen");
 
     if
     (
@@ -110,24 +119,27 @@ threeGroupSP3::threeGroupSP3
     )
     {
         FatalIOErrorInFunction(coeffs)
-            << "Unknown boundaryConditionType '" << boundaryConditionType_
-            << "'." << nl
-            << "Valid options are: (larsen | zero)" << nl
+            << "Unknown boundaryConditionType '"
+            << boundaryConditionType_ << "'." << nl
+            << "Valid options: (larsen | zero)" << nl
             << exit(FatalIOError);
     }
 
-    larsenMaxIters_ =
-        coeffs.getOrDefault<label>("larsenMaxIters", 1);
+    if (boundaryConditionType_ == "larsen")
+    {
+        larsenMaxIters_ =
+            coeffs.getOrDefault<label>("larsenMaxIters", 1);
+        larsenTol_ =
+            coeffs.getOrDefault<scalar>("larsenTol", 1e-6);
+    }
 
-    larsenTol_ =
-        coeffs.getOrDefault<scalar>("larsenTol", 1e-6);
+    // Unit conversion factors to SI
+    coefficientUnits_ =
+        coeffs.getOrDefault<word>("coefficientUnits", "SI");
 
-    // Unit convention and conversion factors to SI
-    coefficientUnits_ = coeffs.getOrDefault<word>("coefficientUnits", "SI");
-
-    scalar pToSI = 1.0;
+    scalar pToSI      = 1.0;
     scalar lambdaToSI = 1.0;
-    scalar AToSI = 1.0;
+    scalar AToSI      = 1.0;
 
     if (coefficientUnits_ == "TorrCm")
     {
@@ -135,38 +147,58 @@ threeGroupSP3::threeGroupSP3
         const scalar cmToM    = 0.01;
 
         pToSI      = torrToPa;
-        lambdaToSI = 1.0 / (cmToM * torrToPa);
-        AToSI      = 1.0 / (cmToM * torrToPa);
+        lambdaToSI = 1.0/(cmToM*torrToPa);
+        AToSI      = 1.0/(cmToM*torrToPa);
     }
     else if (coefficientUnits_ != "SI")
     {
         FatalIOErrorInFunction(coeffs)
             << "Unknown coefficientUnits '" << coefficientUnits_ << "'." << nl
-            << "Valid options are: (SI | TorrCm)" << nl
+            << "Valid options: (SI | TorrCm)" << nl
             << exit(FatalIOError);
     }
 
-    // Gas pressure (read in user units, store internally in Pa)
-    const scalar pRaw = coeffs.get<scalar>("p");
+    // Gas pressure
+    p_.value() = coeffs.get<scalar>("p") * pToSI;
 
-    p_.value() = pRaw * pToSI;
+    // Source mode and emission prefactor C
+    sourceMode_ = coeffs.get<word>("sourceMode");
 
-    // Ionization source field (lookup name, verify registration)
-    IName_ = coeffs.get<word>("I");
-
-    if (!mesh_.foundObject<volScalarField>(IName_))
+    if (sourceMode_ == "emissionRate")
+    {
+        // source = I already includes (pq/(p+pq))*xi*(nu_u/nu_i)*Siz
+        sourceName_      = coeffs.get<word>("I");
+        quenchingFactor_ = 1.0;
+        xiNuRatio_       = 1.0;
+        C_               = 1.0;
+    }
+    else if (sourceMode_ == "ionizationRate")
+    {
+        // source = Siz; prefactor C applied internally
+        sourceName_      = coeffs.get<word>("Siz");
+        quenchingFactor_ = coeffs.get<scalar>("quenchingFactor");
+        xiNuRatio_       = coeffs.get<scalar>("xiNuRatio");
+        C_               = quenchingFactor_ * xiNuRatio_;
+    }
+    else
     {
         FatalIOErrorInFunction(coeffs)
-            << "Ionization source field '" << IName_
-            << "' not found in the mesh object registry." << nl
-            << "It must be constructed and registered before "
-            << "photoionizationModel::New() is called." << nl
+            << "Unknown sourceMode '" << sourceMode_ << "'." << nl
+            << "Valid options: (emissionRate | ionizationRate)" << nl
             << exit(FatalIOError);
     }
 
-    // Fitting parameters (lambda  A) pairs, fixed to the three-group model
-    // (same parametrization as the three-group Eddington model)
-    const List<Tuple2<scalar, scalar>> fitting
+    if (!mesh_.foundObject<volScalarField>(sourceName_))
+    {
+        FatalIOErrorInFunction(coeffs)
+            << "Source field '" << sourceName_
+            << "' not found in the mesh object registry." << nl
+            << "It must be registered before photoionizationModel::New()."
+            << nl << exit(FatalIOError);
+    }
+
+    // Fitting parameters (exactly nGroups_ pairs required)
+    const List<Tuple2<scalar,scalar>> fitting
     (
         coeffs.lookup("fittingParameters")
     );
@@ -174,9 +206,9 @@ threeGroupSP3::threeGroupSP3
     if (fitting.size() != nGroups_)
     {
         FatalIOErrorInFunction(coeffs)
-            << "The three-group SP3 model requires exactly "
-            << nGroups_ << " (lambda  A) pairs in 'fittingParameters', "
-            << "but " << fitting.size() << " were given." << nl
+            << "Three-group SP3 requires exactly " << nGroups_
+            << " (lambda A) pairs, but " << fitting.size()
+            << " were given." << nl
             << exit(FatalIOError);
     }
 
@@ -189,19 +221,19 @@ threeGroupSP3::threeGroupSP3
         A_[j]      = fitting[j].second() * AToSI;
     }
 
-    // Boundary patch types: mixed (Robin) on non-constraint patches to
-    // support the Marshak boundary condition; constraint types (e.g.
-    // empty, symmetry, cyclic) are preserved as-is.
+    // Patch types for phi1_j and phi2_j fields
+    // Mixed (Robin) for Larsen; fixedValue (zero) otherwise.
+    // Constraint patches (empty, symmetry, cyclic) are always preserved.
     const polyBoundaryMesh& bmesh = mesh_.boundaryMesh();
 
-    const word nonConstraintPatchType =
+    const word nonConstraintType =
     (
         boundaryConditionType_ == "larsen"
       ? mixedFvPatchScalarField::typeName
       : fixedValueFvPatchScalarField::typeName
     );
 
-    wordList patchTypes(bmesh.size(), nonConstraintPatchType);
+    wordList patchTypes(bmesh.size(), nonConstraintType);
 
     forAll(bmesh, patchi)
     {
@@ -211,8 +243,7 @@ threeGroupSP3::threeGroupSP3
         }
     }
 
-    // Auxiliary photon distribution components phi1_j and phi2_j, one
-    // pair per group
+    // phi1_j, phi2_j and Sph_j fields
     phi1_j_.resize(nGroups_);
     phi2_j_.resize(nGroups_);
 
@@ -234,7 +265,9 @@ threeGroupSP3::threeGroupSP3
                 mesh_,
                 dimensionedScalar
                 (
-                    "zero", dimensionSet(0, -3, 0, 0, 0, 0, 0), 0.0
+                    "zero",
+                    dimensionSet(0, -3, 0, 0, 0, 0, 0),
+                    0.0
                 ),
                 patchTypes
             )
@@ -256,14 +289,15 @@ threeGroupSP3::threeGroupSP3
                 mesh_,
                 dimensionedScalar
                 (
-                    "zero", dimensionSet(0, -3, 0, 0, 0, 0, 0), 0.0
+                    "zero",
+                    dimensionSet(0, -3, 0, 0, 0, 0, 0),
+                    0.0
                 ),
                 patchTypes
             )
         );
     }
 
-    // Partial source fields S_j, one per group
     Sph_j_.resize(nGroups_);
 
     forAll(Sph_j_, j)
@@ -286,7 +320,6 @@ threeGroupSP3::threeGroupSP3
             )
         );
     }
-    
 }
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
@@ -303,15 +336,14 @@ void threeGroupSP3::correct()
     Info<< "Solving photoionization (three-group SP3, "
         << boundaryConditionType_ << " BC)..." << endl;
 
-    const volScalarField& I =
-        mesh_.lookupObject<volScalarField>(IName_);
+    const volScalarField& source =
+        mesh_.lookupObject<volScalarField>(sourceName_);
 
     const polyBoundaryMesh& bmesh = mesh_.boundaryMesh();
 
-    // Solve each pair of SP3 sub-equations independently
     forAll(A_, j)
     {
-        // (lambda_j*p)^2/kappa1^2  with units [1/m^2]
+        // (lambda_j*p)^2/kappa1^2  [m^-2]
         const dimensionedScalar mu1Sqr
         (
             "mu1Sqr",
@@ -319,7 +351,7 @@ void threeGroupSP3::correct()
             sqr(lambda_[j]*p_.value())/kappa1Sqr_
         );
 
-        // (lambda_j*p)^2/kappa2^2  with units [1/m^2]
+        // (lambda_j*p)^2/kappa2^2  [m^-2]
         const dimensionedScalar mu2Sqr
         (
             "mu2Sqr",
@@ -327,32 +359,39 @@ void threeGroupSP3::correct()
             sqr(lambda_[j]*p_.value())/kappa2Sqr_
         );
 
-        // (lambda_j*p)/(kappa1^2*c)  with units [s/m^2]
+        // (lambda_j*p)/(kappa1^2*c) * C  [m^-2 s]
+        // C = 1 in emissionRate mode; C = pq/(p+pq)*xi*(nu_u/nu_i) otherwise
         const dimensionedScalar kappaSrc1
         (
             "kappaSrc1",
             dimensionSet(0, -2, 1, 0, 0, 0, 0),
-            (lambda_[j]*p_.value())/(kappa1Sqr_*c_.value())
+            (lambda_[j]*p_.value())/(kappa1Sqr_*c_.value())*C_
         );
 
-        // (lambda_j*p)/(kappa2^2*c)  with units [s/m^2]
+        // (lambda_j*p)/(kappa2^2*c) * C  [m^-2 s]
         const dimensionedScalar kappaSrc2
         (
             "kappaSrc2",
             dimensionSet(0, -2, 1, 0, 0, 0, 0),
-            (lambda_[j]*p_.value())/(kappa2Sqr_*c_.value())
+            (lambda_[j]*p_.value())/(kappa2Sqr_*c_.value())*C_
         );
 
-        // The Larsen mixed BC diagonal coefficients (valueFraction = k_alpha
-        // / (k_alpha + deltaCoeffs), refValue = 0, refGrad = 0 for diagonal-
-        // only iteration 0) depend on lambda_j, p and the mesh geometry, not
-        // on the field's own value. Applied here every correct() call so the
-        // constructor remains BC-agnostic.
-        //
-        // Zero BC: no per-step update needed; the fixedValue patches
-        // constructed with zero in the constructor remain correct.
+        // A_j*p*c  [s^-1]
+        const dimensionedScalar Ajpc
+        (
+            "Ajpc",
+            dimensionSet(0, 0, -1, 0, 0, 0, 0),
+            A_[j]*p_.value()*c_.value()
+        );
+
+        // Apply diagonal part of Larsen BC once per group per correct() call.
+        // valueFraction = k/(k + deltaCoeffs), refValue = refGrad = 0.
+        // Zero BC patches need no update.
         if (boundaryConditionType_ == "larsen")
         {
+            const scalar k1 = lambda_[j]*p_.value()*alpha1_;
+            const scalar k2 = lambda_[j]*p_.value()*alpha2_;
+
             forAll(bmesh, patchi)
             {
                 if (!polyPatch::constraintType(bmesh[patchi].type()))
@@ -369,11 +408,7 @@ void threeGroupSP3::correct()
                             phi2_j_[j].boundaryFieldRef()[patchi]
                         );
 
-                    const scalar k1 = lambda_[j]*p_.value()*alpha1_;
-                    const scalar k2 = lambda_[j]*p_.value()*alpha2_;
-
-                    const scalarField& deltaCoeffs =
-                        pf1.patch().deltaCoeffs();
+                    const scalarField& deltaCoeffs = pf1.patch().deltaCoeffs();
 
                     pf1.refValue() = 0.0;
                     pf1.refGrad()  = 0.0;
@@ -386,8 +421,9 @@ void threeGroupSP3::correct()
             }
         }
 
-        // Inner Picard iteration on the Larsen off-diagonal beta
-        // cross-coupling.
+        // Picard iteration on Larsen beta cross-coupling.
+        // Iteration 0: diagonal only (refGrad = 0).
+        // Iterations 1+: beta cross-term added to refGrad from previous solve.
         List<scalarField> phi1BoundaryPrev(bmesh.size());
         List<scalarField> phi2BoundaryPrev(bmesh.size());
 
@@ -399,8 +435,7 @@ void threeGroupSP3::correct()
                     << iter + 1 << "/" << larsenMaxIters_ << endl;
             }
 
-            // Update lagged beta cross-coupling in refGrad (only for
-            // larsen BC and only when iterating beyond the diagonal pass).
+            // Update beta cross-coupling from previous iteration's solution
             if (boundaryConditionType_ == "larsen" && iter > 0)
             {
                 forAll(bmesh, patchi)
@@ -421,17 +456,16 @@ void threeGroupSP3::correct()
 
                         pf1.refGrad() =
                             -lambda_[j]*p_.value()*beta2_
-                           * phi2_j_[j].boundaryField()[patchi];
+                           *phi2_j_[j].boundaryField()[patchi];
 
                         pf2.refGrad() =
                             -lambda_[j]*p_.value()*beta1_
-                           * phi1_j_[j].boundaryField()[patchi];
+                           *phi1_j_[j].boundaryField()[patchi];
                     }
                 }
             }
 
-            // Snapshot previous boundary values for convergence check,
-            // one entry per non-constraint patch.
+            // Snapshot boundary values before solve for convergence check
             if (boundaryConditionType_ == "larsen" && larsenMaxIters_ > 1)
             {
                 forAll(bmesh, patchi)
@@ -453,7 +487,7 @@ void threeGroupSP3::correct()
                 fvm::laplacian(phi1_j_[j])
               - fvm::Sp(mu1Sqr, phi1_j_[j])
              ==
-              - kappaSrc1*I
+              - kappaSrc1*source
             );
 
             phi1jEqn.solve(mesh_.solver(phi1_j_[j].name()));
@@ -463,14 +497,13 @@ void threeGroupSP3::correct()
                 fvm::laplacian(phi2_j_[j])
               - fvm::Sp(mu2Sqr, phi2_j_[j])
              ==
-              - kappaSrc2*I
+              - kappaSrc2*source
             );
 
             phi2jEqn.solve(mesh_.solver(phi2_j_[j].name()));
 
-            // Convergence check on boundary values of phi1, phi2, taking the 
-            // max relative change across all non-constraint patches. Normalized
-            // against the GLOBAL max of the field.
+            // Check max relative change in boundary values across all patches.
+            // Normalised against the global field maximum.
             if (boundaryConditionType_ == "larsen" && iter > 0)
             {
                 const scalar globalRefPhi1 = 
@@ -506,26 +539,20 @@ void threeGroupSP3::correct()
                         );
                     }
                 }
+
+                if (relDelta1 < larsenTol_ && relDelta2 < larsenTol_) break;
             }
         }
 
-        // A_j * p * c, with units [1/s]
-        const dimensionedScalar Ajpc
-        (
-            "Ajpc",
-            dimensionSet(0, 0, -1, 0, 0, 0, 0),
-            A_[j]*p_.value()*c_.value()
-        );
-
         // SP3 closure: Psi_j = (gamma2*phi1_j - gamma1*phi2_j)/(gamma2-gamma1)
-        // Recover the photoionization source contribution for this group:
-        //   S_j = A_j * p * c * Psi_j
+        // Recover partial source: S_j = A_j*p*c * Psi_j
         Sph_j_[j] =
             Ajpc
-           *(gamma2_*phi1_j_[j] - gamma1_*phi2_j_[j])/(gamma2_ - gamma1_);
+           *(gamma2_*phi1_j_[j] - gamma1_*phi2_j_[j])
+           /(gamma2_ - gamma1_);
     }
 
-    // Sum partial sources into the total photoionization source field
+    // Accumulate partial sources into the total photoionization source
     Sph_ == dimensionedScalar(Sph_.dimensions(), Zero);
 
     forAll(Sph_j_, j)

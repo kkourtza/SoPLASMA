@@ -43,7 +43,11 @@ nTermHelmholtz::nTermHelmholtz
     coefficientUnits_(word::null),
     nTerms_(0),
     p_("p", dimensionSet(1, 0, -2, 0, 0, 0, 0), 0.0),
-    IName_(word::null),
+    sourceMode_(word::null),
+    sourceName_(word::null),
+    quenchingFactor_(1.0),
+    xiNuRatio_(1.0),
+    C_(1.0),
     A_(),
     lambda_(),
     Sph_j_()
@@ -59,7 +63,7 @@ nTermHelmholtz::nTermHelmholtz
 
     const dictionary& coeffs(subDict(coeffsName));
 
-    // Unit convention and conversion factors to SI
+    // Unit conversion factors to SI
     coefficientUnits_ = coeffs.getOrDefault<word>("coefficientUnits", "SI");
 
     scalar pToSI = 1.0;
@@ -84,24 +88,47 @@ nTermHelmholtz::nTermHelmholtz
     }
 
     // Gas pressure (read in user units, store internally in Pa)
-    const scalar pRaw = coeffs.get<scalar>("p");
+    p_.value() = coeffs.get<scalar>("p") * pToSI;
 
-    p_.value() = pRaw * pToSI;
+    // Source mode and emission prefactor C
+    sourceMode_ = coeffs.get<word>("sourceMode");
 
-    // Ionization source field (lookup name, verify registration)
-    IName_ = coeffs.get<word>("I");
-
-    if (!mesh_.foundObject<volScalarField>(IName_))
+    if (sourceMode_ == "emissionRate")
+    {
+        // source = I already includes (pq/(p+pq))*xi*(nu_u/nu_i)*Siz
+        sourceName_      = coeffs.get<word>("I");
+        quenchingFactor_ = 1.0;
+        xiNuRatio_       = 1.0;
+        C_               = 1.0;
+    }
+    else if (sourceMode_ == "ionizationRate")
+    {
+        // source = Siz; prefactor C applied internally
+        sourceName_      = coeffs.get<word>("Siz");
+        quenchingFactor_ = coeffs.get<scalar>("quenchingFactor");
+        xiNuRatio_       = coeffs.get<scalar>("xiNuRatio");
+        C_               = quenchingFactor_ * xiNuRatio_;
+    }
+    else
     {
         FatalIOErrorInFunction(coeffs)
-            << "Ionization source field '" << IName_
-            << "' not found in the mesh object registry." << nl
-            << "It must be constructed and registered before "
-            << "photoionizationModel::New() is called." << nl
+            << "Unknown sourceMode '" << sourceMode_ << "'." << nl
+            << "Valid options: (emissionRate | ionizationRate)" << nl
             << exit(FatalIOError);
     }
 
-    // Fitting parameters (lambda  A) pairs, with declared count check
+    // Verify source field is registered
+    if (!mesh_.foundObject<volScalarField>(sourceName_))
+    {
+        FatalIOErrorInFunction(coeffs)
+            << "Source field '" << sourceName_
+            << "' not found in the mesh object registry." << nl
+            << "It must be registered before photoionizationModel::New() "
+            << "is called." << nl
+            << exit(FatalIOError);
+    }
+
+    // Fitting parameters
     const List<Tuple2<scalar, scalar>> fitting
     (
         coeffs.lookup("fittingParameters")
@@ -135,7 +162,7 @@ nTermHelmholtz::nTermHelmholtz
         A_[j]      = fitting[j].second() * AToSI;
     }
 
-    // Partial source fields, one per Helmholtz term.
+    // Partial source fields, one per Helmholtz term
     const polyBoundaryMesh& bmesh = mesh_.boundaryMesh();
 
     wordList patchTypes
@@ -191,13 +218,13 @@ void nTermHelmholtz::correct()
     Info<< "Solving photoionization (" << nTerms_
         << "-term Helmholtz)..." << endl;
 
-    const volScalarField& I =
-        mesh_.lookupObject<volScalarField>(IName_);
+    const volScalarField& source =
+        mesh_.lookupObject<volScalarField>(sourceName_);
 
     // Solve each Helmholtz equation independently
     forAll(A_, j)
     {
-        // (lambda_j * p)^2  with units [1/m^2]
+        // (lambda_j*p)^2  [m^-2]
         const dimensionedScalar mu2
         (
             "mu2",
@@ -205,12 +232,13 @@ void nTermHelmholtz::correct()
             sqr(lambda_[j] * p_.value())
         );
 
-        // A_j * p^2  with units [1/m^2]
-        const dimensionedScalar Ap2
+        // A_j * p^2 * C  [m^-2]
+        // C = 1 in emissionRate mode; C = pq/(p+pq)*xi*(nu_u/nu_i) otherwise
+        const dimensionedScalar Ap2C
         (
-            "Ap2",
+            "Ap2C",
             dimensionSet(0, -2, 0, 0, 0, 0, 0),
-            A_[j] * sqr(p_.value())
+            A_[j] * sqr(p_.value()) * C_
         );
 
         fvScalarMatrix SphjEqn
@@ -218,13 +246,13 @@ void nTermHelmholtz::correct()
             fvm::laplacian(Sph_j_[j])
           - fvm::Sp(mu2, Sph_j_[j])
          ==
-          - Ap2*I
+          - Ap2C * source
         );
 
         SphjEqn.solve(mesh_.solver(Sph_j_[j].name()));
     }
 
-    // Sum partial sources into the total photoionization source field
+    // Accumulate partial sources into the total photoionization source
     Sph_ == dimensionedScalar(Sph_.dimensions(), Zero);
 
     forAll(Sph_j_, j)

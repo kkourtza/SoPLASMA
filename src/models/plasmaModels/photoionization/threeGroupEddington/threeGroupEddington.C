@@ -45,11 +45,14 @@ threeGroupEddington::threeGroupEddington
     coefficientUnits_(word::null),
     boundaryConditionType_(word::null),
     p_("p", dimensionSet(1, 0, -2, 0, 0, 0, 0), 0.0),
-    IName_(word::null),
+    sourceMode_(word::null),
+    sourceName_(word::null),
+    quenchingFactor_(1.0),
+    xiNuRatio_(1.0),
+    C_(1.0),
     A_(),
     lambda_(),
-    c_
-    ("c", dimensionSet(0, 1, -1, 0, 0, 0, 0), constant::plasma::cLight.value()),
+    c_("c", dimensionSet(0, 1, -1, 0, 0, 0, 0), constant::plasma::cLight.value()),
     PsiStar_j_(),
     Sph_j_()
 {
@@ -81,7 +84,7 @@ threeGroupEddington::threeGroupEddington
             << exit(FatalIOError);
     }
 
-    // Unit convention and conversion factors to SI
+    // Unit conversion factors to SI
     coefficientUnits_ = coeffs.getOrDefault<word>("coefficientUnits", "SI");
 
     scalar pToSI = 1.0;
@@ -105,25 +108,45 @@ threeGroupEddington::threeGroupEddington
             << exit(FatalIOError);
     }
 
-    // Gas pressure (read in user units, store internally in Pa)
-    const scalar pRaw = coeffs.get<scalar>("p");
+    // Gas pressure
+    p_.value() = coeffs.get<scalar>("p") * pToSI;
 
-    p_.value() = pRaw * pToSI;
+    // Source mode and emission prefactor C
+    sourceMode_ = coeffs.get<word>("sourceMode");
 
-    // Ionization source field (lookup name, verify registration)
-    IName_ = coeffs.get<word>("I");
-
-    if (!mesh_.foundObject<volScalarField>(IName_))
+    if (sourceMode_ == "emissionRate")
+    {
+        // source = I already includes (pq/(p+pq))*xi*(nu_u/nu_i)*Siz
+        sourceName_      = coeffs.get<word>("I");
+        quenchingFactor_ = 1.0;
+        xiNuRatio_       = 1.0;
+        C_               = 1.0;
+    }
+    else if (sourceMode_ == "ionizationRate")
+    {
+        // source = Siz; prefactor C applied internally
+        sourceName_      = coeffs.get<word>("Siz");
+        quenchingFactor_ = coeffs.get<scalar>("quenchingFactor");
+        xiNuRatio_       = coeffs.get<scalar>("xiNuRatio");
+        C_               = quenchingFactor_ * xiNuRatio_;
+    }
+    else
     {
         FatalIOErrorInFunction(coeffs)
-            << "Ionization source field '" << IName_
-            << "' not found in the mesh object registry." << nl
-            << "It must be constructed and registered before "
-            << "photoionizationModel::New() is called." << nl
+            << "Unknown sourceMode '" << sourceMode_ << "'." << nl
+            << "Valid options: (emissionRate | ionizationRate)" << nl
             << exit(FatalIOError);
     }
 
-    // Fitting parameters (lambda  A) pairs, fixed to the three-group model
+    if (!mesh_.foundObject<volScalarField>(sourceName_))
+    {
+        FatalIOErrorInFunction(coeffs)
+            << "Source field '" << sourceName_
+            << "' not found in the mesh object registry." << nl
+            << exit(FatalIOError);
+    }
+
+    // Fitting parameters (exactly nGroups_ pairs required)
     const List<Tuple2<scalar, scalar>> fitting
     (
         coeffs.lookup("fittingParameters")
@@ -147,9 +170,9 @@ threeGroupEddington::threeGroupEddington
         A_[j]      = fitting[j].second() * AToSI;
     }
 
-    // Boundary patch types: mixed (Robin) on non-constraint patches to
-    // support the Marshak boundary condition; constraint types (e.g.
-    // empty, symmetry, cyclic) are preserved as-is.
+    // Patch types for Psi*_j fields
+    // Mixed (Robin) for Marshak; fixedValue (zero) otherwise.
+    // Constraint patches (empty, symmetry, cyclic) are always preserved.
     const polyBoundaryMesh& bmesh = mesh_.boundaryMesh();
 
     const word nonConstraintPatchType =
@@ -169,7 +192,7 @@ threeGroupEddington::threeGroupEddington
         }
     }
 
-    // Solved photon distribution components Psi*_j, one per group
+    // Psi*_j and Sph_j fields
     PsiStar_j_.resize(nGroups_);
 
     forAll(PsiStar_j_, j)
@@ -197,7 +220,6 @@ threeGroupEddington::threeGroupEddington
         );
     }
 
-    // Partial source fields S_j, one per group
     Sph_j_.resize(nGroups_);
 
     forAll(Sph_j_, j)
@@ -236,15 +258,15 @@ void threeGroupEddington::correct()
     Info<< "Solving photoionization (three-group Eddington, "
         << boundaryConditionType_ << " BC)..." << endl;
 
-    const volScalarField& I =
-        mesh_.lookupObject<volScalarField>(IName_);
+    const volScalarField& source =
+        mesh_.lookupObject<volScalarField>(sourceName_);
 
     const polyBoundaryMesh& bmesh = mesh_.boundaryMesh();
 
     // Solve each Eddington group equation independently
     forAll(A_, j)
     {
-        // 3*(lambda_j*p)^2  with units [1/m^2]
+        // 3*(lambda_j*p)^2  [m^-2]
         const dimensionedScalar mu2
         (
             "mu2",
@@ -252,14 +274,16 @@ void threeGroupEddington::correct()
             3.0*sqr(lambda_[j] * p_.value())
         );
 
-        // 3*lambda_j*p/c  with units [1/m]
+        // 3*lambda_j*p/c * C  [m^-2 s]
+        // C = 1 in emissionRate mode; C = pq/(p+pq)*xi*(nu_u/nu_i) otherwise
         const dimensionedScalar kappa
         (
             "kappa",
             dimensionSet(0, -2, 1, 0, 0, 0, 0),
-            3.0*lambda_[j] * p_.value() / c_.value()
+            3.0*lambda_[j]*p_.value()/c_.value() * C_
         );
 
+        // A_j*p*c  [s^-1]
         const dimensionedScalar Ajpc
         (
             "Ajpc",
@@ -267,17 +291,10 @@ void threeGroupEddington::correct()
             A_[j]*p_.value()*c_.value()
         );
 
-        // Marshak BC: the mixed coefficients (valueFraction, refValue = 0,
-        // refGrad = 0) depend on lambda_j, p and the mesh geometry, not on
-        // the field's own value. p_ is currently a constant set at
-        // construction, so it is sufficient to guard this update on
-        // mesh_.changing() alone.
-        // NOTE: if p_ is later promoted to a non-uniform/time-varying
-        // field, this condition must also trigger whenever p_ changes, not
-        // only when the mesh changes.
-        //
-        // Zero BC: no per-step update needed; the fixedValue patches
-        // constructed with zero in the constructor remain correct
+        // Apply Marshak BC: grad(Psi*_j) & n = -(3/2)*lambda_j*p * Psi*_j
+        // Implemented as OpenFOAM mixed BC with refValue=0, refGrad=0,
+        // valueFraction = k/(k + deltaCoeffs), k = (3/2)*lambda_j*p.
+        // Updated every correct() call; zero BC patches need no update.
         if (boundaryConditionType_ == "marshak")
         {
             forAll(bmesh, patchi)
@@ -295,6 +312,8 @@ void threeGroupEddington::correct()
                     const scalarField& deltaCoeffs =
                         pf.patch().deltaCoeffs();
 
+                    pf.refValue()      = scalarField(pf.size(), 0.0);
+                    pf.refGrad()       = scalarField(pf.size(), 0.0);
                     pf.valueFraction() = k/(k + deltaCoeffs);
                 }
             }
@@ -305,17 +324,16 @@ void threeGroupEddington::correct()
             fvm::laplacian(PsiStar_j_[j])
           - fvm::Sp(mu2, PsiStar_j_[j])
          ==
-          - kappa*I
+          - kappa * source
         );
 
         PsiStarjEqn.solve(mesh_.solver(PsiStar_j_[j].name()));
 
-        // Recover the photoionization source contribution for this group:
-        //   S_j = A_j * p * c * Psi*_j
+        // Recover partial photoionization source: S_j = A_j*p*c * Psi*_j
         Sph_j_[j] = Ajpc*PsiStar_j_[j];
     }
 
-    // Sum partial sources into the total photoionization source field
+    // Accumulate partial sources into the total photoionization source
     Sph_ == dimensionedScalar(Sph_.dimensions(), Zero);
 
     forAll(Sph_j_, j)

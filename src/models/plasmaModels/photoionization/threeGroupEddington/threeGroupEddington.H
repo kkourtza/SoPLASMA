@@ -26,103 +26,82 @@ Class
     
 Description
 
-    Implementation of the three-group Eddington (first-order spherical
-    harmonics, P1) approximation to the radiative transfer equation for
-    photoionization source calculation in plasma simulations.
+    Three-group Eddington (P1) photoionization model for plasma simulations.
 
-    Unlike the Helmholtz model, which directly fits the Zheleznyak g(R)/p
-    kernel, the Eddington model is derived on physical grounds from the
-    radiative transfer equation itself. For each spectral group j, the
-    isotropic part of the photon distribution function Psi*_j satisfies a
-    screened-Poisson (Helmholtz-type) PDE sourced directly by the
-    ionization production rate I, solved via the native OpenFOAM
-    laplacian():
+    Derived from the first-order spherical harmonic approximation of the
+    radiative transfer equation. For each spectral group j, the xi-weighted
+    isotropic photon distribution Psi*_j satisfies:
 
-        laplacian(Psi*_j) - 3 * sqr(lambda_j * p) * Psi*_j
-            = -(3 * lambda_j * p / c) * I
+        laplacian(Psi*_j) - 3*(lambda_j*p)^2 * Psi*_j
+            = -(3*lambda_j*p/c) * C * source
 
     where:
-        Psi*_j   = xi-weighted isotropic photon distribution component
-                   for the j-th spectral group [1/m2]
-        lambda_j = Fitting parameter lambda for the j-th group [1/(m Pa)]
-        A_j      = Fitting parameter A for the j-th group [1/(m Pa)]
-        p        = Total gas pressure [Pa]
-        c        = Speed of light [m/s]
-        I        = Ionization production rate [1/(m3 s)]
+        Psi*_j   : xi-weighted isotropic photon distribution, group j [m^-3]
+        lambda_j : inverse absorption length, group j               [m^-1 Pa^-1]
+        A_j      : amplitude coefficient, group j                   [m^-1 Pa^-1]
+        p        : gas pressure (see note)                          [Pa]
+        c        : speed of light                                   [m/s]
+        C        : emission prefactor (see sourceMode)              [-]
+        source   : registered source field (see sourceMode)         [m^-3 s^-1]
 
-    The photoionization source contribution of each group is recovered from
-    the solved field as:
+    The photoionization source contribution of each group is:
+        S_j = A_j * p * c * Psi*_j
 
-        S_j  = A_j * p * c * Psi*_j
-
-    and the total photoionization source term is obtained by summing the
-    three groups:
-
+    and the total photoionization source is:
         S_ph = sum_{j=1}^{3} S_j
 
     The coefficients A_j and lambda_j correspond to the three-group fit of
-    the generalized photoionization function:
-        Phi_0(r) / p = sum_{j=1}^{3} [ A_j * exp(-lambda_j * p * r) ]
+    g(R)/p directly by exponentials:
+        g(R)/p = sum_{j=1}^{3} A_j * exp(-lambda_j * p * R)
 
-    Note the difference in form (and resulting coefficient units) compared
-    to the Helmholtz model: here the fit is applied directly to g(R)/p
-    without the additional (p * r) prefactor, since the prefactor arises
-    naturally from the P1 closure of the radiative transfer equation rather
-    than from an ad hoc kernel approximation.
+    Note: A_j has units [m^-1 Pa^-1] here, unlike the Helmholtz model where
+    A_j has units [m^-2 Pa^-2], reflecting the different fitting form.
 
-    Boundary conditions
-        Supported values of 'boundaryConditionType':
+    Source modes ('sourceMode' keyword):
+      - emissionRate   : source = I = (pq/(p+pq))*xi*(nu_u/nu_i)*Siz
+                         C = 1. A_j used directly from the literature.
+      - ionizationRate : source = Siz (electron impact ionization rate).
+                         C = quenchingFactor * xiNuRatio applied internally.
+                         A_j used directly from the literature.
 
-          - marshak : Marshak (Robin) condition derived from radiative
-                      transfer theory, applied independently to each
-                      Psi*_j:
+    Boundary condition types ('boundaryConditionType' keyword):
+      - marshak : Robin condition from radiative transfer theory:
+                  grad(Psi*_j) & n = -(3/2)*lambda_j*p * Psi*_j
+      - zero    : Zero Dirichlet on all Psi*_j
 
-                          grad(Psi*_j) & n_S = -(3/2) * lambda_j * p * Psi*_j
+    Note on pressure:
+        p must be consistent with the fitting parameters. For the Bourdon
+        2007 air parametrisation, p is the O2 partial pressure
+        (p_O2 = 150 Torr at atmospheric pressure).
 
-          - zero    : Zero Dirichlet boundary conditions for all Psi*_j.
-
-        Any other value triggers a FatalError.
-
-    Note
-        This class solves the PDE for whatever A_j, lambda_j, p, and I are
-        provided; it makes no assumption about the gas. For the
-        Zheleznyak/Bourdon air parametrization, p is the O2 partial
-        pressure (not the total), and I must already include the quenching
-        factor pq/(p+pq) and the xi*nu_u/nu_i ratio. The user is
-        responsible for ensuring A_j, lambda_j, p, and I are consistent
-        for the gas of interest.
-
-    Two unit conventions are supported for the fitting coefficients and the
-    gas pressure, selected by the 'coefficientUnits' keyword:
-
-      - SI     : p [Pa],   lambda [1/(m  Pa)],   A [1/(m Pa)]
-      - TorrCm : p [Torr], lambda [1/(cm Torr)], A [1/(cm Torr)]
-
-    Internally, all quantities are converted to and stored in SI.
+    Unit conventions ('coefficientUnits' keyword):
+      - SI     : p [Pa],   lambda [m^-1 Pa^-1],   A [m^-1 Pa^-1]
+      - TorrCm : p [Torr], lambda [cm^-1 Torr^-1], A [cm^-1 Torr^-1]
+    All quantities are converted to and stored in SI internally.
 
 Usage
     Example of the model in constant/photoionizationProperties:
     \verbatim
     photoionizationModel    threeGroupEddington;
-    solveInterval           10;         // Default : 1 step
+    solveInterval           10;
 
     threeGroupEddingtonCoeffs
     {
-        // Unit convention for p, lambda and A: (SI | TorrCm)
         coefficientUnits        TorrCm;
-
-        // Boundary condition type: (zero | marshak)
         boundaryConditionType   marshak;
+        p                       150;            // O2 partial pressure [Torr]
 
-        // Uniform gas pressure (in the chosen unit system)
-        p                       150;        // [Torr]
+        // Option A: emission rate (I already includes quenching prefactor)
+        sourceMode              emissionRate;
+        I                       Iph;
 
-        // Name of the ionization source field in the registry
-        I                       I_ion;      // [1/(m3 s)]
+        // Option B: ionization rate (prefactor applied internally)
+        // sourceMode           ionizationRate;
+        // Siz                  Siz;
+        // quenchingFactor      0.03797;
+        // xiNuRatio            0.06;
 
-        // Fitting parameters specified as pairs of (lambda A)
-        // in the chosen unit system, for the three spectral groups
-        fittingParameters
+        fittingParameters               // Bourdon 2007, Table 3
         (
             (0.0447   0.0067)
             (0.1121   0.0346)
@@ -132,10 +111,6 @@ Usage
     \endverbatim
 
 Reference
-    Zheleznyak M B, Mnatsakanyan A Kh, and Sizykh S V (1982)
-    Photoionization of nitrogen and oxygen mixtures by radiation
-    from a gas discharge. High Temperature Science, 20(3), 357-362.
-
     Segur P, Bourdon A, Marode E, Bessieres D, and Paillol J H (2006)
     The use of an improved Eddington approximation to facilitate the
     calculation of photoionization in streamer discharges.
@@ -186,34 +161,47 @@ private:
 
     // Private Member Data
 
-        //- Unit convention for the fitting coefficients ("SI" or "TorrCm")
+        //- Unit convention ("SI" or "TorrCm")
         word coefficientUnits_;
 
-        //- Boundary condition type
+        //- Boundary condition type ("marshak" or "zero")
         word boundaryConditionType_;
 
-        //- Number of Eddington groups (fixed = 3)
+        //- Number of spectral groups (fixed = 3)
         static const label nGroups_ = 3;
 
-        //- Constant uniform gas pressure [Pa] (converted to SI internally)
+       //- Gas pressure consistent with the fitting parameters [Pa]
         dimensionedScalar p_;
 
-        //- Name of the ionization production rate field
-        word IName_;
+        //- Source field mode ("emissionRate" or "ionizationRate")
+        word sourceMode_;
 
-        //- Amplitudes A_j in SI units [1/(m Pa)]
+        //- Name of the source field in the object registry
+        word sourceName_;
+
+        //- Quenching factor pq/(p+pq) [-]; ionizationRate mode only
+        scalar quenchingFactor_;
+
+        //- Photoionization efficiency xi*nu_u/nu_i[-]; ionizationRate mode only
+        scalar xiNuRatio_;
+
+        //- Combined prefactor C = quenchingFactor_ * xiNuRatio_ [-]
+        //  C = 1 in emissionRate mode
+        scalar C_;
+
+        //- Amplitude coefficients A_j [m^-1 Pa^-1]
         scalarList A_;
 
-        //- Inverse absorption lengths lambda_j in SI units [1/(m Pa)]
+        //- Inverse absorption lengths lambda_j [m^-1 Pa^-1]
         scalarList lambda_;
 
         //- Speed of light [m/s]
         dimensionedScalar c_;
 
-        //- Solved photon distribution components Psi*_j, one per group
+        //- Photon distribution components Psi*_j, one per group [m^-3]
         PtrList<volScalarField> PsiStar_j_;
 
-        //- Partial source fields, one per Helmholtz term
+        //- Partial photoionization source fields S_j, one per group [m^-3 s^-1]
         PtrList<volScalarField> Sph_j_;
 
 public:
@@ -223,7 +211,7 @@ public:
 
     // Constructors
 
-        //- Construct from mesh and dictionary
+        //- Construct from mesh
         threeGroupEddington(const fvMesh& mesh);
 
     //- Destructor
@@ -232,7 +220,7 @@ public:
 
     // Member Functions
 
-        //- Assemble and solve the 3 Eddington equations, sum into total field
+        //- Solve 3 Eddington equations & sum into total photoionization source
         virtual void correct() override;
 };
 

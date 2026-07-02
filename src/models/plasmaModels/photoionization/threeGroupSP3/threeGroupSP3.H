@@ -26,133 +26,98 @@ Class
 
 Description
 
-    Implementation of the three-group SP3 (third-order spherical harmonics,
-    improved Eddington) approximation to the radiative transfer equation for
-    photoionization source calculation in plasma simulations.
+    Three-group SP3 (third-order simplified spherical harmonics) photoionization
+    model for plasma simulations.
 
-    The SP3 approximation improves on the first-order Eddington model when
-    the absorption coefficient of the gas is small and the gradient of the
-    source term is large. For each spectral group j, the isotropic part of
-    the photon distribution function is obtained by combining two auxiliary
-    fields phi1_j and phi2_j, each satisfying its own screened-Poisson
-    (Helmholtz-type) PDE sourced directly by the ionization production rate
-    I, solved via the native OpenFOAM laplacian():
+    Improves on the Eddington model when absorption is weak and source gradients
+    are large. For each spectral group j, two auxiliary fields phi1_j and phi2_j
+    satisfy independent Helmholtz PDEs:
 
-        laplacian(phi1_j) - (lambda_j * p)^2 / kappa1^2 * phi1_j
-            = -(lambda_j * p) / (kappa1^2 * c) * I
+        laplacian(phi1_j) - (lambda_j*p)^2/kappa1^2 * phi1_j
+            = -(lambda_j*p)/(kappa1^2*c) * C * source
 
-        laplacian(phi2_j) - (lambda_j * p)^2 / kappa2^2 * phi2_j
-            = -(lambda_j * p) / (kappa2^2 * c) * I
+        laplacian(phi2_j) - (lambda_j*p)^2/kappa2^2 * phi2_j
+            = -(lambda_j*p)/(kappa2^2*c) * C * source
 
     where:
-        phi1_j, phi2_j = auxiliary xi-weighted photon distribution
-                         components for the j-th spectral group [1/m3]
-        lambda_j       = Fitting parameter lambda for the j-th group
-                         [1/(m Pa)]
-        A_j            = Fitting parameter A for the j-th group [1/(m Pa)]
-        p              = Total gas pressure [Pa]
-        c              = Speed of light [m/s]
-        I              = Ionization production rate [1/(m3 s)]
-        kappa1, kappa2 = SP3 closure constants (dimensionless):
-                             kappa1^2 = 3/7 - (2/7)*sqrt(6/5)
-                             kappa2^2 = 3/7 + (2/7)*sqrt(6/5)
+        phi1_j, phi2_j : auxiliary photon distribution components, group j[m^-3]
+        lambda_j       : inverse absorption length, group j         [m^-1 Pa^-1]
+        A_j            : amplitude coefficient, group j             [m^-1 Pa^-1]
+        p              : gas pressure (see note)                    [Pa]
+        c              : speed of light                             [m/s]
+        C              : emission prefactor (see sourceMode)        [-]
+        source         : registered source field (see sourceMode)   [m^-3 s^-1]
+        kappa1^2       = 3/7 - (2/7)*sqrt(6/5)
+        kappa2^2       = 3/7 + (2/7)*sqrt(6/5)
 
-    The two auxiliary fields are combined via the SP3 closure to recover the
-    photoionization source contribution of each group:
-
-        Psi_j = (gamma2 * phi1_j - gamma1 * phi2_j) / (gamma2 - gamma1)
-
+    The photoionization source contribution of each group is recovered via
+    the SP3 closure:
+        Psi_j = (gamma2*phi1_j - gamma1*phi2_j) / (gamma2 - gamma1)
         S_j   = A_j * p * c * Psi_j
 
-    where gamma1, gamma2 are the SP3 closure weights (dimensionless):
+    where:
+        gamma_n = (5/7) * [1 + (-1)^n * 3*sqrt(6/5)]
 
-        gamma_n = (5/7) * [1 + (-1)^n * (3/5) * sqrt(6/5)]
-
-    and the total photoionization source term is obtained by summing the
-    three groups:
-
+    and the total source is:
         S_ph = sum_{j=1}^{3} S_j
 
-    The coefficients A_j and lambda_j correspond to the same three-group fit
-    used by the Eddington model (Bourdon et al. 2007, table 3) of the
-    generalized photoionization function:
-        Phi_0(r) / p = sum_{j=1}^{3} [ A_j * exp(-lambda_j * p * r) ]
+    The SP3 model is mathematically equivalent to a six-exponential Helmholtz
+    model and generally provides better agreement with the Zheleznyak integral
+    than either the three-exponential Helmholtz or three-group Eddington models,
+    particularly near domain boundaries and at large p_O2*R values.
 
-    As demonstrated in Bourdon et al. (2007), the SP3 model can be shown to
-    be mathematically equivalent to a six-exponential Helmholtz model, and
-    generally provides better agreement with the classical Zheleznyak
-    integral model than either the three-exponential Helmholtz or the
-    three-group Eddington model, particularly close to domain boundaries
-    and at large pO2R values.
+    The coefficients A_j and lambda_j are the same as for the Eddington model:
+        g(R)/p = sum_{j=1}^{3} A_j * exp(-lambda_j * p * R)
 
-    Boundary conditions
-        Supported values of 'boundaryConditionType':
+    Source modes ('sourceMode' keyword):
+      - emissionRate   : source = I = (pq/(p+pq))*xi*(nu_u/nu_i)*Siz
+                         C = 1. A_j used directly from the literature.
+      - ionizationRate : source = Siz (electron impact ionization rate).
+                         C = quenchingFactor * xiNuRatio applied internally.
+                         A_j used directly from the literature.
 
-          - larsen : Coupled Robin BC from radiative transfer theory
-                     (Liu et al. 2007), applied jointly to phi1_j and
-                     phi2_j:
+    Boundary condition types ('boundaryConditionType' keyword):
+      - larsen : Coupled Robin BC from radiative transfer theory (Liu 2007):
+                 grad(phi1_j) & n = -lambda_j*p*(alpha1*phi1_j + beta2*phi2_j)
+                 grad(phi2_j) & n = -lambda_j*p*(alpha2*phi2_j + beta1*phi1_j)
+                 Solved via Picard iteration on the beta cross-coupling.
+      - zero   : Zero Dirichlet on both phi1_j and phi2_j
 
-                         grad(phi1_j) & n_S = -lambda_j*p*( alpha1*phi1_j
-                                                         + beta2 *phi2_j )
+    Note on pressure:
+        p must be consistent with the fitting parameters. For the Bourdon
+        2007 air parametrisation, p is the O2 partial pressure
+        (p_O2 = 150 Torr at atmospheric pressure).
 
-                         grad(phi2_j) & n_S = -lambda_j*p*( alpha2*phi2_j
-                                                         + beta1 *phi1_j )
-
-                     alpha >> beta, so each equation is solved
-                     independently: alpha via mixed BC valueFraction,
-                     beta as a lagged refGrad, Picard-iterated per
-                     correct() call.
-
-          - zero   : Zero Dirichlet boundary conditions for both phi1_j
-                     and phi2_j.
-
-        Any other value triggers a FatalError.
-
-    Note
-        This class solves the PDE for whatever A_j, lambda_j, p, and I are
-        provided; it makes no assumption about the gas. For the
-        Zheleznyak/Bourdon air parametrization, p is the O2 partial
-        pressure (not the total), and I must already include the quenching
-        factor pq/(p+pq) and the xi*nu_u/nu_i ratio. The user is
-        responsible for ensuring A_j, lambda_j, p, and I are consistent
-        for the gas of interest.
-
-    Two unit conventions are supported for the fitting coefficients and the
-    gas pressure, selected by the 'coefficientUnits' keyword:
-
-      - SI     : p [Pa],   lambda [1/(m  Pa)],   A [1/(m Pa)]
-      - TorrCm : p [Torr], lambda [1/(cm Torr)], A [1/(cm Torr)]
-
-    Internally, all quantities are converted to and stored in SI.
+    Unit conventions ('coefficientUnits' keyword):
+      - SI     : p [Pa],   lambda [m^-1 Pa^-1],   A [m^-1 Pa^-1]
+      - TorrCm : p [Torr], lambda [cm^-1 Torr^-1], A [cm^-1 Torr^-1]
+    All quantities are converted to and stored in SI internally.
 
 Usage
     Example of the model in constant/photoionizationProperties:
     \verbatim
-    photoionizationModel    3GroupSP3;
-    solveInterval           10;         // Default : 1 step
+    photoionizationModel    threeGroupSP3;
+    solveInterval           10;
 
-    3GroupSP3Coeffs
+    threeGroupSP3Coeffs
     {
-        // Unit convention for p, lambda and A: (SI | TorrCm)
         coefficientUnits        TorrCm;
-
-        // Boundary condition type: (larsen | zero)
         boundaryConditionType   larsen;
-
-        // Larsen BC inner Picard iteration controls (optional, defaults
-        // shown). Ignored for 'zero' BC.
         larsenMaxIters          10;
         larsenTol               1e-6;
+        p                       150;            // O2 partial pressure [Torr]
 
-        // Uniform gas pressure (in the chosen unit system)
-        p                       150;        // [Torr]
+        // Option A: emission rate (I already includes quenching prefactor)
+        sourceMode              emissionRate;
+        I                       Iph;
 
-        // Name of the ionization source field in the registry
-        I                       I_ion;      // [1/(m3 s)]
+        // Option B: ionization rate (prefactor applied internally)
+        // sourceMode           ionizationRate;
+        // Siz                  Siz;
+        // quenchingFactor      0.03797;
+        // xiNuRatio            0.06;
 
-        // Fitting parameters specified as pairs of (lambda A)
-        // in the chosen unit system, for the three spectral groups
-        fittingParameters
+        fittingParameters               // Bourdon 2007, Table 3
         (
             (0.0447   0.0067)
             (0.1121   0.0346)
@@ -162,10 +127,6 @@ Usage
     \endverbatim
 
 Reference
-    Zheleznyak M B, Mnatsakanyan A Kh, and Sizykh S V (1982)
-    Photoionization of nitrogen and oxygen mixtures by radiation
-    from a gas discharge. High Temperature Science, 20(3), 357-362.
-
     Segur P, Bourdon A, Marode E, Bessieres D, and Paillol J H (2006)
     The use of an improved Eddington approximation to facilitate the
     calculation of photoionization in streamer discharges.
@@ -222,69 +183,80 @@ private:
 
     // Private Member Data
 
-        //- Unit convention for the fitting coefficients ("SI" or "TorrCm")
+        //- Unit convention ("SI" or "TorrCm")
         word coefficientUnits_;
 
-        //- Boundary condition type
+        //- Boundary condition type ("larsen" or "zero")
         word boundaryConditionType_;
 
-        //- Number of SP3 groups (fixed = 3)
+        //- Number of spectral groups (fixed = 3)
         static const label nGroups_ = 3;
 
-        //- Constant uniform gas pressure [Pa] (converted to SI internally)
+        //- Gas pressure consistent with the fitting parameters [Pa]
         dimensionedScalar p_;
 
-        //- Name of the ionization production rate field
-        word IName_;
+        //- Source field mode ("emissionRate" or "ionizationRate")
+        word sourceMode_;
 
-        //- Amplitudes A_j in SI units [1/(m Pa)]
+        //- Name of the source field in the object registry
+        word sourceName_;
+
+        //- Quenching factor pq/(p+pq) [-]; ionizationRate mode only
+        scalar quenchingFactor_;
+
+        //- Photoionization efficiency xi*nu_u/nu_i[-]; ionizationRate mode only
+        scalar xiNuRatio_;
+
+        //- Combined prefactor C = quenchingFactor_ * xiNuRatio_ [-]
+        //  C = 1 in emissionRate mode
+        scalar C_;
+
+        //- Amplitude coefficients A_j [m^-1 Pa^-1]
         scalarList A_;
 
-        //- Inverse absorption lengths lambda_j in SI units [1/(m Pa)]
+        //- Inverse absorption lengths lambda_j [m^-1 Pa^-1]
         scalarList lambda_;
 
         //- Speed of light [m/s]
         dimensionedScalar c_;
 
-        //- SP3 closure constants kappa1^2, kappa2^2 (dimensionless)
-        //  kappa1^2 = 3/7 - (2/7)*sqrt(6/5)
-        //  kappa2^2 = 3/7 + (2/7)*sqrt(6/5)
+        //- SP3 closure constants kappa1^2 = 3/7 - (2/7)*sqrt(6/5)
         static const scalar kappa1Sqr_;
+
+        //- SP3 closure constants kappa2^2 = 3/7 + (2/7)*sqrt(6/5)
         static const scalar kappa2Sqr_;
 
-        //- SP3 closure weights gamma1, gamma2 (dimensionless)
-        //  gamma_n = (5/7)*[1 + (-1)^n * (3/5)*sqrt(6/5)]
+        //- SP3 closure weight gamma1 = (5/7)*[1 - 3*sqrt(6/5)]
         static const scalar gamma1_;
+
+        //- SP3 closure weight gamma2 = (5/7)*[1 + 3*sqrt(6/5)]
         static const scalar gamma2_;
 
-        //- Larsen BC coefficients alpha1, alpha2 (dimensionless)
-        //  alpha_{1,2} = (5/96) * (34 +- 11*sqrt(6/5))
+        //- Larsen BC coefficient alpha1 = (5/96)*(34 + 11*sqrt(6/5))
         static const scalar alpha1_;
+
+        //- Larsen BC coefficient alpha2 = (5/96)*(34 - 11*sqrt(6/5))
         static const scalar alpha2_;
 
-        //- Larsen BC coefficients beta1, beta2 (dimensionless)
-        //  beta_{1,2} = (5/96) * (2 -+ sqrt(6/5))
+        //- Larsen BC coefficient beta1 = (5/96)*(2 - sqrt(6/5))
         static const scalar beta1_;
+
+        //- Larsen BC coefficient beta2 = (5/96)*(2 + sqrt(6/5))
         static const scalar beta2_;
 
-        //- Maximum number of inner Picard iterations on the Larsen
-        //  beta cross-coupling per correct() call
+        //- Maximum Picard iterations on Larsen beta cross-coupling
         label larsenMaxIters_;
 
-        //- Relative tolerance on the boundary value of phi1_j / phi2_j
-        //  for declaring inner Picard iteration converged
+        //- Relative tolerance for Larsen Picard convergence
         scalar larsenTol_;
 
-        //- Solved auxiliary photon distribution components phi*_{1,j},
-        //  one per group, satisfying the first SP3 Helmholtz sub-equation
+        //- Auxiliary photon distribution phi1_j, one per group [m^-3]
         PtrList<volScalarField> phi1_j_;
 
-        //- Solved auxiliary photon distribution components phi*_{2,j},
-        //  one per group, satisfying the second SP3 Helmholtz sub-equation
+        //- Auxiliary photon distribution phi2_j, one per group [m^-3]
         PtrList<volScalarField> phi2_j_;
 
-        //- Partial source fields S_j, one per group, recovered from
-        //  phi*_{1,j} and phi*_{2,j} via the SP3 closure combination
+        //- Partial photoionization source fields S_j, one per group [m^-3 s^-1]
         PtrList<volScalarField> Sph_j_;
 
 public:
@@ -294,7 +266,7 @@ public:
 
     // Constructors
 
-        //- Construct from mesh and dictionary
+        //- Construct from mesh
         threeGroupSP3(const fvMesh& mesh);
 
     //- Destructor
@@ -303,8 +275,8 @@ public:
 
     // Member Functions
 
-        //- Assemble and solve the 6 SP3 sub-equations (2 per group), combine
-        //  via the SP3 closure, and sum into the total source field
+        //- Solve 6 SP3 sub-equations (2 per group), apply SP3 closure,
+        //  and sum into total photoionization source
         virtual void correct() override;
 };
 

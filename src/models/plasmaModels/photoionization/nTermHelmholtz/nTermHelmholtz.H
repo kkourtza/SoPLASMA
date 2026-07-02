@@ -26,74 +26,73 @@ Class
     
 Description
 
-    Implementation of an N-term Helmholtz-equation-based 
-    photoionization model for plasma simulations.
+    N-term Helmholtz photoionization model for plasma simulations in air.
 
-    The non-local Zheleznyak integral for the photoionization source is
-    approximated by decomposing the absorption kernel into a user-defined
-    sum of N exponentials. This yields N independent screened-Poisson 
-    (Helmholtz) PDEs solved via the native OpenFOAM Laplacian laplacian():
+    Approximates the non-local Zheleznyak photoionization integral by
+    decomposing the absorption kernel into N exponential terms, yielding
+    N independent screened-Poisson (Helmholtz) PDEs
     
-        laplacian(S_j) - sqr(lambda_j * p) * S_j = -A_j * sqr(p) * I
+        laplacian(Sph_j) - (lambda_j*p)^2 * Sph_j = -A_j * p^2 * C * source
 
     where:
-        S_j      = Photoionization source component for the j-th term
-        lambda_j = Fitting parameter lambda for the j-th term [1/(m Pa)]
-        A_j      = Fitting parameter A for the j-th term [1/(m Pa2)]
-        p        = Total gas pressure [Pa]
-        I        = Ionization production rate    
+        Sph_j    : photoionization source component, term j  [m^-3 s^-1]
+        lambda_j : inverse absorption length, term j         [m^-1 Pa^-1]
+        A_j      : amplitude coefficient, term j             [m^-2 Pa^-2]
+        p        : gas pressure (see note)                   [Pa]
+        C        : emission prefactor (see sourceMode)       [-]
+        source   : registered source field (see sourceMode)  [m^-3 s^-1]
 
-    The total photoionization source term is obtained by summing all N terms:
-        S_ph = sum_{j=1}^{N} S_j
+    The total photoionization source is:
+        Sph = sum_{j=1}^{N} Sph_j
 
-    The coefficients A_j and lambda_j are specified by the user obtained via a
-    least-squares fit to the generalized photoionization function:
-        Phi_0(r) / p = (p * r) * sum_{j=1}^{N} [ A_j * exp(-lambda_j * p * r) ]
+    The coefficients A_j and lambda_j are obtained by fitting:
+        g(R)/p / (p*R) = sum_{j=1}^{N} A_j * exp(-lambda_j * p * R)
+    to the Zheleznyak absorption function.
 
-    Note
-        This class solves the PDE for whatever A_j, lambda_j, p, and I are
-        provided; it makes no assumption about the gas. For the
-        Zheleznyak/Bourdon air parametrization, p is the O2 partial
-        pressure (not the total), and I must already include the quenching
-        factor pq/(p+pq) and the xi*nu_u/nu_i ratio. The user is
-        responsible for ensuring A_j, lambda_j, p, and I are consistent
-        for the gas of interest.
+    Source modes ('sourceMode' keyword):
+      - emissionRate   : source = I = (pq/(p+pq))*xi*(nu_u/nu_i)*Siz
+                         C = 1. A_j used directly from the literature.
+      - ionizationRate : source = Siz (electron impact ionization rate).
+                         C = quenchingFactor * xiNuRatio applied internally.
+                         A_j used directly from the literature.
 
-    Two unit conventions are supported for the fitting coefficients and the
-    gas pressure, selected by the 'coefficientUnits' keyword:
+    Note on pressure:
+        p must be consistent with the fitting parameters. For the Bourdon
+        2007 air parametrisation, p is the O2 partial pressure
+        (p_O2 = 150 Torr at atmospheric pressure).
 
-      - SI     : p [Pa],   lambda [1/(m  Pa)],   A [1/(m^2 Pa^2)]
-      - TorrCm   : p [Torr], lambda [1/(cm Torr)], A [1/(cm^2 Torr^2)]
-
-    Internally, all quantities are converted to and stored in SI.
+    Unit conventions ('coefficientUnits' keyword):
+      - SI     : p [Pa],   lambda [m^-1 Pa^-1],   A [m^-2 Pa^-2]
+      - TorrCm : p [Torr], lambda [cm^-1 Torr^-1], A [cm^-2 Torr^-2]
+    All quantities are converted to and stored in SI internally.
 
 Usage
     Example of the model in constant/photoionizationProperties:
     \verbatim
     photoionizationModel    nTermHelmholtz;
-    solveInterval           10;         // Default : 1 step
+    solveInterval           10;
 
     nTermHelmholtzCoeffs
     {
-        // Unit convention for p, lambda and A: (SI | TorrCm)
         coefficientUnits    TorrCm;
+        p                   150;            // O2 partial pressure [Torr]
 
-        // Uniform gas pressure (in the chosen unit system)
-        p                   760;        // [Torr]
+        // Option A: emission rate (I already includes quenching prefactor)
+        sourceMode          emissionRate;
+        I                   Iph;
 
-        // Name of the ionization source field in the registry
-        I                   I_ion;      // [1/(m3 s)]
+        // Option B: ionization rate (prefactor applied internally)
+        // sourceMode       ionizationRate;
+        // Siz              Siz;
+        // quenchingFactor  0.03797;        // pq/(p+pq) = 30/(760+30)
+        // xiNuRatio        0.06;           // xi * nu_u/nu_i
 
-        // Number of Helmholtz terms (must match the list size below)
         nTerms              3;
-
-        // Fitting parameters specified as pairs of (lambda A)
-        // in the chosen unit system
-        fittingParameters
+        fittingParameters               // Bourdon 2007, Table 2
         (
             (0.0553   1.986e-4)
-            (0.1460   0.0051)
-            (0.8900   0.4886)
+            (0.1460   5.100e-3)
+            (0.8900   4.886e-1)
         );
     }
     \endverbatim
@@ -138,7 +137,7 @@ class nTermHelmholtz
 {
 private:
 
-    //- Disallow copy
+    //- Disallow copy and assignment
     nTermHelmholtz
     (
         const nTermHelmholtz&
@@ -148,25 +147,38 @@ private:
 
     // Private Member Data
 
-        //- Unit convention for the fitting coefficients ("SI" or "TorrCm")
+        //- Unit convention ("SI" or "TorrCm")
         word coefficientUnits_;
 
-        //- Number of Helmholtz terms (= length of A_ and lambda_)
+        //- Number of Helmholtz terms
         label nTerms_;
 
-        //- Constant uniform gas pressure [Pa] (converted to SI internally)
+        //- Gas pressure consistent with the fitting parameters [Pa]
         dimensionedScalar p_;
 
-        //- Name of the ionization production rate field
-        word IName_;
+        //- Source field mode ("emissionRate" or "ionizationRate")
+        word sourceMode_;
 
-        //- Amplitudes A_j in SI units [1/(m2 Pa2)]
+        //- Name of the source field in the object registry
+        word sourceName_;
+
+        //- Quenching factor pq/(p+pq) [-]; ionizationRate mode only
+        scalar quenchingFactor_;
+
+        //- Photoionization efficiency xi*nu_u/nu_i[-]; ionizationRate mode only
+        scalar xiNuRatio_;
+
+        //- Combined prefactor C = quenchingFactor_ * xiNuRatio_ [-]
+        //  C = 1 in emissionRate mode
+        scalar C_;
+
+        //- Amplitude coefficients A_j [m^-2 Pa^-2]
         scalarList A_;
 
-        //- Inverse absorption lengths lambda_j in SI units [1/(m Pa)]
+        //- Inverse absorption lengths lambda_j [m^-1 Pa^-1]
         scalarList lambda_;
 
-        //- Partial source fields, one per Helmholtz term
+        //- Partial photoionization source fields, one per Helmholtz term
         PtrList<volScalarField> Sph_j_;
 
 public:
@@ -176,16 +188,15 @@ public:
 
     // Constructors
 
-        //- Construct from mesh and dictionary
+        //- Construct from mesh
         nTermHelmholtz(const fvMesh& mesh);
 
     //- Destructor
     virtual ~nTermHelmholtz() = default;
 
-
     // Member Functions
 
-        //- Assemble and solve the N Helmholtz equations, sum into total field
+        //- Solve N Helmholtz equations & sum into total photoionization source
         virtual void correct() override;
 };
 
