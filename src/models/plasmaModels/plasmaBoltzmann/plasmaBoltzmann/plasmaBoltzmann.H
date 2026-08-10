@@ -48,6 +48,8 @@ SourceFiles
 #include "dictionary.H"
 #include "fileName.H"
 #include "word.H"
+#include "HashTable.H"
+#include "scalar.H"
 
 namespace Foam
 {
@@ -84,11 +86,19 @@ public:
     //- Force a rebuild regardless of the existing table set. Used by the EEDF
     //  refresh path, where the mechanism has not changed but the conditions it
     //  was solved at have.
+    //
+    //  `composition` overrides the mechanism's reference mole fractions, and
+    //  `Tgas` (when positive) the dictionary's gas temperature. Both default to
+    //  "unchanged", which is what a start-up build wants. Passing the CURRENT
+    //  values is the entire point of a refresh: re-solving at the composition
+    //  the tables were already built at reproduces them exactly, at full cost.
     static void rebuild
     (
         const dictionary& dict,
         const fileName& manifest,
-        const fileName& tableDir
+        const fileName& tableDir,
+        const HashTable<scalar>& composition = HashTable<scalar>(),
+        const scalar Tgas = -1
     );
 };
 

@@ -350,16 +350,16 @@ Foam::plasmaReactionRates::plasmaReactionRates
     // case cannot silently run against tables built from a different mechanism
     // -- which previously required a human to remember to re-run genMechTables
     // and copy the output in.
+    manifest_ = refreshDict.getOrDefault<fileName>
+    (
+        "manifest", mechanismDict.lessExt() + ".mech.json"
+    );
+    tableDir_ = tableDir;
+    chemDict_ = refreshDict;
+
     plasmaBoltzmann::ensureTables
     (
-        refreshDict,
-        refreshDict.getOrDefault<fileName>
-        (
-            "manifest",
-            mechanismDict.lessExt() + ".mech.json"
-        ),
-        tableDir,
-        word(mechanismHash_)
+        chemDict_, manifest_, tableDir_, word(mechanismHash_)
     );
 
     buildEvaluators(tableDir);
@@ -377,6 +377,40 @@ Foam::plasmaReactionRates::plasmaReactionRates
 
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
+
+
+bool Foam::plasmaReactionRates::refreshEEDF
+(
+    const HashTable<scalar>& composition,
+    const scalar Tgas
+)
+{
+    if (refreshMode_ == rmNever)
+    {
+        return false;
+    }
+
+    Info<< "plasmaReactionRates: refreshing the EEDF at t = "
+        << mesh_.time().timeName() << endl;
+
+    // Re-solve, then rebuild the interpolators against the new files. Both
+    // halves are required: regenerating the tables without reloading them
+    // leaves the run using the old coefficients from memory, which is a
+    // refresh that costs full price and changes nothing.
+    plasmaBoltzmann::rebuild
+    (
+        chemDict_, manifest_, tableDir_, composition, Tgas
+    );
+
+    buildEvaluators(tableDir_);
+
+    // Re-interpolate immediately so the new tables are in effect for the step
+    // that triggered the refresh, rather than one step later.
+    correct();
+
+    eedfRefreshed();
+    return true;
+}
 
 void Foam::plasmaReactionRates::reportRange() const
 {

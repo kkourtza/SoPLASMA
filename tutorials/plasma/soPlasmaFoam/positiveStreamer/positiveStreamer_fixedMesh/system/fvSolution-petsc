@@ -82,13 +82,15 @@ solvers
         relTol          $neRelTolerance;
         maxIter         2000;
     }
-    n_eFinal
-    {
-        $n_e;
-        relTol          0;
-    }
 
-    n_N2p
+    // Catch-all for every transported species. With `activeSpecies
+    // fromMechanism` the case does NOT know the species names in advance --
+    // they come from the mechanism -- so they cannot be listed here. A regex
+    // covers whatever the mechanism turns out to produce.
+    //
+    // A named entry above still wins over this, so a species that needs its
+    // own tolerances can have them.
+    "n_.*"
     {
         solver                         petsc;
         implicitRegionCoupling         false;
@@ -116,116 +118,6 @@ solvers
         tolerance       $npIonTolerance;
         relTol          $npIonRelTolerance;
         maxIter         2000;
-    }
-    n_N2pFinal
-    {
-        $n_N2p;
-        relTol          0;
-    }
-
-    n_O2p
-    {
-        solver                         petsc;
-        implicitRegionCoupling         false;
-        petsc
-        {
-            options
-            {
-                ksp_type  cg;
-                pc_type  hypre;
-                mat_type  aij;
-            }
-            caching
-            {
-                matrix
-                {
-                    update $npIonMatrixCacheUpdate;
-                }
-
-                preconditioner
-                {
-                    update $npIonPreconditionerCacheUpdate;
-                }
-            }
-        }
-        tolerance       $npIonTolerance;
-        relTol          $npIonRelTolerance;
-        maxIter         2000;
-    }
-    n_O2pFinal
-    {
-        $n_O2p;
-        relTol          0;
-    }
-
-    n_Om
-    {
-        solver                         petsc;
-        implicitRegionCoupling         false;
-        petsc
-        {
-            options
-            {
-                ksp_type  cg;
-                pc_type  hypre;
-                mat_type  aij;
-            }
-            caching
-            {
-                matrix
-                {
-                    update $npIonMatrixCacheUpdate;
-                }
-
-                preconditioner
-                {
-                    update $npIonPreconditionerCacheUpdate;
-                }
-            }
-        }
-        tolerance       $npIonTolerance;
-        relTol          $npIonRelTolerance;
-        maxIter         2000;
-    }
-    n_OmFinal
-    {
-        $n_Om;
-        relTol          0;
-    }
-
-    n_O2m
-    {
-        solver                         petsc;
-        implicitRegionCoupling         false;
-        petsc
-        {
-            options
-            {
-                ksp_type  cg;
-                pc_type  hypre;
-                mat_type  aij;
-            }
-            caching
-            {
-                matrix
-                {
-                    update $npIonMatrixCacheUpdate;
-                }
-
-                preconditioner
-                {
-                    update $npIonPreconditionerCacheUpdate;
-                }
-            }
-        }
-        tolerance       $npIonTolerance;
-        relTol          $npIonRelTolerance;
-        maxIter         2000;
-    }
-    n_O2mFinal
-    {
-        $n_O2m;
-        relTol          0;
     }
 
 }
@@ -245,29 +137,13 @@ PIMPLE
             tolerance   $neTolerancePIMPLE;
             relTol      0;
         }
-        n_N2p
+        // Every other transported species, whatever the mechanism named it.
+        "n_.*"
         {
             tolerance   $npIonTolerancePIMPLE;
             relTol      0;
         }
 
-        n_O2p
-        {
-            tolerance   $npIonTolerancePIMPLE;
-            relTol      0;
-        }
-
-        n_Om
-        {
-            tolerance   $npIonTolerancePIMPLE;
-            relTol      0;
-        }
-
-        n_O2m
-        {
-            tolerance   $npIonTolerancePIMPLE;
-            relTol      0;
-        }
     }
 
 }

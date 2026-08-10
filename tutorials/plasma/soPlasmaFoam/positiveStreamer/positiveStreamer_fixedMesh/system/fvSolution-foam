@@ -40,71 +40,27 @@ solvers
         relTol          0;
         maxIter         2000;
     }
-    n_eFinal
-    {
-        $n_e;
-        relTol          0;
-    }
 
-    n_N2p
+    // Catch-all for every transported species. With `activeSpecies
+    // fromMechanism` the case does NOT know the species names in advance --
+    // they come from the mechanism -- so they cannot be listed here. A regex
+    // covers whatever the mechanism turns out to produce.
+    //
+    // A named entry above still wins over this, so a species that needs its
+    // own tolerances can have them.
+    // Matches the ...Final variants too: PIMPLE solves `n_<sp>Final` on the
+    // last outer corrector, and a missing entry for it is a fatal lookup, not
+    // a fallback.
+    "n_.*(Final)?"
     {
         solver          smoothSolver;
         smoother        GaussSeidel;
-	    preconditioner  DIC;
+        preconditioner  DIC;
         tolerance       $npIonTolerance;
         relTol          0;
         maxIter         2000;
     }
-    n_N2pFinal
-    {
-        $n_N2p;
-        relTol          0;
-    }
 
-    n_O2p
-    {
-        solver          smoothSolver;
-        smoother        GaussSeidel;
-	    preconditioner  DIC;
-        tolerance       $npIonTolerance;
-        relTol          0;
-        maxIter         2000;
-    }
-    n_O2pFinal
-    {
-        $n_O2p;
-        relTol          0;
-    }
-
-    n_Om
-    {
-        solver          smoothSolver;
-        smoother        GaussSeidel;
-	    preconditioner  DIC;
-        tolerance       $npIonTolerance;
-        relTol          0;
-        maxIter         2000;
-    }
-    n_OmFinal
-    {
-        $n_Om;
-        relTol          0;
-    }
-
-    n_O2m
-    {
-        solver          smoothSolver;
-        smoother        GaussSeidel;
-	    preconditioner  DIC;
-        tolerance       $npIonTolerance;
-        relTol          0;
-        maxIter         2000;
-    }
-    n_O2mFinal
-    {
-        $n_O2m;
-        relTol          0;
-    }
 }
 
 PIMPLE
@@ -122,29 +78,13 @@ PIMPLE
             tolerance   $neTolerancePIMPLE;
             relTol      0;
         }
-        n_N2p
+        // Every other transported species, whatever the mechanism named it.
+        "n_.*"
         {
             tolerance   $npIonTolerancePIMPLE;
             relTol      0;
         }
 
-        n_O2p
-        {
-            tolerance   $npIonTolerancePIMPLE;
-            relTol      0;
-        }
-
-        n_Om
-        {
-            tolerance   $npIonTolerancePIMPLE;
-            relTol      0;
-        }
-
-        n_O2m
-        {
-            tolerance   $npIonTolerancePIMPLE;
-            relTol      0;
-        }
     }
 
 }

@@ -147,12 +147,41 @@ void Foam::plasmaBoltzmann::rebuild
 (
     const dictionary& chem,
     const fileName& manifest,
-    const fileName& tableDir
+    const fileName& tableDir,
+    const HashTable<scalar>& composition,
+    const scalar Tgas
 )
 {
     mkDir(tableDir);
 
-    const Boltzmann::MechTableOptions o = readOptions(chem, manifest, tableDir);
+    Boltzmann::MechTableOptions o = readOptions(chem, manifest, tableDir);
+
+    if (Tgas > 0)
+    {
+        o.T_gas = Tgas;
+        // T_exc follows T_gas unless the case pinned it. Leaving a stale
+        // excitation temperature behind while the gas temperature moves would
+        // silently change the superelastic balance.
+        if (!chem.subOrEmptyDict("boltzmann").found("Texc"))
+        {
+            o.T_exc = -1;
+        }
+    }
+
+    forAllConstIters(composition, it)
+    {
+        o.composition[it.key()] = it.val();
+    }
+
+    if (!composition.empty())
+    {
+        Info<< "plasmaBoltzmann: composition";
+        forAllConstIters(composition, it)
+        {
+            Info<< " " << it.key() << "=" << it.val();
+        }
+        Info<< endl;
+    }
 
     Info<< "plasmaBoltzmann: solving the EEDF over " << o.nPoints
         << " points, E/N " << o.EN_min << " .. " << o.EN_max << " Td"

@@ -155,6 +155,12 @@ private:
 
         const fvMesh& mesh_;
 
+        //- Kept so a refresh can re-run the sweep with the same settings the
+        //  start-up build used, changing only the conditions.
+        fileName manifest_;
+        fileName tableDir_;
+        dictionary chemDict_;
+
         //- Mechanism name and the hash of the master file it was compiled from
         word mechanismName_;
         string mechanismHash_;
@@ -330,10 +336,24 @@ public:
         void correct();
 
         //- Whether the EEDF should be re-solved now, per the configured
-        //  criterion. Always false in the default `never` mode. The caller owns
-        //  the re-solve itself, because in Stage 1 it means regenerating tables
-        //  offline and in Stage 2 it means invoking BoltzmannCoupling.
+        //  criterion. Always false in the default `never` mode.
         bool eedfRefreshDue();
+
+        //- Re-solve the EEDF at the given composition and gas temperature,
+        //  regenerate the tables and reload the interpolators. Returns false
+        //  when refresh is `never`.
+        //
+        //  The caller supplies the composition because it owns the species
+        //  densities; this class owns only the mechanism and its tables. It
+        //  should be weighted by ELECTRON DENSITY rather than by volume: the
+        //  rate coefficients matter where the electrons are, and a
+        //  volume-average over a mostly undisturbed domain would report the
+        //  initial gas no matter what the discharge had done to it.
+        //
+        //  Both halves are required and are done here: regenerating the tables
+        //  without reloading them leaves the run using the old coefficients
+        //  from memory -- a refresh at full cost that changes nothing.
+        bool refreshEEDF(const HashTable<scalar>& composition, const scalar Tgas);
 
         //- Record that an EEDF refresh has just been performed, resetting the
         //  criterion. Call after acting on eedfRefreshDue().

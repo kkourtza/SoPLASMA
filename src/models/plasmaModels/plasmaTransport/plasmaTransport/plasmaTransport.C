@@ -843,14 +843,6 @@ bool Foam::plasmaTransport::mechanismSourceTerms
     // is the expensive thing, and that is governed separately.
     rates_->correct();
 
-    if (rates_->eedfRefreshDue())
-    {
-        Info<< "plasmaReactionRates: EEDF refresh due at t = "
-            << mesh_.time().timeName()
-            << " (Stage 1: tables are static, no action taken)" << endl;
-        rates_->eedfRefreshed();
-    }
-
     const scalarField& neI = ne.primitiveField();
     const label nCells = mesh_.nCells();
 
@@ -884,6 +876,83 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         nBg -= species_.numberDensities()[n].primitiveField();
     }
     forAll(nBg, c) { nBg[c] = max(nBg[c], scalar(0)); }
+
+    if (rates_->eedfRefreshDue())
+    {
+        // Composition weighted by ELECTRON DENSITY, not by volume.
+        //
+        // The rate coefficients describe what electrons do, so the mixture that
+        // matters is the one the electrons are actually in. A volume average
+        // over a domain that is mostly undisturbed gas would report very nearly
+        // the initial composition no matter what the streamer head had done to
+        // the gas inside it -- so the refresh would faithfully re-solve for a
+        // mixture that exists nowhere near the chemistry, at full cost.
+        //
+        // Mole fractions are taken over the NEUTRALS only, which is what an
+        // EEDF solve means by composition: the electron-impact cross sections
+        // are per neutral target, and ions are a ~1e-6 fraction whose own
+        // cross sections this mechanism does not carry.
+        HashTable<scalar> comp;
+        {
+            scalar wSum = 0;
+            forAll(neI, c) { wSum += neI[c]*mesh_.V()[c]; }
+            reduce(wSum, sumOp<scalar>());
+
+            if (wSum > VSMALL)
+            {
+                // Transported neutrals first, then whatever of the background
+                // the mechanism's reference composition names. nBg already has
+                // the transported neutrals subtracted, so the two do not
+                // double-count.
+                scalar nTot = 0;
+                HashTable<scalar> weighted;
+
+                forAll(species_.speciesNames(), i)
+                {
+                    if (mag(species_.speciesChargeNumbers()[i]) > SMALL) continue;
+
+                    const scalarField& ni =
+                        species_.numberDensities()[i].primitiveField();
+                    scalar acc = 0;
+                    forAll(ni, c) { acc += neI[c]*mesh_.V()[c]*ni[c]; }
+                    reduce(acc, sumOp<scalar>());
+                    weighted.set(species_.speciesNames()[i], acc/wSum);
+                    nTot += acc/wSum;
+                }
+
+                scalar bgAcc = 0;
+                forAll(nBg, c) { bgAcc += neI[c]*mesh_.V()[c]*nBg[c]; }
+                reduce(bgAcc, sumOp<scalar>());
+                const scalar bgAvg = bgAcc/wSum;
+
+                for (const entry& e : mechComposition_)
+                {
+                    const scalar x = readScalar(e.stream());
+                    weighted.set(e.keyword(), weighted.lookup(e.keyword(), 0.0)
+                                            + x*bgAvg);
+                    nTot += x*bgAvg;
+                }
+
+                if (nTot > VSMALL)
+                {
+                    forAllConstIters(weighted, it)
+                    {
+                        comp.set(it.key(), it.val()/nTot);
+                    }
+                }
+            }
+        }
+
+        // Gas temperature: the background value, until an energy equation for
+        // the heavy species exists. Passing -1 would keep the dictionary's,
+        // which is the same thing today but stops being so the moment gas
+        // heating is solved.
+        const scalar Tgas =
+            species_.backgroundDict().subOrEmptyDict("energy")
+                .getOrDefault<scalar>("T", -1);
+
+        rates_->refreshEEDF(comp, Tgas);
+    }
 
     List<scalarField> src(species_.nSpecies(), scalarField(nCells, Zero));
     scalarField sIon(nCells, Zero), sAtt(nCells, Zero);
