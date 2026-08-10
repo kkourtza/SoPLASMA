@@ -11,7 +11,7 @@
 set -e
 source /usr/lib/openfoam/openfoam2412/etc/bashrc >/dev/null 2>&1 || true
 export SoPLASMA=$HOME/soplasma-scratch SoPLASMA_SRC=$HOME/soplasma-scratch/src SoPLASMA_ETC=$HOME/soplasma-scratch/etc
-CASE=$HOME/streamer-case
+CASE=${CASE:-$HOME/streamer-case}
 cd "$CASE"
 [ -d .snapshot0 ] || { echo "no .snapshot0 -- run Allrun-serial once first"; exit 1; }
 foamListTimes -rm -withZero 2>/dev/null || true
