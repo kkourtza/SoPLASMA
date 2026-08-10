@@ -1,0 +1,25 @@
+FoamFile { version 2.0; format ascii; class dictionary; object plasmaTransportProperties; }
+
+chemistry
+{
+    mechanism       "constant/air_plasma.foam";
+    tableDir        "constant/plasmaTables";
+    lookupVariable  reducedE;
+    tableKey        reducedE;
+    sourceModel     reactions;
+    outOfBounds     extrapolate;
+    manifest        "constant/air_plasma.mech.json";
+    eedfRefresh     never;
+
+    // Sweep settings for the in-process EEDF solve. Omit the block entirely
+    // and the defaults match what genMechTables would have produced.
+    boltzmann
+    {
+        ENmin           0.1;
+        ENmax           500;
+        nPoints         200;
+        Tgas            300;
+        pressureAtm     1.0;
+        growthModel     temporal;
+    }
+}

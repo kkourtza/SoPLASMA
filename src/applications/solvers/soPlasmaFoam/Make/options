@@ -1,4 +1,5 @@
 EXE_INC = \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaBoltzmann/lnInclude \
     -I./gas \
     -I./dielectric \
     -I./include \
@@ -19,6 +20,7 @@ EXE_INC = \
     
 
 EXE_LIBS = \
+    -L$(FOAM_USER_LIBBIN) -lplasmaBoltzmann \
     -L$(FOAM_USER_LIBBIN) \
     -lfiniteVolume \
     -lfvOptions \

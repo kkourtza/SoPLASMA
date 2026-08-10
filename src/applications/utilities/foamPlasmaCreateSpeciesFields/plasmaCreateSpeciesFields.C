@@ -60,6 +60,7 @@ Author
 #include "fvMesh.H"
 #include "IOdictionary.H"
 #include "volFields.H"
+#include "plasmaSpecies.H"
 
 using namespace Foam;
 
@@ -210,7 +211,25 @@ int main(int argc, char* argv[])
             << exit(FatalError);
     }
 
-    wordList species(speciesDict.lookup("activeSpecies"));
+    // `activeSpecies fromMechanism;` is resolved through plasmaSpecies, which
+    // is also what the solver uses. This utility must create EXACTLY the fields
+    // the solver will later look for, so the two cannot be allowed to derive
+    // the list independently.
+    wordList species;
+    {
+        ITstream& is = speciesDict.lookup("activeSpecies");
+        token firstToken(is);
+        is.rewind();
+
+        if (firstToken.isWord() && firstToken.wordToken() == "fromMechanism")
+        {
+            species = plasmaSpecies::speciesFromMechanism(speciesDict);
+        }
+        else
+        {
+            is >> species;
+        }
+    }
 
     if (Pstream::master())
     {

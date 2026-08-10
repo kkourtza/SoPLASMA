@@ -12,6 +12,8 @@
 \*---------------------------------------------------------------------------*/
 
 #include "plasmaSpecies.H"
+#include "IFstream.H"
+#include "HashSet.H"
 #include "plasmaConstants.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -22,6 +24,142 @@ namespace Foam
 // * * * * * * * * * * * * * * Runtime Type Information * * * * * * * * * * //
 
 defineTypeNameAndDebug(plasmaSpecies, 0);
+
+
+// * * * * * * * * * * * * * Private Member Functions  * * * * * * * * * * * //
+
+void Foam::plasmaSpecies::readMechanismSpecies()
+{
+    fromMechanism_ = true;
+    speciesNames_ = speciesFromMechanism(*this, &mechCharge_, &mechMass_);
+}
+
+
+Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
+(
+    const dictionary& speciesDict,
+    HashTable<scalar>* chargeOut,
+    HashTable<scalar>* massOut
+)
+{
+    // Static, and taking only the dictionary, because two callers need it: this
+    // class, and plasmaCreateSpeciesFields, which runs before a mesh exists and
+    // must create exactly the fields the solver will later look for. When they
+    // derived the list separately they disagreed -- the utility did not
+    // understand `fromMechanism` at all, so it created nothing and the solver
+    // then failed on a missing 0/n_e.
+    wordList names;
+    HashTable<scalar> mechCharge_;
+    HashTable<scalar> mechMass_;
+
+    const dictionary md = speciesDict.subOrEmptyDict("mechanismSpecies");
+    const fileName mechFile = md.getOrDefault<fileName>
+    (
+        "mechanism", "constant/air_plasma.foam"
+    );
+
+    IFstream is(mechFile);
+    if (!is.good())
+    {
+        FatalIOErrorInFunction(speciesDict)
+            << "activeSpecies is `fromMechanism` but the mechanism dictionary "
+            << mechFile << " cannot be read." << nl
+            << "    It is written by mechc alongside the .mech.json manifest."
+            << " Set `mechanism` in the `mechanismSpecies` dictionary if it"
+            << " lives elsewhere." << nl << exit(FatalIOError);
+    }
+    const dictionary mech(is);
+
+    const dictionary& chargeDict = mech.subDict("speciesCharge");
+    const dictionary& massDict   = mech.subDict("speciesMass");
+
+    for (const entry& e : chargeDict)
+    {
+        mechCharge_.insert(e.keyword(), readScalar(e.stream()));
+    }
+    for (const entry& e : massDict)
+    {
+        mechMass_.insert(e.keyword(), readScalar(e.stream()));
+    }
+
+    // Which species to transport.
+    //
+    //   charged             electron + ions. The minimum for a self-consistent
+    //                       discharge: these carry the space charge that drives
+    //                       the field, so omitting one is not an approximation,
+    //                       it breaks charge conservation.
+    //
+    //   chargedAndExcited   the above plus excited states and radicals. Needed
+    //                       once excited-state chemistry matters -- stepwise
+    //                       ionisation, quenching, associative processes. Costs
+    //                       one transport equation each.
+    //
+    //   all                 everything the mechanism names, background gas
+    //                       included. Rarely wanted: the background is held
+    //                       fixed by construction, so transporting it both
+    //                       doubles its cost and lets it drift from the density
+    //                       the rate tables were built at.
+    const word select = md.getOrDefault<word>("include", "charged");
+    if (select != "charged" && select != "chargedAndExcited" && select != "all")
+    {
+        FatalIOErrorInFunction(speciesDict)
+            << "Unknown `include` '" << select << "' in mechanismSpecies" << nl
+            << "Valid: charged | chargedAndExcited | all" << nl
+            << exit(FatalIOError);
+    }
+
+    // Background-gas species are named by the mechanism's own reference
+    // composition, so this needs no list of "things that are air".
+    wordHashSet background;
+    if (mech.found("composition"))
+    {
+        for (const entry& e : mech.subDict("composition"))
+        {
+            background.insert(e.keyword());
+        }
+    }
+
+    const word electronName = mech.getOrDefault<word>("electronSpecies", "Electron");
+    const wordList exclude  = md.getOrDefault<wordList>("exclude", wordList());
+    wordHashSet excluded(exclude);
+
+    // The electron goes first, because its index is the electron species ID
+    // everything else looks up.
+    const word caseElectron = md.getOrDefault<word>("electronName", "e");
+    names.append(caseElectron);
+    mechCharge_.set(caseElectron, -1);
+    if (mechMass_.found(electronName))
+    {
+        mechMass_.set(caseElectron, mechMass_[electronName]);
+    }
+
+    for (const word& name : chargeDict.toc())
+    {
+        if (name == electronName || name == caseElectron) continue;
+        if (excluded.found(name)) continue;
+
+        const scalar q = mechCharge_[name];
+        const bool charged = (mag(q) > SMALL);
+        const bool isBackground = background.found(name);
+
+        bool take = false;
+        if (select == "all")                    take = true;
+        else if (select == "chargedAndExcited") take = charged || !isBackground;
+        else                                    take = charged;
+
+        if (take && !(select != "all" && isBackground && !charged))
+        {
+            names.append(name);
+        }
+    }
+
+    Info<< "plasmaSpecies: activeSpecies from " << mechFile
+        << " (include " << select << "): " << names << endl;
+
+    if (chargeOut) *chargeOut = mechCharge_;
+    if (massOut)   *massOut   = mechMass_;
+    return names;
+}
 
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
 
@@ -162,7 +300,29 @@ plasmaSpecies::plasmaSpecies
     }
 
     // Read species list
-    lookup("activeSpecies") >> speciesNames_;
+    // `activeSpecies fromMechanism;` derives the list from the compiled
+    // mechanism instead of repeating it by hand. The mechanism already knows
+    // which species its reactions create; writing them out again is how a case
+    // ends up transporting an ion the chemistry does not produce, or -- far
+    // worse and the reason this exists -- NOT transporting one that it does,
+    // which silently breaks charge conservation.
+    //
+    // An explicit list still works and still wins. Deriving is a convenience,
+    // not a policy: a case may deliberately carry a subset.
+    {
+        ITstream& is = lookup("activeSpecies");
+        token firstToken(is);
+        is.rewind();
+
+        if (firstToken.isWord() && firstToken.wordToken() == "fromMechanism")
+        {
+            readMechanismSpecies();
+        }
+        else
+        {
+            is >> speciesNames_;
+        }
+    }
     nSpecies_ = speciesNames_.size();
 
     speciesChargeNumbers_.setSize(nSpecies_);
@@ -191,8 +351,11 @@ plasmaSpecies::plasmaSpecies
         const word& sName = speciesNames_[i];
         speciesIDs_.insert(sName, i);
 
-        // Each species must have a dictionary under speciesProperties
-        if (!propsDict.found(sName))
+        // A derived species need not have its own sub-dictionary: the
+        // defaults plus the mechanism's charge and mass are enough to carry
+        // it. An explicitly listed species still must, so a typo in a
+        // hand-written activeSpecies list is still caught.
+        if (!propsDict.found(sName) && !fromMechanism_)
         {
             FatalIOErrorInFunction(*this)
                 << "Species '" << sName << "' is listed in 'activeSpecies' but "
@@ -202,15 +365,37 @@ plasmaSpecies::plasmaSpecies
 
         // Build merged properties (defaults + overrides)
         dictionary mergedDict(defaultSpeciesDict_);
-        mergedDict.merge(propsDict.subDict(sName));
+        if (propsDict.found(sName))
+        {
+            mergedDict.merge(propsDict.subDict(sName));
+        }
         speciesDicts_.insert(sName, mergedDict);
 
-        // Read charge number (required)
+        // Charge and mass: from the case if stated, otherwise from the
+        // mechanism. Both are properties of the SPECIES, not of the
+        // simulation, and the mechanism computes them from the elemental
+        // composition -- so a case that omits them cannot get them wrong.
+        //
+        // The tutorial that motivated this carried `mass 1.67e-26` for its
+        // generic positive ion. That is the proton mass; N2+ is 4.65e-26, so
+        // it was out by a factor of 2.8. Nothing detected it, because nothing
+        // else in the case knew what the ion was supposed to be.
+        if (!mergedDict.found("charge") && mechCharge_.found(sName))
+        {
+            mergedDict.add("charge", mechCharge_[sName]);
+        }
+        if (!mergedDict.found("mass") && mechMass_.found(sName))
+        {
+            mergedDict.add("mass", mechMass_[sName]);
+        }
+
         if (!mergedDict.found("charge"))
         {
             FatalIOErrorInFunction(*this)
                 << "Species '" << sName << "' is missing required entry "
                 << "'charge' in " << objectPath() << nl
+                << "    It can also come from the mechanism: give"
+                << " `mechanism` in the `mechanismSpecies` dictionary." << nl
                 << exit(FatalIOError);
         }
 
@@ -219,6 +404,8 @@ plasmaSpecies::plasmaSpecies
             FatalIOErrorInFunction(*this)
                 << "Species '" << sName << "' is missing required entry "
                 << "'mass' in " << objectPath() << nl
+                << "    It can also come from the mechanism: give"
+                << " `mechanism` in the `mechanismSpecies` dictionary." << nl
                 << exit(FatalIOError);
         }
 

@@ -56,7 +56,10 @@ fluxRequired
 {
     default         no;
     n_e             ;
-    n_pIon          ;
+    n_N2p            ;
+    n_O2p            ;
+    n_Om             ;
+    n_O2m            ;
     n_nIon          ;
     ePotential      ;
 }

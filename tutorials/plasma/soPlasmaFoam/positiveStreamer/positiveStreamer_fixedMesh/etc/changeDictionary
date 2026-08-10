@@ -48,8 +48,9 @@ ePotential
 
         active_electrode
         {
-            type            fixedValue;
-            value           uniform $appliedVoltage;
+            type            uniformFixedValue;
+            uniformValue    table ((0 0) (9.375000e-11 18750));
+            value           uniform 0;
         }
 
         "procBoundary.*"
@@ -144,9 +145,153 @@ n_e
     }
 }
 
-n_pIon
+n_N2p
 {
     internalField   uniform 1e13;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            zeroGradient;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+n_O2p
+{
+    internalField   uniform 1e5;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            zeroGradient;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+n_Om
+{
+    internalField   uniform 1e5;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            zeroGradient;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+n_O2m
+{
+    internalField   uniform 1e5;
 
     boundaryField
     {

@@ -1,9 +1,16 @@
+/* Links libplasmaSpecies so that `activeSpecies fromMechanism` is resolved by
+   the same code the solver uses. Deriving the list twice is how this utility
+   came to create no fields at all while the solver expected five. */
 EXE_INC = \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaSpecies/lnInclude \
+    -I$(SoPLASMA_SRC)/models/electromagnetics/lnInclude \
+    -I$(SoPLASMA_SRC)/constants/lnInclude \
     -I$(LIB_SRC)/OpenFOAM/lnInclude \
     -I$(LIB_SRC)/finiteVolume/lnInclude \
     -I$(LIB_SRC)/meshTools/lnInclude
 
 EXE_LIBS = \
+    -L$(FOAM_USER_LIBBIN) -lplasmaSpecies \
     -lOpenFOAM \
     -lfiniteVolume \
     -lmeshTools

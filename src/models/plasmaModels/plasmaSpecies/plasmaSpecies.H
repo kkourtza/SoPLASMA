@@ -130,6 +130,15 @@ protected:
             //- Background gas number density N [1/m3]
             dimensionedScalar backgroundDensity_;
 
+            //- True when activeSpecies was derived from the mechanism
+            bool fromMechanism_ = false;
+
+            //- Charge number and mass [kg] per species, as the mechanism
+            //  declares them. Used only where the case does not state its own,
+            //  so an explicit value always wins.
+            HashTable<scalar> mechCharge_;
+            HashTable<scalar> mechMass_;
+
             //- Total neutral number density field [1/m3] 
             //- Sum of nBackground_ + all active neutrals
             volScalarField totalNeutralDensity_;
@@ -184,7 +193,31 @@ protected:
             //- Species that are inert (transport only, no chemical reactions)
             labelList nonReactingSpeciesIDs_;
 
+
+    // Private Member Functions
+
+        //- Fill speciesNames_, mechCharge_ and mechMass_ from the compiled
+        //  mechanism dictionary, for `activeSpecies fromMechanism;`
+        void readMechanismSpecies();
+
+
 public:
+
+    // Static Member Functions
+
+        //- Species list implied by `activeSpecies fromMechanism;`.
+        //
+        //  Static and dictionary-only because plasmaCreateSpeciesFields needs
+        //  the same list before a mesh exists, and it must create exactly the
+        //  fields the solver will look for. Optionally returns the charge
+        //  numbers and masses [kg] the mechanism declares.
+        static wordList speciesFromMechanism
+        (
+            const dictionary& speciesDict,
+            HashTable<scalar>* chargeOut = nullptr,
+            HashTable<scalar>* massOut = nullptr
+        );
+
 
     //- Runtime type information
     TypeName("plasmaSpecies");

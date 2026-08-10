@@ -56,6 +56,7 @@ Author
 #include "multiRegionPoisson.H"
 #include "dielectricRegion.H"
 #include "plasmaSpecies.H"
+#include "plasmaBoltzmann.H"
 #include "plasmaTransport.H"
 #include "driftDiffusion.H"
 #include "plasmaSimulationDiagnostics.H"
@@ -100,6 +101,52 @@ int main(int argc, char *argv[])
     //- Create the electromagnetics model
     autoPtr<electromagneticsModel> em =
         electromagneticsModel::New(gasMesh(), dielectricFvMeshes);
+
+    //- Solve the EEDF and write the rate/transport tables, BEFORE anything
+    //  reads them.
+    //
+    //  Ordering matters and is not obvious: the species transport models are
+    //  built inside plasmaSpecies, and a `fromMechanism` mobility looks for its
+    //  table in its constructor. plasmaReactionRates -- which owns the
+    //  mechanism -- is not built until plasmaTransport, several lines later. So
+    //  the sweep has to be kicked off here, from the dictionary, rather than
+    //  from the class that happens to own the mechanism afterwards.
+    //
+    //  Idempotent: plasmaReactionRates calls the same thing and finds the
+    //  tables already current.
+    {
+        IOdictionary transportDict
+        (
+            IOobject
+            (
+                "plasmaTransportProperties",
+                runTime.constant(),
+                gasMesh(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+
+        if (transportDict.found("chemistry"))
+        {
+            const dictionary& chem = transportDict.subDict("chemistry");
+            const fileName mechFile = chem.get<fileName>("mechanism");
+
+            plasmaBoltzmann::ensureTables
+            (
+                chem,
+                chem.getOrDefault<fileName>
+                (
+                    "manifest", mechFile.lessExt() + ".mech.json"
+                ),
+                chem.getOrDefault<fileName>
+                (
+                    "tableDir", "constant/plasmaTables"
+                ),
+                word::null
+            );
+        }
+    }
 
     //- Create the plasmaSpecies model
     plasmaSpecies species(gasMesh(), em());

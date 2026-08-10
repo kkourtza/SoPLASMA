@@ -15,12 +15,33 @@ FoamFile
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * /
 #include "../configuration/config"
 
-activeSpecies (e pIon);
+// Derived from the mechanism rather than repeated here. The mechanism already
+// knows which species its reactions create; listing them again is how a case
+// ends up NOT transporting an ion the chemistry produces, which breaks charge
+// conservation silently. An explicit list still works and still wins.
+activeSpecies fromMechanism;
+
+mechanismSpecies
+{
+    mechanism   "constant/air_plasma.foam";
+
+    // charged | chargedAndExcited | all
+    //   charged            electron + ions. The minimum for a self-consistent
+    //                      discharge -- these carry the space charge.
+    //   chargedAndExcited  adds excited states and radicals; needed once
+    //                      stepwise ionisation or quenching matters, at one
+    //                      transport equation each.
+    //   all                also transports the background gas, which is held
+    //                      fixed by construction, so this is rarely wanted.
+    include     charged;
+}
 
 backgroundGas
 {
   name  "Air";
-  numberDensity   2.4463e25;
+  // numberDensity omitted: closed by the ideal gas law from
+  // pressure and the temperature stated below.
+  pressure        101325;
   energy
   {
     solve   false;
@@ -41,29 +62,69 @@ speciesProperties
     {
       fluxScheme                $driftDiffusionFluxScheme;
 
+      // Electron transport from the Boltzmann solver's own EEDF, so the
+      // electrons and the chemistry are described by the same cross sections.
+      //
+      // The alternative -- the powerLaw fit this case used to carry -- is still
+      // available and is kept below, commented, for comparison. It is not
+      // wrong, but it is INDEPENDENT of the mechanism: nothing detects it
+      // disagreeing with the rate coefficients the same run interpolates.
+      //
+      // Tables hold mu*N and D*N; the evaluator divides by the gas density, so
+      // the values follow density automatically. They were solved at ONE
+      // mixture and gas temperature, which is the same local-field assumption
+      // the rate coefficients already make.
       mobility
       {
-        type                    powerLaw;
-        lookupVariable          E;
-        amplitude               2.398; 
-        exponent                -0.26;
+        type                    fromMechanism;
+        quantity                muN;
+        tableDir                "constant/plasmaTables";
+        lookupVariable          reducedE;
       }
 
       diffusivity
       {
-        type                    powerLaw;
-        lookupVariable          E;
-        amplitude               4.3628e-3;  
-        exponent                0.22;
+        type                    fromMechanism;
+        quantity                DLN;
+        tableDir                "constant/plasmaTables";
+        lookupVariable          reducedE;
       }
+
+      // Hand-fitted alternative, kept for comparison:
+      //   mobility    { type powerLaw; lookupVariable E; amplitude 2.398;    exponent -0.26; }
+      //   diffusivity { type powerLaw; lookupVariable E; amplitude 4.3628e-3; exponent 0.22; }
     }
   }
 
-  pIon
+  N2p
   {
     transportModel            immobile;
     charge                    +1;
-    mass                      1.67e-26;
+    mass                      4.6495e-26;
+    minNumberDensity          1e5;
+  }
+
+  O2p
+  {
+    transportModel            immobile;
+    charge                    +1;
+    mass                      5.3137e-26;
+    minNumberDensity          1e5;
+  }
+
+  Om
+  {
+    transportModel            immobile;
+    charge                    -1;
+    mass                      2.6569e-26;
+    minNumberDensity          1e5;
+  }
+
+  O2m
+  {
+    transportModel            immobile;
+    charge                    -1;
+    mass                      5.3137e-26;
     minNumberDensity          1e5;
   }
 }

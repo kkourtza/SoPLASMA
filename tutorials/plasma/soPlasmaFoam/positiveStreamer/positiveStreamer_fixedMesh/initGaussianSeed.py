@@ -11,7 +11,8 @@ y0 = 0.01      # 1.0 cm height
 bg = 1e13        # Case 1 background 
 
 sol_path = './'
-field_path = os.path.join(sol_path, '0', 'n_pIon')
+field_paths = [os.path.join(sol_path, '0', f)
+               for f in ('n_N2p', 'n_e')]
 
 # 1. Read Mesh for coordinates
 # Returns x, y, z arrays for cell centers
@@ -23,35 +24,39 @@ y_dist2 = (y - y0)**2
 n_values = bg + N0 * np.exp(-(r2 + y_dist2) / (sigma**2))
 
 # 3. Read original file
-with open(field_path, 'r') as f:
+for field_path in field_paths:
+  with open(field_path, 'r') as f:
     lines = f.readlines()
 
 # 4. Filter and Reconstruct the file
-new_lines = []
-skip = False
+  new_lines = []
+  skip = False
 
-for line in lines:
-    # Identify the internalField line (uniform or nonuniform)
-    if line.strip().startswith("internalField"):
-        new_lines.append(f"internalField   nonuniform List<scalar> {len(n_values)}\n(\n")
-        # Add all calculated values
-        for val in n_values:
-            new_lines.append(f"{val}\n")
-        new_lines.append(");\n")
-        skip = True # Start skipping the old internalField data
-        continue
+  for line in lines:
+      # Identify the internalField line (uniform or nonuniform)
+      if line.strip().startswith("internalField"):
+          new_lines.append(f"internalField   nonuniform List<scalar> {len(n_values)}\n(\n")
+          # Add all calculated values
+          for val in n_values:
+              new_lines.append(f"{val}\n")
+          new_lines.append(");\n")
+          skip = True # Start skipping the old internalField data
+          continue
     
-    # Identify the start of the boundaryField to stop skipping
-    if "boundaryField" in line:
-        skip = False
+      # Identify the start of the boundaryField to stop skipping
+      if "boundaryField" in line:
+          skip = False
     
-    if not skip:
-        # Avoid double-adding the internalField if the original was multi-line
-        if line.strip() != ");" or "boundaryField" not in "".join(new_lines[-2:]):
-            new_lines.append(line)
+      if not skip:
+          # Avoid double-adding the internalField if the original was multi-line
+          if line.strip() != ");" or "boundaryField" not in "".join(new_lines[-2:]):
+              new_lines.append(line)
 
-# 5. Write back to 0/n_pIon
-with open(field_path, 'w') as f:
-    f.writelines(new_lines)
+  new_lines = [l.replace('$internalField', f'uniform {bg}')
+               for l in new_lines]
 
-print(f"Applied Gaussian seed + {bg} background to {field_path}")
+  # 5. Write back
+  with open(field_path, 'w') as f:
+      f.writelines(new_lines)
+
+  print(f"Applied Gaussian seed + {bg} background to {field_path}")

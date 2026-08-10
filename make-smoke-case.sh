@@ -13,11 +13,12 @@
 set -e
 source /usr/lib/openfoam/openfoam2412/etc/bashrc >/dev/null 2>&1 || true
 export SoPLASMA=$HOME/soplasma-scratch SoPLASMA_SRC=$HOME/soplasma-scratch/src SoPLASMA_ETC=$HOME/soplasma-scratch/etc
-SRC=$HOME/streamer-case
+SRC=$HOME/soplasma-scratch/tutorials/plasma/soPlasmaFoam/positiveStreamer/positiveStreamer_fixedMesh
 CASE=$HOME/streamer-smoke
 
 rm -rf "$CASE"; cp -r "$SRC" "$CASE"; cd "$CASE"
 rm -rf .snapshot0 processor* [0-9]*e-* logs log.* 2>/dev/null || true
+sed -i 's|^python initGaussianSeed.py|~/ct-env/bin/python initGaussianSeed.py|' Allrun-serial
 
 # Allclean does `rm -r 0`, and Allrun then does `cp -r 0.orig/* 0/`, which
 # fails when 0/ no longer exists -- so ePotential and surfCharge never arrive
