@@ -756,6 +756,15 @@ public:
 //  rate coefficient in the run, so it adds no new error -- but it is not exact,
 //  and it is why `eedfRefresh` exists.
 //
+//  The gas number density is NOT given here. It is a property of the gas, not
+//  of a species' mobility, and it is already declared once in
+//  `backgroundGas` -- as `pressure` and `T`, closed by the ideal gas law. It
+//  reaches this evaluator through the registered `totalNeutralDensity` field,
+//  so every species and every property necessarily uses the same value, and a
+//  case cannot end up with two densities that disagree. Reading it from the
+//  field also means a spatially varying density (a heated channel, a shock)
+//  works with no further change.
+//
 //  Dictionary:
 //      mobility
 //      {
@@ -774,13 +783,10 @@ class MechanismProperty
 
     word lookupVariable_;
 
-    //- Name of the registered field holding the gas number density, used to
-    //  turn the reduced quantity into the physical one
+    //- Registered field holding the gas number density, used to turn the
+    //  reduced quantity into the physical one. Overridable by name only --
+    //  never by value, so that the density has exactly one definition.
     word densityField_;
-
-    //- Fallback when no density field is registered: the uniform background
-    //  density, which is the usual case for a fixed-composition run
-    scalar uniformN_;
 
 public:
 
@@ -796,8 +802,10 @@ public:
         Base(modelType, dict, mesh, propertyName, dims),
         table_(),
         lookupVariable_(dict.getOrDefault<word>("lookupVariable", "reducedE")),
-        densityField_(dict.getOrDefault<word>("densityField", "N_gas")),
-        uniformN_(dict.getOrDefault<scalar>("gasNumberDensity", 0.0))
+        densityField_
+        (
+            dict.getOrDefault<word>("densityField", "totalNeutralDensity")
+        )
     {
         const word quantity = dict.getOrDefault<word>("quantity", "muN");
         const fileName dir =
@@ -842,15 +850,25 @@ public:
         return dimensionedScalar(this->dims_, 0.0);
     }
 
-    //- Local gas number density, for reducing mu*N to mu
-    scalar densityAt(const label celli) const
+    //- The gas number density field. Fatal if absent: guessing a density would
+    //  scale every mobility in the run by an unknown factor while looking
+    //  perfectly healthy.
+    const volScalarField& gasDensity() const
     {
-        if (this->mesh_.template foundObject<volScalarField>(densityField_))
+        if (!this->mesh_.template foundObject<volScalarField>(densityField_))
         {
-            return this->mesh_.template lookupObject<volScalarField>
-                (densityField_).primitiveField()[celli];
+            FatalErrorInFunction
+                << "fromMechanism evaluator '" << this->propertyName()
+                << "' cannot find the gas number density field '"
+                << densityField_ << "'." << nl
+                << "    The tables hold REDUCED quantities (mu*N, D*N), so a"
+                << " density is required to recover the physical value." << nl
+                << "    It comes from `backgroundGas` in"
+                << " plasmaSpeciesProperties -- give `pressure` and `T`, or"
+                << " `numberDensity` directly." << nl
+                << exit(FatalError);
         }
-        return uniformN_;
+        return this->mesh_.template lookupObject<volScalarField>(densityField_);
     }
 
     tmp<volScalarField> evaluate() const override
@@ -878,36 +896,29 @@ public:
         );
         const volScalarField& var = tVar();
 
-        if (uniformN_ <= 0
-         && !this->mesh_.template foundObject<volScalarField>(densityField_))
-        {
-            FatalErrorInFunction
-                << "fromMechanism evaluator '" << this->propertyName()
-                << "' has no gas density: field '" << densityField_
-                << "' is not registered and `gasNumberDensity` was not given."
-                << nl
-                << "    The tables hold REDUCED quantities (mu*N, D*N), so a"
-                << " density is required to recover the physical value."
-                << nl << exit(FatalError);
-        }
+        const volScalarField& N = gasDensity();
 
         scalarField& f = field.primitiveFieldRef();
         const scalarField& x = var.primitiveField();
+        const scalarField& n = N.primitiveField();
         forAll(f, celli)
         {
-            f[celli] = table_.interpolateValue(x[celli])/densityAt(celli);
+            f[celli] = table_.interpolateValue(x[celli])/n[celli];
         }
 
+        // Boundaries take the density from the SAME field's boundary values
+        // rather than a cell value standing in for all of them, so a patch
+        // sitting in gas at a different density is handled correctly.
         forAll(field.boundaryField(), patchi)
         {
             if (!field.boundaryField()[patchi].coupled())
             {
                 scalarField& pF = field.boundaryFieldRef()[patchi];
                 const scalarField& pX = var.boundaryField()[patchi];
-                const scalar N = (uniformN_ > 0) ? uniformN_ : densityAt(0);
+                const scalarField& pN = N.boundaryField()[patchi];
                 forAll(pF, i)
                 {
-                    pF[i] = table_.interpolateValue(pX[i])/N;
+                    pF[i] = table_.interpolateValue(pX[i])/pN[i];
                 }
             }
         }
@@ -922,10 +933,10 @@ public:
             this->mesh_, lookupVariable_, this->propertyName()
         );
         const scalarField& pX = tVar().boundaryField()[patchi];
-        const scalar N = (uniformN_ > 0) ? uniformN_ : densityAt(0);
+        const scalarField& pN = gasDensity().boundaryField()[patchi];
         forAll(pField, i)
         {
-            pField[i] = table_.interpolateValue(pX[i])/N;
+            pField[i] = table_.interpolateValue(pX[i])/pN[i];
         }
     }
 };
