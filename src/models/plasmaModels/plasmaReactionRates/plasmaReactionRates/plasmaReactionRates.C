@@ -45,6 +45,11 @@ void Foam::plasmaReactionRates::readMechanism(const fileName& dictPath)
     mechanismName_ = dict.get<word>("mechanismName");
     mechanismHash_ = dict.get<word>("mechanismHash");
 
+    // Required, not optional. Defaulting it would let a mechanism compiled by
+    // an older mechc load against code that assumes the declaration exists,
+    // and the failure mode is an electron that silently matches nothing.
+    electronSpecies_ = dict.get<word>("electronSpecies");
+
     const label nProcesses = dict.get<label>("nProcesses");
 
     // `processes` lists only the entries that are fluid reactions; the manifest
@@ -62,7 +67,10 @@ void Foam::plasmaReactionRates::readMechanism(const fileName& dictPath)
         r.index     = e.get<label>("index");
         r.id        = e.get<word>("id");
         r.target    = e.get<word>("target");
+        r.reactants = e.get<wordList>("reactants");
         r.products  = e.get<wordList>("products");
+        r.collider  = e.getOrDefault<word>("collider", word::null);
+        r.rateScale = e.getOrDefault<scalar>("rateScale", 1.0);
         r.threshold = e.getOrDefault<scalar>("threshold", 0.0);
 
         if (r.index < 0 || r.index >= nProcesses)

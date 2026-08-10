@@ -94,17 +94,50 @@ public:
         //  this string; the index is derived and only used for fast access.
         word id;
 
-        //- Target species name
+        //- Target species name. This is NOT the whole left-hand side: it is
+        //  the heavy collision partner, and it exists separately from
+        //  `reactants` because the rate coefficient is per unit TARGET
+        //  density, which is a question about the rate rather than about
+        //  stoichiometry.
         word target;
 
-        //- Product species names, electrons written as "e"
+        //- Full left-hand side, electron included. Explicit precisely because
+        //  it used to be implicit: consumers were expected to remember that
+        //  every electron-impact process consumes one electron, and the
+        //  source-term assembly did not, so each excitation manufactured an
+        //  electron from nothing.
+        wordList reactants;
+
+        //- Full right-hand side. The electron appears under the mechanism's
+        //  declared name (see electronSpecies()), not as a bare "e".
         wordList products;
+
+        //- Third body, for three-body processes; empty otherwise. A catalyst:
+        //  it is on both sides and cancels, so it is deliberately NOT in
+        //  reactants/products (which must balance on their own). It enters only
+        //  as a density factor, which is what makes the rate third order.
+        word collider;
+
+        //- Unit conversion applied to the tabulated coefficient, so that
+        //  k*rateScale is in m^6/s for a three-body process. 1 otherwise.
+        //  Emitted as a number by mechc so this side never has to know what a
+        //  `density-cm3` curve is.
+        scalar rateScale = 1.0;
+
+        //- True when the rate is third order and needs the collider density
+        bool threeBody() const { return !collider.empty(); }
 
         //- Energy the electron loses [eV]; 0 where the mechanism gives none
         //  (attachment removes the electron rather than degrading it)
         scalar threshold = 0.0;
     };
 
+
+    //- The electron under the name the mechanism uses in `reactants` and
+    //  `products`. A case names its own electron species freely, so the two
+    //  must be matched through this declaration rather than by assuming a
+    //  spelling; code that tested for a literal "e" worked by coincidence.
+    const word& electronSpecies() const { return electronSpecies_; }
 
     //- Charge of a mechanism species in units of e, or 0 if unknown.
     //  OpenFOAM cannot know the charge of a species it does not transport, so
@@ -131,6 +164,10 @@ private:
 
         //- Charge of each mechanism species, from the dictionary
         HashTable<label> charge_;
+
+        //- Mechanism's name for the electron, from `electronSpecies` in the
+        //  mechanism dictionary
+        word electronSpecies_ = "Electron";
 
         //- One rate-coefficient table per reaction, same order.
         //  plasmaRateTable rather than the tabulated1D evaluator because

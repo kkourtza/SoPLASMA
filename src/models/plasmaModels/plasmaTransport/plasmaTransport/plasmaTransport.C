@@ -909,7 +909,13 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         const label tgt = idOf(rx.target);
 
         scalarField Rj(nCells);
-        if (sourceModel_ == smTownsend && rates_->hasTownsend(r))
+        // Three-body processes always take the k path. alpha_j/N is a
+        // SECOND-order construction -- nu_j/N divided by drift speed -- so it
+        // has neither the units nor the collider density a third-order rate
+        // needs, and applying the collider factor on top of it would count the
+        // density twice.
+        if (sourceModel_ == smTownsend && rates_->hasTownsend(r)
+         && !rx.threeBody())
         {
             // alpha_j/N is already mole-fraction weighted (it is nu_j/N over
             // v_drift), so neither a composition factor nor a target density
@@ -941,29 +947,82 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 forAll(nTarget, c) { nTarget[c] = x*nBg[c]; }
             }
             forAll(Rj, c) { Rj[c] = kj[c]*neI[c]*nTarget[c]; }
+
+            // Third body. e + O2 + M -> O2- + M is the dominant electron loss
+            // channel in atmospheric air at low E/N, and it is third order:
+            // without the collider density the rate is not merely inaccurate,
+            // it has the wrong units and the wrong pressure scaling. rateScale
+            // carries the cm^3 -> m^3 conversion for the density-normalised
+            // curve LXCat tabulates, so that k*rateScale is in m^6/s.
+            if (rx.threeBody())
+            {
+                const label cid = idOf(rx.collider);
+                scalarField nCol(nCells);
+                if (cid >= 0)
+                {
+                    nCol = species_.numberDensities()[cid].primitiveField();
+                }
+                else
+                {
+                    const scalar xc =
+                        mechComposition_.getOrDefault<scalar>(rx.collider, 0.0);
+                    if (xc <= 0)
+                    {
+                        FatalErrorInFunction
+                            << "Reaction " << rx.id << " has collider '"
+                            << rx.collider << "', which is neither transported"
+                            << " nor in the mechanism composition" << nl
+                            << exit(FatalError);
+                    }
+                    forAll(nCol, c) { nCol[c] = xc*nBg[c]; }
+                }
+                forAll(Rj, c) { Rj[c] *= rx.rateScale*nCol[c]; }
+            }
         }
 
-        // Reactants. Every process here is electron-impact, so exactly one
-        // electron is consumed on the left; the mechanism's `products` list is
-        // the FULL right-hand side and puts the scattered electron back, which
-        // is why excitation nets to zero and ionisation to +1 rather than +2.
-        // Omitting this manufactured an electron out of every excitation.
-        src[eIdx] -= Rj;
-        if (tgt >= 0) { src[tgt] -= Rj; }
-
-        // Products counted WITH MULTIPLICITY: (N2p e e) adds two electrons.
-        label nOut = 0;
-        forAll(rx.products, i)
+        // Both sides are applied by the SAME loop, with only the sign
+        // differing. The left-hand side used to be handled by hand -- subtract
+        // the target, and remember that an electron is consumed too -- and the
+        // "remember" is what failed: the electron was never subtracted, so
+        // every excitation created one out of nothing and every ionisation
+        // created two instead of one. The mechanism now states its reactants
+        // explicitly, and the code below cannot treat the two sides
+        // inconsistently because it does not distinguish them.
+        //
+        // Counted WITH MULTIPLICITY throughout: (N2+ e e) really does add two
+        // electrons, and e + N2 really does consume one.
+        label dNe = 0;
+        for (label side = 0; side < 2; ++side)
         {
-            const word& nm = rx.products[i];
-            if (nm == "e") { ++nOut; }
-            const label pid = (nm == "e") ? eIdx : idOf(nm);
-            if (pid >= 0)
+            const wordList& names = side ? rx.products : rx.reactants;
+            const scalar sign = side ? 1.0 : -1.0;
+
+            forAll(names, i)
             {
-                src[pid] += Rj;
-            }
-            else
-            {
+                const word& nm = names[i];
+
+                // The electron is matched through the mechanism's declared
+                // name, not a hard-coded "e": a case is free to call its own
+                // electron species anything, and a literal comparison would
+                // silently match nothing for a case that did.
+                const bool isElectron = (nm == rates_->electronSpecies());
+                if (isElectron) { dNe += side ? 1 : -1; }
+
+                const label pid = isElectron ? eIdx : idOf(nm);
+                if (pid >= 0)
+                {
+                    if (side) { src[pid] += Rj; } else { src[pid] -= Rj; }
+                    continue;
+                }
+                if (!side)
+                {
+                    // An untransported REACTANT is normal and benign: N2 and O2
+                    // are background gas, held fixed by construction. Its
+                    // depletion is not tracked, which is the whole point of
+                    // calling it background.
+                    continue;
+                }
+                {
                 // Discarding an untransported product is NOT uniformly benign,
                 // and treating it so is how a run looks healthy while being
                 // wrong. Two different situations:
@@ -1005,13 +1064,14 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                         << " Its population is lost, but charge is unaffected."
                         << endl;
                 }
+                }
             }
         }
 
-        // Electron balance classifies the reaction from its own products:
+        // Electron balance from the reaction's own stoichiometry, both sides:
         // +1 ionisation, -1 attachment (real attachment, its own cross
         // section), 0 excitation/dissociation.
-        const label dE = nOut - 1;
+        const label dE = dNe;
         if (dE > 0)      { sIon += dE*Rj; }
         else if (dE < 0) { sAtt += (-dE)*Rj; }
     }
