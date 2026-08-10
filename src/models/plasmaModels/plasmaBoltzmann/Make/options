@@ -1,0 +1,21 @@
+/* The Boltzmann solver is an ordinary C++17 shared library with no OpenFOAM,
+   no Cantera and no YAML dependency -- that is what makes it linkable here.
+   BOLTZMANN_DIR defaults to the sibling checkout; override it to point
+   somewhere else. Only MechTables.H is included, so no Eigen include path is
+   needed: constructing a Mechanism happens inside the library.
+
+   The rpath is not optional. Without it the solver links but will not START --
+   the loader cannot find libBoltzmannSolver.so at run time -- and the fix
+   would otherwise be an LD_LIBRARY_PATH every user has to know about. */
+BOLTZMANN_DIR ?= $(HOME)/Projects/BoltzmannSolver
+
+EXE_INC = \
+    -I$(LIB_SRC)/finiteVolume/lnInclude \
+    -I$(LIB_SRC)/meshTools/lnInclude \
+    -I$(BOLTZMANN_DIR)/include
+
+LIB_LIBS = \
+    -lfiniteVolume \
+    -lmeshTools \
+    -L$(BOLTZMANN_DIR)/build -lBoltzmannSolver \
+    -Wl,-rpath,$(BOLTZMANN_DIR)/build

@@ -1,9 +1,11 @@
 /* Follows the SoPLASMA convention: include paths via $(SoPLASMA_SRC)/.../lnInclude,
-   libraries via -L$(FOAM_USER_LIBBIN). No external dependency at this stage --
-   the rate tables are plain OpenFOAM interpolationTable files, so Stage 1 needs
-   neither Cantera nor BoltzmannSolver linked in. */
+   libraries via -L$(FOAM_USER_LIBBIN). The rate tables are plain OpenFOAM
+   interpolationTable files, so nothing here needs Cantera; libplasmaBoltzmann
+   is linked so the tables can be produced in process at start-up instead of by
+   a separate offline command. */
 
 EXE_INC = \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaBoltzmann/lnInclude \
     -I$(LIB_SRC)/finiteVolume/lnInclude \
     -I$(LIB_SRC)/meshTools/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/genericPlasmaProperties/lnInclude \
@@ -11,6 +13,7 @@ EXE_INC = \
     -I$(SoPLASMA_SRC)/constants/lnInclude
 
 LIB_LIBS = \
+    -L$(FOAM_USER_LIBBIN) -lplasmaBoltzmann \
     -lfiniteVolume \
     -lmeshTools \
     -L$(FOAM_USER_LIBBIN) \

@@ -20,6 +20,7 @@ License
 \*---------------------------------------------------------------------------*/
 
 #include "plasmaReactionRates.H"
+#include "plasmaBoltzmann.H"
 #include "IFstream.H"
 #include "IStringStream.H"
 #include "dictionary.H"
@@ -343,6 +344,24 @@ Foam::plasmaReactionRates::plasmaReactionRates
     (
         refreshDict.getOrDefault<word>("outOfBounds", "extrapolate")
     );
+
+    // Solve the EEDF and write the tables BEFORE reading them. The mechanism
+    // hash just read is what decides whether an existing set is current, so a
+    // case cannot silently run against tables built from a different mechanism
+    // -- which previously required a human to remember to re-run genMechTables
+    // and copy the output in.
+    plasmaBoltzmann::ensureTables
+    (
+        refreshDict,
+        refreshDict.getOrDefault<fileName>
+        (
+            "manifest",
+            mechanismDict.lessExt() + ".mech.json"
+        ),
+        tableDir,
+        word(mechanismHash_)
+    );
+
     buildEvaluators(tableDir);
     readRefreshControl(refreshDict);
     // The first correct() happens here, when the lookup field is still
