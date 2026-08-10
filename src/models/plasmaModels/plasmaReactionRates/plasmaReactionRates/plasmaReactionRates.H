@@ -157,7 +157,7 @@ private:
 
         //- Mechanism name and the hash of the master file it was compiled from
         word mechanismName_;
-        word mechanismHash_;
+        string mechanismHash_;
 
         //- Reactions, in canonical manifest order
         List<reaction> reactions_;
@@ -367,7 +367,7 @@ public:
 
         //- Mechanism identity, for reporting and for staleness checks
         const word& mechanismName() const { return mechanismName_; }
-        const word& mechanismHash() const { return mechanismHash_; }
+        const string& mechanismHash() const { return mechanismHash_; }
 };
 
 

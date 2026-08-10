@@ -43,7 +43,11 @@ void Foam::plasmaReactionRates::readMechanism(const fileName& dictPath)
     dictionary dict(is);
 
     mechanismName_ = dict.get<word>("mechanismName");
-    mechanismHash_ = dict.get<word>("mechanismHash");
+    // Read as a STRING, not a word: the hash is hex and may begin with a
+    // digit, which an OpenFOAM word may not. mechc quotes it for the same
+    // reason -- a quoted token is a string, and asking for a word here would
+    // reject the very file that was written to be readable.
+    mechanismHash_ = string(dict.get<string>("mechanismHash"));
 
     // Required, not optional. Defaulting it would let a mechanism compiled by
     // an older mechc load against code that assumes the declaration exists,
@@ -94,7 +98,7 @@ void Foam::plasmaReactionRates::readMechanism(const fileName& dictPath)
     }
 
     Info<< "plasmaReactionRates: mechanism " << mechanismName_
-        << " [" << mechanismHash_ << "], "
+        << " [" << mechanismHash_.c_str() << "], "
         << reactions_.size() << " electron-impact reactions of "
         << nProcesses << " processes" << endl;
 }

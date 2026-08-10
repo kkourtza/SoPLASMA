@@ -1094,17 +1094,29 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             // that are NOT transported, where the case has no opinion.
             const scalar q = species_.speciesChargeNumbers()[sIdx];
             if (mag(q) < SMALL) continue;
-            forAll(src[sIdx], c) { netQ += q*src[sIdx][c]; }
+            forAll(src[sIdx], c)
+            {
+                netQ += q*src[sIdx][c];
+
+                // Normalise against the total charge TRAFFIC, not against the
+                // ionisation source. netQ is a near-total cancellation, so its
+                // roundoff floor is set by the largest term being cancelled --
+                // and once three-body attachment is present that is attachment,
+                // running at ~6e7 s^-1, not ionisation. Dividing by the
+                // ionisation source made pure roundoff read as 2.9e-05 and trip
+                // a threshold it had passed at 2.5e-09 the run before.
+                refQ += mag(q*src[sIdx][c]);
+            }
         }
-        forAll(sIon, c) { refQ += sIon[c]; }
         reduce(netQ, sumOp<scalar>());
         reduce(refQ, sumOp<scalar>());
 
-        // Tolerance is 1e-6, not machine epsilon. netQ is the near-total
-        // cancellation of ~1e6 cell values each ~1e22, so its relative
-        // roundoff floor sits around 1e-9 -- a tighter threshold reports
-        // arithmetic, not physics. A genuinely missing charged product is an
-        // O(1) violation, so nothing real hides under this.
+        // Tolerance is 1e-6, not machine epsilon: netQ is a near-total
+        // cancellation over ~1e6 cells, so a few orders above double precision
+        // is arithmetic rather than physics. A genuinely missing charged
+        // product is an O(1) violation of this ratio -- every reaction that
+        // creates a charge without its counter-charge contributes with the
+        // same sign -- so nothing real hides underneath.
         // Checked EVERY step, and the running maximum is what gets reported.
         // Reporting only the first step would grade the run on its quietest
         // moment, before the discharge has produced any chemistry to unbalance.
@@ -1119,7 +1131,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 WarningInFunction
                     << "charge is not conserved by the mechanism source terms: "
                     << "sum(q_i S_i) = " << netQ << ", which is " << rel
-                    << " of the ionisation source." << nl
+                    << " of the total charge traffic sum|q_i S_i|." << nl
                     << "    Every charged product must be a transported species."
                     << endl;
                 chargeWarned_ = true;
@@ -1131,7 +1143,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 // a check that never ran. Rate-limited to order-of-magnitude
                 // increases so it does not print every step.
                 Info<< "plasmaTransport: charge balance OK, |sum(q_i S_i)| = "
-                    << rel << " of the ionisation source (roundoff)" << endl;
+                    << rel << " of sum|q_i S_i| (roundoff)" << endl;
             }
         }
     }

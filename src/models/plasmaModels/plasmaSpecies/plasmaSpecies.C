@@ -12,6 +12,7 @@
 \*---------------------------------------------------------------------------*/
 
 #include "plasmaSpecies.H"
+#include "plasmaConstants.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -104,7 +105,42 @@ plasmaSpecies::plasmaSpecies
     
     const dictionary& bgDict = subDict("backgroundGas");
     backgroundName_ = bgDict.get<word>("name");
-    backgroundDensity_.value() = bgDict.get<scalar>("numberDensity");
+    // Background number density: either stated, or closed by the ideal gas law
+    // from pressure and temperature.
+    //
+    // The tutorial hard-coded 2.4463e25, which IS p/(k_B T) at 1 atm and 300 K
+    // -- but written as a literal it silently stops being that the moment the
+    // case temperature or pressure changes, and nothing connects it to the
+    // `energy { T ... }` sitting three lines below in the same dictionary.
+    // Deriving it means the mechanism tables, the gas temperature and the
+    // background density cannot disagree about what gas is being modelled.
+    //
+    // `numberDensity` still wins when given, because a case may be
+    // deliberately non-ideal or matching a reference calculation.
+    if (bgDict.found("numberDensity"))
+    {
+        backgroundDensity_.value() = bgDict.get<scalar>("numberDensity");
+    }
+    else
+    {
+        const scalar pAbs = bgDict.getOrDefault<scalar>("pressure", 101325.0);
+        const dictionary eDict = bgDict.subOrEmptyDict("energy");
+        const scalar Tgas = eDict.getOrDefault<scalar>("T", 300.0);
+
+        if (pAbs <= 0 || Tgas <= 0)
+        {
+            FatalIOErrorInFunction(*this)
+                << "backgroundGas: pressure and temperature must be positive"
+                << " to close the ideal gas law (got p = " << pAbs
+                << " Pa, T = " << Tgas << " K)" << nl << exit(FatalIOError);
+        }
+
+        backgroundDensity_.value() = pAbs/(constant::plasma::kappaBoltzmann.value()*Tgas);
+
+        Info<< "    background gas: N = p/(k_B T) = "
+            << backgroundDensity_.value() << " 1/m3"
+            << "  (p = " << pAbs << " Pa, T = " << Tgas << " K)" << endl;
+    }
     backgroundDict_ = bgDict;
 
     totalNeutralDensity_ == backgroundDensity_;
