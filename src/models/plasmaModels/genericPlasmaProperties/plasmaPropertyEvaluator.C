@@ -91,6 +91,14 @@ typedef PowerLawProperty<plasmaPropertyEvaluator> powerLawEval;
 static plasmaPropertyEvaluator::adddictionaryConstructorToTable<powerLawEval>
     addPowerLawEvalConstructorToTable_("powerLaw");
 
+//- Straight from the Boltzmann solver's own tables (mu*N, D*N reduced by the
+//  local gas density). Keeps a case's electron transport consistent with the
+//  cross sections its reaction rates came from. Optional: any other evaluator
+//  remains selectable per species and per property.
+typedef MechanismProperty<plasmaPropertyEvaluator> mechanismEval;
+static plasmaPropertyEvaluator::adddictionaryConstructorToTable<mechanismEval>
+    addMechanismEvalConstructorToTable_("fromMechanism");
+
 //- Function1 (Coded, Polynomial, etc.)
 typedef Function1Property<plasmaPropertyEvaluator> function1Eval;
 static plasmaPropertyEvaluator::adddictionaryConstructorToTable<function1Eval>
