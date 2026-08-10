@@ -54,12 +54,19 @@ SourceFiles
 #include "regIOobject.H"
 
 #include "plasmaSpecies.H"
+#include "HashSet.H"
 #include "plasmaTransportModel.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 namespace Foam
 {
+
+// Forward declaration keeps plasmaReactionRates.H out of this public
+// header; the include lives in plasmaTransport.C. Including it here forces
+// the include path onto bcs, tools and the solver, all of which then fail
+// to build.
+class plasmaReactionRates;
     
 class photoionizationModel;
 /*---------------------------------------------------------------------------*\
@@ -78,6 +85,19 @@ private:
 
     //- Construct per-species transport models
     void constructTransportModels();
+
+    //- Build rates_ from the `chemistry` sub-dictionary, if present
+    void readChemistry(const dictionary& dict);
+
+    //- Mechanism-driven species sources. Returns false when no mechanism is
+    //  configured, so the caller falls back to the legacy hard-coded fits and
+    //  existing cases keep running unchanged.
+    bool mechanismSourceTerms
+    (
+        List<autoPtr<fvScalarMatrix>>& eqns,
+        const volScalarField& ne,
+        const volScalarField& Emag
+    );
 
 protected:
 
@@ -98,6 +118,44 @@ protected:
 
     //- Total particle surface flux [1/s]
     PtrList<surfaceScalarField> particleFlux_;
+
+    //- Mechanism-driven electron-impact rates. Null when no `chemistry`
+    //  sub-dictionary is present, in which case the legacy hard-coded Townsend
+    //  fits are used -- so this is additive and existing cases keep running.
+    autoPtr<plasmaReactionRates> rates_;
+
+    //- How the source terms are formed. smReactions sums k_j n_e n_target;
+    //  smTownsend uses per-reaction (alpha_j/N) N v_drift n_e. Algebraically
+    //  identical; they differ only if the solver's drift velocity differs from
+    //  the one the tables were built with.
+    enum sourceModelType { smReactions, smTownsend };
+    sourceModelType sourceModel_ = smReactions;
+
+    //- Reference composition from the mechanism, for background-gas targets
+    dictionary mechComposition_;
+
+    //- Products already warned about as untransported, so the warning is
+    //  emitted once rather than every cell of every timestep
+    mutable HashSet<word> warnedMissing_;
+
+    //- Accept a lumped-ion model in which charged products may be discarded.
+    //  Off by default: discarding a charged product breaks charge conservation
+    //  silently, which is not something to warn about.
+    bool allowChargeNonConservation_ = false;
+
+    //- Charge-imbalance warning emitted once
+    mutable bool chargeWarned_ = false;
+
+    //- Largest relative charge imbalance reported so far, so the diagnostic
+    //  tracks the whole run rather than whichever step happened to be first
+    mutable scalar chargeRelMax_ = 0;
+
+    //- Species that carries the ion produced by photoionization. In air the
+    //  VUV emitted by excited N2 ionizes O2 (Zheleznyak et al. 1982), so the
+    //  photoelectron is paired with O2+. When this species is not carried the
+    //  source falls back to the first positive ion, reproducing the previous
+    //  behaviour exactly.
+    word photoIonSpecies_ = "O2p";
 
     volScalarField k_eff_;
     volScalarField alpha_;

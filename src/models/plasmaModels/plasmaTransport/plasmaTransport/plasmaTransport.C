@@ -12,6 +12,8 @@
 \*---------------------------------------------------------------------------*/
 
 #include "plasmaTransport.H"
+#include "plasmaReactionRates.H"
+#include "IFstream.H"
 #include "plasmaTransportModel.H"
 #include "plasmaWallBC.H"
 #include "photoionizationModel.H"
@@ -229,6 +231,24 @@ plasmaTransport::plasmaTransport
             photoionization_ = photoionizationModel::New(mesh_);
         Info << "Photoionization model loaded: "
              << photoionization_->type() << endl;
+
+    // Mechanism-driven chemistry, if the case asks for it. Reads its own
+    // dictionary so no constructor signature changes and existing cases are
+    // untouched.
+    {
+        IOdictionary transportDict
+        (
+            IOobject
+            (
+                "plasmaTransportProperties",
+                mesh_.time().constant(),
+                mesh_,
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+        readChemistry(transportDict);
+    }
 }
 
 // * * * * * * * * * * * * * * * * Destructors * * * * * * * * * * * * * * * //
@@ -261,10 +281,19 @@ void plasmaTransport::solve()
     plasmaSimulationProfiler::start("Plasma Transport", "chemistry");
 
     const label eIdx = species_.electronSpeciesID();
-    const label iIdx = species_.speciesID("pIon");
+
+    // First positive ion, by charge rather than by name. The legacy Townsend
+    // path needs somewhere to put its ionisation source and the tutorial called
+    // that species `pIon`; a real mechanism has no such species. -1 when the
+    // case carries no positive ion at all, which only the mechanism path can
+    // cope with -- the legacy branch checks before using it.
+    label iIdx = -1;
+    forAll(species_.speciesChargeNumbers(), i)
+    {
+        if (species_.speciesChargeNumbers()[i] > 0) { iIdx = i; break; }
+    }
 
     volScalarField& ne = species_.numberDensity(eIdx);
-    volScalarField& ni = species_.numberDensity(iIdx);
 
     // Calculate Electric field magnitude
     const volScalarField& Emag = species_.em().Emag();
@@ -393,27 +422,66 @@ S_iz_.correctBoundaryConditions();
     k_eff_.correctBoundaryConditions();
 
     plasmaSimulationProfiler::start("Plasma Transport", "solveEquations");
-    // Solve Continuity Equations
-    *eqns[eIdx] -= explicitSource;
-    *eqns[iIdx] -= explicitSource;
+
+    // Mechanism-driven sources replace the block below when a mechanism is
+    // configured. Returns false with no `chemistry` dictionary, in which case
+    // the legacy two-species Townsend fits apply exactly as before.
+    if (!mechanismSourceTerms(eqns, ne, Emag))
+    {
+        // Legacy path: the effective-alpha fit produces one generic positive
+        // ion, so it needs one to exist.
+        if (iIdx < 0)
+        {
+            FatalErrorInFunction
+                << "The legacy Townsend-fit source model requires a positive"
+                << " ion species, and this case carries none." << nl
+                << "    Add one to activeSpecies, or configure a `chemistry`"
+                << " dictionary to use mechanism-driven sources." << nl
+                << exit(FatalError);
+        }
+
+        // Solve Continuity Equations
+        *eqns[eIdx] -= explicitSource;
+        *eqns[iIdx] -= explicitSource;
+    }
     
-// Photoionization source (if a photoionizationModel is loaded)
+    // Photoionization source (if a photoionizationModel is loaded)
         photoionization_->correct();
 
         const volScalarField& Sph = photoionization_->Sph();
         *eqns[eIdx] -= Sph;
-        *eqns[iIdx] -= Sph;
 
+        // Photoionization of the gas produces a specific ion, not a generic
+        // one: in air it is O2 that is ionized by the VUV emitted from excited
+        // N2 (Zheleznyak et al. 1982), so the electron it releases is paired
+        // with O2+. Falls back to the first positive ion when that species is
+        // not carried.
+        {
+            label phIdx = iIdx;
+            forAll(species_.speciesNames(), i)
+            {
+                if (species_.speciesNames()[i] == photoIonSpecies_)
+                {
+                    phIdx = i;
+                    break;
+                }
+            }
 
-    // plasmaSimulationProfiler::start("Solve equations transport");
-    eqns[iIdx]->solve();
-    eqns[eIdx]->solve();
-    // plasmaSimulationProfiler::stop("Solve equations transport");
+            if (phIdx >= 0) { *eqns[phIdx] -= Sph; }
+        }
 
-    // plasmaSimulationProfiler::start("Correct b.c. equations transport");
-    ne.correctBoundaryConditions();
-    ni.correctBoundaryConditions();
-    // plasmaSimulationProfiler::stop("Correct b.c. equations transport");
+    // Every species is solved, not just the electron and one ion. Assembling a
+    // source term for a species whose equation is never solved would leave it
+    // frozen at its initial value while looking entirely healthy.
+    forAll(eqns, i)
+    {
+        eqns[i]->solve();
+    }
+
+    forAll(eqns, i)
+    {
+        species_.numberDensity(i).correctBoundaryConditions();
+    }
     
 
     // plasmaSimulationProfiler::start("Clamp number densities");
@@ -693,6 +761,366 @@ bool plasmaTransport::writeData(Ostream& os) const
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 } // End namespace Foam
+
+
+// * * * * * * * * * * *  Mechanism-driven chemistry  * * * * * * * * * * * * //
+
+void Foam::plasmaTransport::readChemistry(const dictionary& dict)
+{
+    if (!dict.found("chemistry"))
+    {
+        Info<< "plasmaTransport: no `chemistry` dictionary; using the legacy"
+            << " hard-coded Townsend fits" << endl;
+        return;
+    }
+
+    const dictionary& cd = dict.subDict("chemistry");
+
+    const word model = cd.getOrDefault<word>("sourceModel", "reactions");
+    if (model == "reactions")      sourceModel_ = smReactions;
+    else if (model == "townsend")  sourceModel_ = smTownsend;
+    else
+    {
+        FatalErrorInFunction
+            << "Unknown sourceModel '" << model << "'" << nl
+            << "Valid: reactions | townsend" << nl << exit(FatalError);
+    }
+
+    allowChargeNonConservation_ =
+        cd.getOrDefault<Switch>("allowChargeNonConservation", false);
+
+    photoIonSpecies_ = cd.getOrDefault<word>("photoIonSpecies", "O2p");
+
+    rates_.reset
+    (
+        new plasmaReactionRates
+        (
+            mesh_,
+            cd.get<fileName>("mechanism"),
+            cd.get<fileName>("tableDir"),
+            cd.getOrDefault<word>("lookupVariable", "reducedE"),
+            cd.getOrDefault<word>("tableKey", "reducedE"),
+            cd
+        )
+    );
+
+    {
+        IFstream is(cd.get<fileName>("mechanism"));
+        dictionary mech(is);
+        if (mech.found("composition"))
+        {
+            mechComposition_ = mech.subDict("composition");
+        }
+    }
+
+    Info<< "plasmaTransport: sourceModel " << model
+        << ", " << rates_->size() << " electron-impact reactions" << nl
+        << "    NOTE this path evaluates ELECTRON-IMPACT reactions only."
+        << " Heavy chemistry (recombination," << nl
+        << "    quenching, detachment) lives in the Cantera mechanism and is"
+        << " NOT applied here, so ion and" << nl
+        << "    excited-state densities have no loss channel in this mode."
+        << " Adequate for a short pulse;" << nl
+        << "    not for long transients. Stage 2 hands the chemistry to Cantera."
+        << endl;
+}
+
+
+bool Foam::plasmaTransport::mechanismSourceTerms
+(
+    List<autoPtr<fvScalarMatrix>>& eqns,
+    const volScalarField& ne,
+    const volScalarField& Emag
+)
+{
+    if (!rates_)
+    {
+        return false;   // caller falls back to the legacy fits
+    }
+
+    // Interpolation only; cheap, and never throttled -- skipping it would leave
+    // k_j frozen at its t=0 value while the discharge moves. The EEDF re-solve
+    // is the expensive thing, and that is governed separately.
+    rates_->correct();
+
+    if (rates_->eedfRefreshDue())
+    {
+        Info<< "plasmaReactionRates: EEDF refresh due at t = "
+            << mesh_.time().timeName()
+            << " (Stage 1: tables are static, no action taken)" << endl;
+        rates_->eedfRefreshed();
+    }
+
+    const scalarField& neI = ne.primitiveField();
+    const label nCells = mesh_.nCells();
+
+    // Drift speed from the registered mobility field the mobility model already
+    // maintains -- so it cannot disagree with the species dictionary, which is
+    // precisely what the legacy hard-coded mu_ref = 2.398 could do.
+    const label eIdx = species_.electronSpeciesID();
+    const word muName = "mu_" + species_.speciesNames()[eIdx];
+    scalarField vDrift(nCells, Zero);
+    if (mesh_.foundObject<volScalarField>(muName))
+    {
+        const scalarField& mu =
+            mesh_.lookupObject<volScalarField>(muName).primitiveField();
+        const scalarField& E = Emag.primitiveField();
+        forAll(vDrift, c) { vDrift[c] = mu[c]*E[c]; }
+    }
+    else
+    {
+        FatalErrorInFunction
+            << "Cannot find mobility field '" << muName << "'." << nl
+            << "The electron transport model must be driftDiffusion for the"
+            << " mechanism source terms to have a drift velocity." << nl
+            << exit(FatalError);
+    }
+
+    // Background reservoir left, recomputed each step so it depletes as the
+    // discharge burns through it rather than being held fixed.
+    scalarField nBg(nCells, species_.backgroundDensity().value());
+    for (const label n : species_.neutralSpeciesIDs())
+    {
+        nBg -= species_.numberDensities()[n].primitiveField();
+    }
+    forAll(nBg, c) { nBg[c] = max(nBg[c], scalar(0)); }
+
+    List<scalarField> src(species_.nSpecies(), scalarField(nCells, Zero));
+    scalarField sIon(nCells, Zero), sAtt(nCells, Zero);
+
+    // speciesID() looks up a HashTable with at(), which THROWS on a missing
+    // key rather than returning -1. Mechanism species that the case does not
+    // transport are entirely normal -- N2 and O2 are background gas, and most
+    // excited states will not be carried -- so membership has to be tested
+    // without calling it.
+    HashSet<word> transported;
+    forAll(species_.speciesNames(), i)
+    {
+        transported.insert(species_.speciesNames()[i]);
+    }
+    auto idOf = [&](const word& nm) -> label
+    {
+        return transported.found(nm) ? species_.speciesID(nm) : -1;
+    };
+
+    forAll(rates_->reactions(), r)
+    {
+        const auto& rx = rates_->reactions()[r];
+        const label tgt = idOf(rx.target);
+
+        scalarField Rj(nCells);
+        if (sourceModel_ == smTownsend && rates_->hasTownsend(r))
+        {
+            // alpha_j/N is already mole-fraction weighted (it is nu_j/N over
+            // v_drift), so neither a composition factor nor a target density
+            // belongs here -- both are inside it.
+            const scalarField& aj = rates_->townsend(r).primitiveField();
+            forAll(Rj, c) { Rj[c] = aj[c]*nBg[c]*vDrift[c]*neI[c]; }
+        }
+        else
+        {
+            // k_j is UNWEIGHTED -- per unit target density. Do NOT multiply by
+            // a mole fraction; the tables already exclude it.
+            const scalarField& kj = rates_->k(r).primitiveField();
+            scalarField nTarget(nCells);
+            if (tgt >= 0)
+            {
+                nTarget = species_.numberDensities()[tgt].primitiveField();
+            }
+            else
+            {
+                const scalar x =
+                    mechComposition_.getOrDefault<scalar>(rx.target, 0.0);
+                if (x <= 0)
+                {
+                    FatalErrorInFunction
+                        << "Reaction " << rx.id << " target '" << rx.target
+                        << "' is neither transported nor in the mechanism"
+                        << " composition" << nl << exit(FatalError);
+                }
+                forAll(nTarget, c) { nTarget[c] = x*nBg[c]; }
+            }
+            forAll(Rj, c) { Rj[c] = kj[c]*neI[c]*nTarget[c]; }
+        }
+
+        // Reactants. Every process here is electron-impact, so exactly one
+        // electron is consumed on the left; the mechanism's `products` list is
+        // the FULL right-hand side and puts the scattered electron back, which
+        // is why excitation nets to zero and ionisation to +1 rather than +2.
+        // Omitting this manufactured an electron out of every excitation.
+        src[eIdx] -= Rj;
+        if (tgt >= 0) { src[tgt] -= Rj; }
+
+        // Products counted WITH MULTIPLICITY: (N2p e e) adds two electrons.
+        label nOut = 0;
+        forAll(rx.products, i)
+        {
+            const word& nm = rx.products[i];
+            if (nm == "e") { ++nOut; }
+            const label pid = (nm == "e") ? eIdx : idOf(nm);
+            if (pid >= 0)
+            {
+                src[pid] += Rj;
+            }
+            else
+            {
+                // Discarding an untransported product is NOT uniformly benign,
+                // and treating it so is how a run looks healthy while being
+                // wrong. Two different situations:
+                //
+                //   neutral  losing an excited state is an approximation. The
+                //            species is absent; the field is unaffected.
+                //
+                //   CHARGED  breaks charge conservation. Ionisation then adds
+                //            electrons with no counter-charge, net charge grows
+                //            out of nothing, and the Poisson solve is silently
+                //            corrupted. Measured on this very case: +1.45e18
+                //            electrons per step against +0 positive ions.
+                //
+                // So the charged case is fatal by default. `pIon`-style lumped
+                // models are still available through allowChargeNonConservation,
+                // but they have to be asked for.
+                const label q = rates_->chargeOf(nm);
+                if (q != 0 && !allowChargeNonConservation_)
+                {
+                    FatalErrorInFunction
+                        << "Reaction " << rx.id << " produces '" << nm
+                        << "' (charge " << q << "), which is not a transported"
+                        << " species." << nl
+                        << "    Discarding a CHARGED product breaks charge"
+                        << " conservation: electrons would be created without"
+                        << " their counter-charge and the Poisson solve would be"
+                        << " wrong." << nl
+                        << "    Either add '" << nm << "' to activeSpecies, or"
+                        << " set allowChargeNonConservation true in the"
+                        << " chemistry dictionary to accept a lumped-ion model."
+                        << nl << exit(FatalError);
+                }
+                if (!warnedMissing_.found(nm))
+                {
+                    warnedMissing_.insert(nm);
+                    WarningInFunction
+                        << "Reaction " << rx.id << " produces '" << nm
+                        << "' (neutral), not a transported species; discarded."
+                        << " Its population is lost, but charge is unaffected."
+                        << endl;
+                }
+            }
+        }
+
+        // Electron balance classifies the reaction from its own products:
+        // +1 ionisation, -1 attachment (real attachment, its own cross
+        // section), 0 excitation/dissociation.
+        const label dE = nOut - 1;
+        if (dE > 0)      { sIon += dE*Rj; }
+        else if (dE < 0) { sAtt += (-dE)*Rj; }
+    }
+
+    // Charge-balance diagnostic. Sum q_i S_i over the transported species: for
+    // a charge-conserving mechanism this is identically zero, so any drift is a
+    // species that is being created or destroyed without its counter-charge.
+    // Reported as a fraction of the ionisation source so it is scale-free --
+    // an absolute number means nothing without knowing how much chemistry is
+    // happening.
+    {
+        scalar netQ = 0, refQ = 0;
+        forAll(src, sIdx)
+        {
+            // The CASE's charge number, not the mechanism's. The two name the
+            // electron differently -- `e` here, `Electron` in the mechanism --
+            // so looking the electron up in the mechanism table returns 0 and
+            // drops the one species the diagnostic exists to track, turning it
+            // into a permanent false alarm. rates_->chargeOf() is for products
+            // that are NOT transported, where the case has no opinion.
+            const scalar q = species_.speciesChargeNumbers()[sIdx];
+            if (mag(q) < SMALL) continue;
+            forAll(src[sIdx], c) { netQ += q*src[sIdx][c]; }
+        }
+        forAll(sIon, c) { refQ += sIon[c]; }
+        reduce(netQ, sumOp<scalar>());
+        reduce(refQ, sumOp<scalar>());
+
+        // Tolerance is 1e-6, not machine epsilon. netQ is the near-total
+        // cancellation of ~1e6 cell values each ~1e22, so its relative
+        // roundoff floor sits around 1e-9 -- a tighter threshold reports
+        // arithmetic, not physics. A genuinely missing charged product is an
+        // O(1) violation, so nothing real hides under this.
+        // Checked EVERY step, and the running maximum is what gets reported.
+        // Reporting only the first step would grade the run on its quietest
+        // moment, before the discharge has produced any chemistry to unbalance.
+        if (mag(refQ) > VSMALL)
+        {
+            const scalar rel = mag(netQ)/mag(refQ);
+            const bool worse = rel > 10*chargeRelMax_;
+            chargeRelMax_ = max(chargeRelMax_, rel);
+
+            if (rel > 1e-6 && !chargeWarned_)
+            {
+                WarningInFunction
+                    << "charge is not conserved by the mechanism source terms: "
+                    << "sum(q_i S_i) = " << netQ << ", which is " << rel
+                    << " of the ionisation source." << nl
+                    << "    Every charged product must be a transported species."
+                    << endl;
+                chargeWarned_ = true;
+            }
+            else if (worse)
+            {
+                // Reported even when it passes: a check whose only evidence of
+                // success is the absence of output cannot be distinguished from
+                // a check that never ran. Rate-limited to order-of-magnitude
+                // increases so it does not print every step.
+                Info<< "plasmaTransport: charge balance OK, |sum(q_i S_i)| = "
+                    << rel << " of the ionisation source (roundoff)" << endl;
+            }
+        }
+    }
+
+    // eqns is dense over species ids -- List<autoPtr<fvScalarMatrix>> sized
+    // nSpecies() with every entry filled. Checked in the source.
+    forAll(src, s)
+    {
+        if (eqns.size() > s && eqns[s])
+        {
+            volScalarField S
+            (
+                IOobject
+                (
+                    "S_" + species_.speciesNames()[s],
+                    mesh_.time().timeName(), mesh_,
+                    IOobject::NO_READ, IOobject::NO_WRITE
+                ),
+                mesh_,
+                dimensionedScalar(dimensionSet(0, -3, -1, 0, 0, 0, 0), Zero)
+            );
+            S.primitiveFieldRef() = src[s];
+            *eqns[s] -= S;
+        }
+    }
+
+    // S_iz_, k_eff_ and alpha_ from the REAL reactions -- no Townsend fit and
+    // no effective eta anywhere. alpha_ becomes its own definition,
+    // S_iz/(n_e v_drift), rather than a fit to it, so the AMR criterion and the
+    // photoionization model keep reading it unchanged.
+    {
+        scalarField& siz  = S_iz_.primitiveFieldRef();
+        scalarField& keff = k_eff_.primitiveFieldRef();
+        scalarField& a    = alpha_.primitiveFieldRef();
+        forAll(siz, c)
+        {
+            siz[c]  = sIon[c];
+            const scalar n = max(neI[c], SMALL);
+            keff[c] = (sIon[c] - sAtt[c])/n;
+            a[c]    = sIon[c]/(n*max(vDrift[c], SMALL));
+        }
+    }
+    S_iz_.correctBoundaryConditions();
+    k_eff_.correctBoundaryConditions();
+    alpha_.correctBoundaryConditions();
+
+    return true;
+}
+
 
 // ************************************************************************* //
 
