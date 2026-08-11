@@ -12,10 +12,12 @@ for d in src/profilers src/constants src/numerics src/models/electromagnetics \
          src/models/plasmaModels/plasmaSpecies \
          src/models/plasmaModels/photoionization \
          src/models/plasmaModels/plasmaBoltzmann \
+         src/models/plasmaModels/plasmaChemistry \
          src/models/plasmaModels/plasmaReactionRates \
          src/models/plasmaModels/plasmaTransport \
          src/bcs src/tools \
          src/applications/utilities/foamPlasmaCreateSpeciesFields \
+         src/applications/utilities/plasmaChemistry0D \
          src/applications/solvers/soPlasmaFoam \
          ThirdParty/libROUNDSchemes; do
   n=$(basename "$d")

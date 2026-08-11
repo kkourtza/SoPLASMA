@@ -1,0 +1,17 @@
+/* Uses OpenFOAM's ODE module -- Rosenbrock, SIBS, EulerSI and the adaptive RK
+   family -- WITHOUT the chemistryModel stack above it. ODESystem is a bare
+   abstract class with derivatives() and jacobian() and no thermo dependency,
+   which is what makes plasma chemistry expressible here: number densities
+   rather than mass fractions, and a separate electron temperature. */
+
+EXE_INC = \
+    -I$(LIB_SRC)/finiteVolume/lnInclude \
+    -I$(LIB_SRC)/meshTools/lnInclude \
+    -I$(LIB_SRC)/ODE/lnInclude \
+    -I$(SoPLASMA_SRC)/constants/lnInclude
+
+LIB_LIBS = \
+    -lfiniteVolume \
+    -lmeshTools \
+    -lODE \
+    -L$(FOAM_USER_LIBBIN) -lSoPLASMAConstants

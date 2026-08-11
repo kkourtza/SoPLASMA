@@ -1,0 +1,4 @@
+plasmaChemistry/plasmaChemistryODE.C
+plasmaChemistry/plasmaChemistry.C
+
+LIB = $(FOAM_USER_LIBBIN)/libplasmaChemistry
