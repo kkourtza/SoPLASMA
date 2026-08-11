@@ -99,6 +99,16 @@ private:
     //  one, leaves the transport time discretisation untouched.
     void applyChemistry(const scalar dt);
 
+    //- True on the last PIMPLE outer iteration of this timestep.
+    //
+    //  solve() is called once per OUTER ITERATION, not once per timestep, and
+    //  Strang splitting has to bracket the timestep. plasmaTransport holds no
+    //  pimpleControl, so the count is tracked here against nOuterCorrectors
+    //  read from fvSolution -- with a flush on timestep change, so that a
+    //  PIMPLE that exits early on residual control cannot drop the trailing
+    //  half-step.
+    bool finalOuterIteration();
+
     //- Mechanism-driven species sources. Returns false when no mechanism is
     //  configured, so the caller falls back to the legacy hard-coded fits and
     //  existing cases keep running unchanged.
@@ -174,6 +184,16 @@ protected:
 
     //- Worst relative charge residual seen in the first step
     scalar chemResidualMax_ = 0;
+
+    //- Timestep the first chemistry half-step was taken in, so the pair
+    //  brackets the TIMESTEP and not each PIMPLE outer iteration
+    label chemTimeIndex_ = -1;
+    bool  chemFirstHalfDone_ = false;
+
+    //- Outer iterations taken in the current timestep, and how many are
+    //  configured
+    label chemOuterCount_ = 0;
+    label nOuterCorrectors_ = 1;
 
     //- Charge-imbalance warning emitted once
     mutable bool chargeWarned_ = false;
