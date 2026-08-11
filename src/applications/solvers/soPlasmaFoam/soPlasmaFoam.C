@@ -192,7 +192,7 @@ int main(int argc, char *argv[])
                 );
 
                 // Solve transport equations
-                transport.solve();
+                transport.solve(pimple.finalIter());
 
                 if (pimple.finalIter())
                 {
@@ -214,7 +214,7 @@ int main(int argc, char *argv[])
 
                 // Solve transport equations
                 plasmaSimulationProfiler::start("Plasma Transport");
-                transport.solve();
+                transport.solve(pimple.finalIter());
                 plasmaSimulationProfiler::stop("Plasma Transport");
 
                 // Update charge density

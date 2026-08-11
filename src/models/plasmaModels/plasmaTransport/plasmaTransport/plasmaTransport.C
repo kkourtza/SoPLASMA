@@ -271,7 +271,7 @@ void plasmaTransport::correctTransportModels()
 }
 
 // This is for the positive streamer case
-void plasmaTransport::solve()
+void plasmaTransport::solve(const bool finalIter)
 {
     // ── 0. Chemistry, first half-step ─────────────────────────────────────
     //
@@ -280,21 +280,17 @@ void plasmaTransport::solve()
     // first order. Rate coefficients are interpolated at the field as it
     // stands, which is what "the field does not move while the chemistry
     // integrates" means in practice.
-    // ONE full chemistry step per TIMESTEP, on the first outer iteration.
+    // STRANG SPLITTING: C(dt/2) T(dt) C(dt/2), bracketing the TIMESTEP.
     //
     // solve() is called once per PIMPLE OUTER ITERATION, not once per
     // timestep. Applying a half-step on every call advanced the chemistry by
     // nOuterCorrectors*dt while the transport advanced dt -- invisible with
     // the tutorial's single corrector, and a factor of 8 with eight.
     //
-    // This is Lie (Godunov) splitting, deliberately, rather than Strang.
-    // Strang needs its trailing half-step on the LAST outer iteration, and
-    // plasmaTransport has no handle on PIMPLE to know which that is: counting
-    // iterations against nOuterCorrectors is wrong the moment residual control
-    // lets the loop exit early, which it does. Lie splitting is first order
-    // where Strang is second -- but the coupled scheme here is first order
-    // anyway (see below), so nothing is lost today, and a wrong operator
-    // sequence would be worse than a lower order.
+    // The trailing half-step needs PIMPLE's finalIter(), which the caller
+    // passes in: counting outer iterations here was wrong as soon as residual
+    // control let the loop exit before nOuterCorrectors, and that discrepancy
+    // is what made nOuterCorrectors 8 disagree with 1.
     //
     // Measured temporal order of the coupled solve, 40x40 case, t_end 200 ps:
     //
@@ -308,10 +304,11 @@ void plasmaTransport::solve()
     if (chem_ && mesh_.time().timeIndex() != chemTimeIndex_)
     {
         chemTimeIndex_ = mesh_.time().timeIndex();
+        chemFirstHalfDone_ = true;
 
         plasmaSimulationProfiler::start("Plasma Transport", "chemistry ODE");
         rates_->correct();
-        applyChemistry(mesh_.time().deltaTValue());
+        applyChemistry(0.5*mesh_.time().deltaTValue());
         species_.clampNumberDensities();
         plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
     }
@@ -531,6 +528,24 @@ S_iz_.correctBoundaryConditions();
     // plasmaSimulationProfiler::start("Clamp number densities");
     species_.clampNumberDensities();
     // plasmaSimulationProfiler::stop("Clamp number densities");
+
+    // ── Chemistry, trailing half-step ─────────────────────────────────────
+    //
+    // On PIMPLE's final outer iteration, so the pair brackets the TIMESTEP:
+    // C(dt/2) T(dt) C(dt/2). The caller supplies finalIter() because only it
+    // knows -- residual control can end the loop before nOuterCorrectors, so
+    // counting iterations here would silently drop this half-step and leave
+    // the chemistry advancing dt/2 per step.
+    if (chem_ && chemFirstHalfDone_ && finalIter)
+    {
+        chemFirstHalfDone_ = false;
+
+        plasmaSimulationProfiler::start("Plasma Transport", "chemistry ODE");
+        rates_->correct();
+        applyChemistry(0.5*mesh_.time().deltaTValue());
+        species_.clampNumberDensities();
+        plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
+    }
 
 
     // ── 5. Update fluxes for mobile species ───────────────────────────────
@@ -959,6 +974,7 @@ bool Foam::plasmaTransport::finalOuterIteration()
 void Foam::plasmaTransport::applyChemistry(const scalar dt)
 {
     if (!chem_ || dt <= 0) return;
+
 
     const label nSp = species_.nSpecies();
     const label eIdx = species_.electronSpeciesID();

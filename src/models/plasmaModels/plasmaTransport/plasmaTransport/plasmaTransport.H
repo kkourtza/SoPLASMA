@@ -239,7 +239,17 @@ public:
         void correctTransportModels();
 
         //- Solve all species transport equations
-        void solve();
+        //- Advance the species over one timestep.
+        //
+        //  `finalIter` must be PIMPLE's finalIter() for this outer iteration.
+        //  solve() is called once per outer iteration, and Strang splitting
+        //  has to bracket the TIMESTEP: the leading half-step goes on the
+        //  first call of a timestep and the trailing one on the last, and
+        //  only the caller knows which that is. Counting iterations here
+        //  instead is wrong as soon as residual control lets PIMPLE exit
+        //  early. Defaults to true so a single-corrector caller is correct
+        //  without knowing any of this.
+        void solve(const bool finalIter = true);
 
         //- Update surface charge
         void updateSurfaceCharge();
