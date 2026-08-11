@@ -551,6 +551,44 @@ S_iz_.correctBoundaryConditions();
     // the fixed point the ODE integrates along the cell's true trajectory
     // rather than a closed-cell one, so its mean rate is the mean of the true
     // rate and not merely its value at the start of the step.
+    // Report the Picard convergence once the timestep's outer loop is done.
+    // Reported whether it passes or fails: a check whose only evidence of
+    // success is silence cannot be told from one that never ran.
+    if (chem_ && chemistrySolver_ == csImplicitRate && finalIter
+     && !chemPicardReported_)
+    {
+        chemPicardReported_ = true;
+
+        Info<< "plasmaChemistry: Picard change over the last outer iteration: "
+            << chemPicardChange_ << " (" << chemOuterCount_
+            << " iterations)" << endl;
+
+        if (chemOuterCount_ < 2)
+        {
+            WarningInFunction
+                << "implicitRate with nOuterCorrectors = 1." << nl
+                << "    The source is then evaluated once, explicitly, and the"
+                << " scheme is FIRST order -- the second-order behaviour comes"
+                << " from the outer loop making it implicit. Raise"
+                << " nOuterCorrectors, or accept first order knowingly."
+                << endl;
+        }
+        else if (chemPicardChange_ > 1e-2)
+        {
+            WarningInFunction
+                << "the chemistry source is still changing by "
+                << chemPicardChange_ << " on the last outer iteration, so the"
+                << " Picard iteration has NOT converged." << nl
+                << "    max(L*dt) = " << chemStiffness_
+                << ": the chemistry is stiffer than this timestep, and"
+                << " linearising around the current state is not resolving it."
+                << nl
+                << "    Either reduce deltaT, raise nOuterCorrectors, or switch"
+                << " to `chemistrySolver ode`, which integrates through the"
+                << " stiffness at the cost of first order." << endl;
+        }
+    }
+
     // csODE only: implicitRate never fills chemRR_, and indexing it here
     // segfaulted on the first timestep.
     if (chem_ && chemistrySolver_ == csODE && !chemN0_.empty() && !chemRR_.empty())
@@ -883,7 +921,14 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // The two are mutually exclusive by construction: with `ode`,
     // mechanismSourceTerms() adds nothing, or the chemistry would be applied
     // twice.
-    const word cs = cd.getOrDefault<word>("chemistrySolver", "none");
+    // DEFAULT: implicitRate. Second order, exact charge conservation,
+    // guaranteed positivity, and far cheaper than the stiff substep -- one
+    // O(n_reactions) rate evaluation per cell against a Jacobian and an LU
+    // factorisation. `ode` remains for mechanisms whose fastest timescale is
+    // far below dt, where linearising around the current state is not enough;
+    // the run reports which situation it is in (see the convergence check
+    // below) rather than leaving it to judgement.
+    const word cs = cd.getOrDefault<word>("chemistrySolver", "implicitRate");
     if (cs == "none")
     {
         chemistrySolver_ = csNone;
@@ -943,12 +988,25 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         nOuterCorrectors_ = mesh_.solutionDict().subOrEmptyDict("PIMPLE")
             .getOrDefault<label>("nOuterCorrectors", 1);
 
-        Info<< "plasmaTransport: chemistrySolver ode, Strang-split, "
-            << "activity threshold " << chemActivityThreshold_ << " 1/m3, "
+        Info<< "plasmaTransport: chemistrySolver " << cs
+            << ", activity threshold " << chemActivityThreshold_ << " 1/m3, "
             << nOuterCorrectors_ << " outer iteration(s) per step" << nl
-            << "    Electron-impact sources are NOT added to the transport"
-            << " equations in this mode; the split chemistry carries them,"
-            << " together with the heavy reactions." << endl;
+            << "    The WHOLE mechanism is evaluated here -- electron-impact"
+            << " and heavy -- so the legacy in-equation sources are not"
+            << " applied; using both would count the chemistry twice." << nl;
+
+        if (chemistrySolver_ == csImplicitRate)
+        {
+            Info<< "    implicitRate: instantaneous rate at the current"
+                << " iterate, loss implicit. Second order once the outer loop"
+                << " converges; the run reports whether it does." << endl;
+        }
+        else
+        {
+            Info<< "    ode: stiff substep, mean rate over the step. First"
+                << " order, but it integrates THROUGH stiffness -- use it when"
+                << " a chemical timescale is far below deltaT." << endl;
+        }
     }
 
     rates_.reset
@@ -1273,6 +1331,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
 
         scalarField n(nSp, Zero), kTab(max(nTab, 1), Zero);
         scalarField P(nSp, Zero), L(nSp, Zero);
+        const scalar dtNow = mesh_.time().deltaTValue();
         const scalarField& neI =
             species_.numberDensity(species_.electronSpeciesID()).primitiveField();
 
@@ -1290,6 +1349,15 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             }
 
             chem_->productionLoss(n, kTab, Tgas, P, L);
+
+            // Stiffness, as the solver actually experiences it: L*dt is the
+            // number of loss timescales crossed in one step. Large is not
+            // unstable -- the implicit sink handles that -- but it is where
+            // linearising around the current state stops being enough.
+            for (label sp = 0; sp < nSp; ++sp)
+            {
+                chemStiffness_ = max(chemStiffness_, L[sp]*dtNow);
+            }
 
             // Charge conservation needs NO projection in this mode. The source
             // is the instantaneous rate, so sum q_s (P_s - L_s n_s) is exactly
@@ -1325,11 +1393,59 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             chemCellsReported_ = true;
             reduce(chemSourceChargeAfter_, maxOp<scalar>());
             reduce(chemActiveCount_, sumOp<label>());
+            reduce(chemStiffness_, maxOp<scalar>());
             Info<< "plasmaChemistry: implicitRate, " << chemActiveCount_
-                << " active cells" << nl
+                << " active cells, max(L*dt) = " << chemStiffness_ << nl
                 << "    charge residual of the SOURCE, worst cell: "
                 << chemSourceChargeAfter_
                 << " (exact by construction: no integration)" << endl;
+        }
+
+        // Has the Picard iteration converged inside the outer loop?
+        //
+        // This is the question that decides implicitRate versus ode, and it is
+        // measurable rather than a matter of judgement: compare this
+        // iteration's source with the previous one. A contraction means the
+        // linearisation is resolving the chemistry; no contraction means the
+        // chemistry is stiffer than dt and the source is being extrapolated
+        // rather than converged.
+        {
+            scalar num = 0, den = 0;
+            forAll(chemP_, sp)
+            {
+                const scalarField& nsp =
+                    species_.numberDensities()[sp].primitiveField();
+                forAll(chemP_[sp], c)
+                {
+                    const scalar srcNow = chemP_[sp][c] - chemL_[sp][c]*nsp[c];
+                    const scalar srcOld =
+                        (chemSrcPrev_.size() > sp && chemSrcPrev_[sp].size() > c)
+                      ? chemSrcPrev_[sp][c] : 0.0;
+                    num += sqr(srcNow - srcOld);
+                    den += sqr(srcNow);
+                }
+            }
+            reduce(num, sumOp<scalar>());
+            reduce(den, sumOp<scalar>());
+
+            const scalar change = (den > VSMALL) ? Foam::sqrt(num/den) : 0.0;
+            if (chemOuterCount_ > 0)
+            {
+                chemPicardChange_ = change;
+            }
+            ++chemOuterCount_;
+
+            chemSrcPrev_.setSize(chemP_.size());
+            forAll(chemP_, sp)
+            {
+                const scalarField& nsp =
+                    species_.numberDensities()[sp].primitiveField();
+                chemSrcPrev_[sp].setSize(chemP_[sp].size());
+                forAll(chemP_[sp], c)
+                {
+                    chemSrcPrev_[sp][c] = chemP_[sp][c] - chemL_[sp][c]*nsp[c];
+                }
+            }
         }
 
         forAll(chemP_, sp)

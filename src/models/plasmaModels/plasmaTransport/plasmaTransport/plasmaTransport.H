@@ -210,6 +210,16 @@ protected:
     label  chemNegativeCells_ = 0;
     label  chemUnprojectedCells_ = 0;
     label  chemActiveCount_ = 0;
+
+    //- Stiffness as the solver meets it, max over cells and species of L*dt
+    scalar chemStiffness_ = 0;
+
+    //- Relative change of the chemistry source between consecutive outer
+    //  iterations. Small means the Picard iteration is converging and
+    //  implicitRate is resolving the chemistry; not small means it is not.
+    scalar chemPicardChange_ = 0;
+    List<scalarField> chemSrcPrev_;
+    bool   chemPicardReported_ = false;
     scalar chemSourceChargeAfter_ = 0;
 
     //- Timestep whose start-of-step state is held in chemN0_
