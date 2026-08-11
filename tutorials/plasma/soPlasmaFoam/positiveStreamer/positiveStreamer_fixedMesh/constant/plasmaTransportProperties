@@ -34,10 +34,18 @@ chemistry
     boltzmann
     {
         ENmin           0.1;
-        ENmax           500;
+        // 2000 Td, not 500. The streamer HEAD field exceeds 500 Td once it
+        // organises, and above the table the rate coefficients are
+        // extrapolated -- a power law continued from the last tabulated
+        // interval, which is a guess exactly where the physics is deciding
+        // whether the streamer propagates.
+        ENmax           2000;
         nPoints         200;
         Tgas            300;
-        pressureAtm     1.0;
+        // 1 bar = 0.9869 atm, matching the benchmark's N = 2.414e25 m^-3.
+        // This sets the density the three-body attachment tables are built
+        // at, so it must agree with `pressure` in plasmaSpeciesProperties.
+        pressureAtm     0.98692;
         growthModel     temporal;
     }
 }

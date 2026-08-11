@@ -13,6 +13,7 @@ License
 #include "plasmaBoltzmann.H"
 
 #include "IFstream.H"
+#include "OFstream.H"
 #include "OSspecific.H"
 #include "Switch.H"
 #include "error.H"
@@ -79,6 +80,24 @@ Boltzmann::MechTableOptions readOptions
 }
 
 
+//- A stamp of the sweep settings, written beside the tables.
+//
+//  The mechanism hash alone is NOT enough to decide whether a table set is
+//  current: changing ENmax, Tgas, pressureAtm or the growth model changes every
+//  table while leaving the mechanism -- and therefore its hash -- untouched. A
+//  case that raised ENmax from 500 to 2000 Td would have silently kept the old
+//  500 Td tables and extrapolated above them.
+Foam::string sweepStamp(const Boltzmann::MechTableOptions& o)
+{
+    std::ostringstream ss;
+    ss << "EN=" << o.EN_min << ":" << o.EN_max << ":" << o.nPoints
+       << " Tgas=" << o.T_gas << " Texc=" << o.T_exc
+       << " grid=" << o.gridPoints << " p=" << o.pressure_atm
+       << " growth=" << o.growth << " floor=" << o.thermalFloor;
+    return Foam::string(ss.str());
+}
+
+
 //- First line of a table file, where the mechanism hash is recorded.
 Foam::string firstLineOf(const Foam::fileName& path)
 {
@@ -121,11 +140,26 @@ Foam::plasmaBoltzmann::status Foam::plasmaBoltzmann::ensureTables
     // Reuse only if an existing table carries the manifest's hash. Checking one
     // representative table is enough because the whole set is written together
     // by one sweep -- a half-written set is not a state that occurs.
+    const string stamp = sweepStamp(readOptions(chem, manifest, tableDir));
+    const fileName stampFile = tableDir/"sweep.stamp";
+
     const fileName probe = tableDir/"muN_vs_reducedE";
     if (isFile(probe))
     {
         const string head = firstLineOf(probe);
-        if (!expectedHash.empty() && head.find(expectedHash) != std::string::npos)
+        const bool stampOk =
+            isFile(stampFile) && firstLineOf(stampFile) == stamp;
+
+        if (!stampOk && isFile(probe))
+        {
+            Info<< "plasmaBoltzmann: sweep settings differ from the tables in "
+                << tableDir << "; rebuilding" << nl
+                << "    was: " << firstLineOf(stampFile).c_str() << nl
+                << "    now: " << stamp.c_str() << endl;
+        }
+
+        if (stampOk && !expectedHash.empty()
+         && head.find(expectedHash) != std::string::npos)
         {
             Info<< "plasmaBoltzmann: tables in " << tableDir
                 << " match mechanism [" << expectedHash.c_str()
@@ -133,9 +167,12 @@ Foam::plasmaBoltzmann::status Foam::plasmaBoltzmann::ensureTables
             return reused;
         }
 
-        Info<< "plasmaBoltzmann: tables in " << tableDir
-            << " do not carry mechanism [" << expectedHash.c_str()
-            << "]; rebuilding" << endl;
+        if (stampOk)
+        {
+            Info<< "plasmaBoltzmann: tables in " << tableDir
+                << " do not carry mechanism [" << expectedHash.c_str()
+                << "]; rebuilding" << endl;
+        }
     }
 
     rebuild(chem, manifest, tableDir);
@@ -214,6 +251,13 @@ void Foam::plasmaBoltzmann::rebuild
             << log.str().c_str() << nl
             << "    Refine `gridPoints`, narrow the E/N range, or fix the"
             << " mechanism." << nl << exit(FatalError);
+    }
+
+    // Written LAST, so an interrupted sweep leaves no stamp and the next run
+    // rebuilds rather than trusting a half-written set.
+    {
+        OFstream os(tableDir/"sweep.stamp");
+        os << sweepStamp(o).c_str() << endl;
     }
 
     Info<< "plasmaBoltzmann: wrote tables to " << tableDir << endl;

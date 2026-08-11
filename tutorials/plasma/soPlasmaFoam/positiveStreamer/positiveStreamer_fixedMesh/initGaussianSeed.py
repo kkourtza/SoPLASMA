@@ -8,11 +8,17 @@ N0 = 5e18        # Peak seed density
 sigma = 0.0004   # 0.4 mm width 
 x0 = 0.0   
 y0 = 0.01      # 1.0 cm height 
-bg = 1e13        # Case 1 background 
+bg = 7.9e12      # N2+ share of the 1e13 background (0.79); O2+ carries 2.1e12
 
 sol_path = './'
-field_paths = [os.path.join(sol_path, '0', f)
-               for f in ('n_N2p', 'n_e')]
+# POSITIVE IONS ONLY. The Gaussian is a seed of positive ions on a uniform
+# n_e = n_i = 1e13 background; the resulting net space charge is what enhances
+# the field locally and initiates the streamer. That is the benchmark
+# definition (Bagheri et al., Plasma Sources Sci. Technol. 27 (2018) 095002,
+# eq. for n_i; and Pasolari & Kourtzanidis, arXiv:2607.05137 sec. 6.1) -- a
+# neutral seed produces no space-charge enhancement and a different, later
+# initiation.
+field_paths = [os.path.join(sol_path, '0', 'n_N2p')]
 
 # 1. Read Mesh for coordinates
 # Returns x, y, z arrays for cell centers

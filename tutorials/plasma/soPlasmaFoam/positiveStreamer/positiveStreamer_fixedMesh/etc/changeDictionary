@@ -48,6 +48,11 @@ ePotential
 
         active_electrode
         {
+            // Ramped, not a step. The benchmark specifies a constant 18.75 kV
+            // from t=0; ramping withholds part of the applied field over the
+            // first ~94 ps, so early-time behaviour is NOT directly comparable
+            // with the reference. Kept deliberately: a step change puts a very
+            // large field transient on the electrode in the first timesteps.
             type            uniformFixedValue;
             uniformValue    table ((0 0) (9.375000e-11 18750));
             value           uniform 0;
@@ -147,7 +152,11 @@ n_e
 
 n_N2p
 {
-    internalField   uniform 1e13;
+    // Background positive charge is split between the ions in proportion to
+    // the gas: 7.9e12 + 2.1e12 = 1e13 = n_e, so the undisturbed gas is
+    // quasi-neutral and matches the clamp floors exactly. A mismatch here
+    // would be clamped away on step 1, as a jump rather than as an error.
+    internalField   uniform 7.9e12;
 
     boundaryField
     {
@@ -195,7 +204,7 @@ n_N2p
 
 n_O2p
 {
-    internalField   uniform 1e5;
+    internalField   uniform 2.1e12;
 
     boundaryField
     {

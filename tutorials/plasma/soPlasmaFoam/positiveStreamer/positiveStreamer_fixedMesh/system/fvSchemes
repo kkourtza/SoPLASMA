@@ -28,11 +28,18 @@ gradSchemes
 divSchemes
 {
     div(phi_e,n_e)                  $electronDriftDivScheme;
+
+    // Drift of any other transported species. Needed only when an ion is given
+    // a transportModel other than `immobile`; with `activeSpecies
+    // fromMechanism` the names are not known here, and a missing entry is
+    // fatal rather than defaulted.
+    "div\(phi_.*,n_.*\)"            $electronDriftDivScheme;
 }
 
 laplacianSchemes
 {
     laplacian(D_e,n_e)              $electronDiffusionLaplacianScheme;
+    "laplacian\(D_.*,n_.*\)"        $electronDiffusionLaplacianScheme;
 
     laplacian((epsilon+(deltaT*electricalConductivity)),ePotential)  $ePotentialLaplacianScheme;
     laplacian(epsilon,ePotential)                                    $ePotentialLaplacianScheme;
@@ -44,6 +51,15 @@ interpolationSchemes
 
     interpolate(mu_e)               $electronMobilityInterpolationScheme; 
     interpolate(D_e)                $electronDiffusivityInterpolationScheme;
+
+    // Any further transported species. With `activeSpecies fromMechanism` the
+    // case does not know their names in advance, so they cannot be listed --
+    // and a missing entry here is a fatal lookup, not a fallback. Reached only
+    // when an ion is given a transportModel other than `immobile`; the named
+    // electron entries above still take precedence.
+    "interpolate\(n_.*\)"           linear;
+    "interpolate\(mu_.*\)"          $electronMobilityInterpolationScheme;
+    "interpolate\(D_.*\)"           $electronDiffusivityInterpolationScheme;
 }
 
 snGradSchemes

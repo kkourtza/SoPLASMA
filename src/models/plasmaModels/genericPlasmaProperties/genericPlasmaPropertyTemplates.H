@@ -52,6 +52,8 @@ Description:
 #include "interpolationTable.H"
 #include "interpolation2DTable.H"
 #include "OSspecific.H"
+#include <fstream>
+#include <string>
 
 namespace Foam
 {
@@ -834,6 +836,26 @@ public:
         td.add("file", path);
         td.add("outOfBounds", dict.getOrDefault<word>("outOfBounds", "clamp"));
         table_ = interpolationTable<scalar>(td);
+
+        // Echo the table's provenance line.
+        //
+        // These tables are generated -- by the EEDF sweep, or by ionmob from an
+        // LXCat download -- and the generator makes choices that change
+        // results: which measured dataset was used when several disagree, which
+        // background gas it was measured in, what E/N range it covers, and
+        // whether its physics checks passed. Recorded in the file header, that
+        // information reached only whoever ran the generator. Printing it here
+        // puts it in the run log, where the person running the SIMULATION sees
+        // it, which is the only place it can actually be reviewed.
+        {
+            std::ifstream f(path);
+            std::string first;
+            if (f && std::getline(f, first) && first.compare(0, 2, "//") == 0)
+            {
+                Info<< "    " << propertyName << ": "
+                    << first.substr(2).c_str() << endl;
+            }
+        }
     }
 
     virtual ~MechanismProperty() = default;
