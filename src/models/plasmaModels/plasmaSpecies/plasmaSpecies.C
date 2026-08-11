@@ -413,6 +413,18 @@ plasmaSpecies::plasmaSpecies
         // has a block at all: the ions have blocks that set only a floor
         // density, and treating any block as an override made
         // `ionTransport driftDiffusion` a silent no-op.
+        // Derived species need a transport model, and `ionTransport` is what
+        // decides it. Handling only the driftDiffusion branch left the default
+        // (`immobile`) case with no transportModel at all, which fails at
+        // construction -- the switch has to answer for both of its values.
+        if (fromMechanism_
+         && !mergedDict.found("transportModel")
+         && sName != speciesNames_[0]
+         && ionTransport_ != "driftDiffusion")
+        {
+            mergedDict.add("transportModel", word("immobile"));
+        }
+
         if (fromMechanism_
          && ionTransport_ == "driftDiffusion"
          && mag(mechCharge_.lookup(sName, 0.0)) > SMALL

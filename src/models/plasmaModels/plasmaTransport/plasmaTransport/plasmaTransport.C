@@ -13,6 +13,7 @@
 
 #include "plasmaTransport.H"
 #include "plasmaReactionRates.H"
+#include "plasmaChemistry.H"
 #include "IFstream.H"
 #include "plasmaTransportModel.H"
 #include "plasmaWallBC.H"
@@ -272,6 +273,22 @@ void plasmaTransport::correctTransportModels()
 // This is for the positive streamer case
 void plasmaTransport::solve()
 {
+    // ── 0. Chemistry, first half-step ─────────────────────────────────────
+    //
+    // Strang splitting: C(dt/2) -> T(dt) -> C(dt/2). Second order in time,
+    // where applying the chemistry once either side of the transport is only
+    // first order. Rate coefficients are interpolated at the field as it
+    // stands, which is what "the field does not move while the chemistry
+    // integrates" means in practice.
+    if (chem_)
+    {
+        plasmaSimulationProfiler::start("Plasma Transport", "chemistry ODE");
+        rates_->correct();
+        applyChemistry(0.5*mesh_.time().deltaTValue());
+        species_.clampNumberDensities();
+        plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
+    }
+
     // ── 1. Update transport coefficients ──────────────────────────────────────
     plasmaSimulationProfiler::start("Plasma Transport", "correctTransportModels");
     correctTransportModels();
@@ -487,6 +504,16 @@ S_iz_.correctBoundaryConditions();
     // plasmaSimulationProfiler::start("Clamp number densities");
     species_.clampNumberDensities();
     // plasmaSimulationProfiler::stop("Clamp number densities");
+
+    // ── Chemistry, second half-step ───────────────────────────────────────
+    if (chem_)
+    {
+        plasmaSimulationProfiler::start("Plasma Transport", "chemistry ODE");
+        rates_->correct();
+        applyChemistry(0.5*mesh_.time().deltaTValue());
+        species_.clampNumberDensities();
+        plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
+    }
 
     // ── 5. Update fluxes for mobile species ───────────────────────────────
     // for (const label i : species_.mobileSpeciesIDs())
@@ -791,6 +818,76 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
 
     photoIonSpecies_ = cd.getOrDefault<word>("photoIonSpecies", "O2p");
 
+    // Operator-split chemistry.
+    //
+    //   none  (default) electron-impact sources are added to the transport
+    //         equations, as before. Existing cases are unaffected.
+    //   ode   the WHOLE mechanism -- electron-impact and heavy -- is
+    //         integrated per cell by a stiff ODE solver, Strang-split around
+    //         the transport solve. This is the only mode in which ions have a
+    //         loss channel, because recombination lives in the heavy set.
+    //
+    // The two are mutually exclusive by construction: with `ode`,
+    // mechanismSourceTerms() adds nothing, or the chemistry would be applied
+    // twice.
+    const word cs = cd.getOrDefault<word>("chemistrySolver", "none");
+    if (cs == "none")
+    {
+        chemistrySolver_ = csNone;
+    }
+    else if (cs == "ode")
+    {
+        chemistrySolver_ = csODE;
+    }
+    else
+    {
+        FatalErrorInFunction
+            << "Unknown chemistrySolver '" << cs << "'" << nl
+            << "Valid: none | ode" << nl << exit(FatalError);
+    }
+
+    if (chemistrySolver_ == csODE)
+    {
+        // Skipping quiescent cells is not an optimisation to add later: a
+        // stiff ODE in every cell of a 1.1M-cell mesh, where all the chemistry
+        // happens in a streamer head a few hundred cells across, is the
+        // difference between minutes and hours per timestep.
+        // Defaults to ZERO: every cell is integrated unless the case says
+        // otherwise. Correctness first, performance opt-in.
+        //
+        // A non-zero default is a trap. Set at 1e14 it silently excluded every
+        // cell of a case whose background is 1e13, and the run then did no
+        // chemistry at all while reporting nothing wrong -- the species simply
+        // did not evolve. A threshold has to be chosen against the case's own
+        // densities, which only the user knows.
+        chemActivityThreshold_ =
+            cd.getOrDefault<scalar>("chemActivityThreshold", 0.0);
+
+        dictionary ccfg(cd);
+        ccfg.add("electronName", species_.speciesNames()[species_.electronSpeciesID()], true);
+        ccfg.add("backgroundDensity", species_.backgroundDensity().value(), true);
+
+        scalarField q(species_.nSpecies());
+        forAll(q, i) q[i] = species_.speciesChargeNumbers()[i];
+
+        chem_.reset
+        (
+            new plasmaChemistry
+            (
+                cd.get<fileName>("mechanism"),
+                species_.speciesNames(),
+                q,
+                ccfg
+            )
+        );
+
+        Info<< "plasmaTransport: chemistrySolver ode, Strang-split, "
+            << "activity threshold " << chemActivityThreshold_ << " 1/m3" << nl
+            << "    Electron-impact sources are NOT added to the transport"
+            << " equations in this mode; the split chemistry carries them,"
+            << " together with the heavy reactions." << endl;
+    }
+
     rates_.reset
     (
         new plasmaReactionRates
@@ -826,6 +923,93 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
 }
 
 
+
+void Foam::plasmaTransport::applyChemistry(const scalar dt)
+{
+    if (!chem_ || dt <= 0) return;
+
+    const label nSp = species_.nSpecies();
+    const label eIdx = species_.electronSpeciesID();
+    const scalarField& neI = species_.numberDensity(eIdx).primitiveField();
+
+    // Rate coefficients are interpolated per cell from the tables, then held
+    // fixed for the substep: under operator splitting the field does not move
+    // while the chemistry integrates.
+    const label nTab = chem_->nTabulated();
+    scalarField kTab(max(nTab, 1), Zero);
+    scalarField n(nSp, Zero);
+
+    const scalar Tgas =
+        species_.backgroundDict().subOrEmptyDict("energy")
+            .getOrDefault<scalar>("T", 300.0);
+
+    label nActive = 0;
+    forAll(neI, celli)
+    {
+        if (neI[celli] < chemActivityThreshold_) continue;
+        ++nActive;
+
+        for (label s = 0; s < nSp; ++s)
+        {
+            n[s] = species_.numberDensities()[s].primitiveField()[celli];
+        }
+        for (label j = 0; j < nTab; ++j)
+        {
+            kTab[j] = rates_->k(j).primitiveField()[celli];
+        }
+
+        // Charge conservation of the RHS, on the cell that is doing the most
+        // chemistry. Switching to the split path bypassed the source-term
+        // diagnostic, and dropping a conservation check when changing how
+        // conservation is achieved is precisely the wrong moment to do it.
+        if (!chemCellsReported_)
+        {
+            chemResidualMax_ =
+                max(chemResidualMax_, chem_->chargeResidual(n, kTab, Tgas));
+        }
+
+        chem_->integrate(n, kTab, Tgas, dt);
+
+        for (label s = 0; s < nSp; ++s)
+        {
+            species_.numberDensity(s).primitiveFieldRef()[celli] = n[s];
+        }
+    }
+
+    if (!chemCellsReported_)
+    {
+        chemCellsReported_ = true;
+        reduce(nActive, sumOp<label>());
+        label nTot = neI.size();
+        reduce(nTot, sumOp<label>());
+
+        if (nActive == 0)
+        {
+            // Not a performance note: with no active cells the run evolves no
+            // chemistry whatsoever, and every species simply stays where it
+            // started. That looks like a converged solution.
+            WarningInFunction
+                << "chemActivityThreshold = " << chemActivityThreshold_
+                << " 1/m3 excludes EVERY cell, so no chemistry is being"
+                << " integrated at all." << nl
+                << "    The largest electron density is "
+                << gMax(neI) << " 1/m3. Lower the threshold, or remove it."
+                << endl;
+        }
+        else
+        {
+            reduce(chemResidualMax_, maxOp<scalar>());
+            Info<< "plasmaChemistry: integrating " << nActive << " of " << nTot
+                << " cells (" << 100.0*nActive/max(nTot, 1) << "%) above the"
+                << " activity threshold" << nl
+                << "    charge residual of the RHS, worst cell: "
+                << chemResidualMax_ << " (identically zero for a"
+                << " charge-conserving mechanism, at any state)" << endl;
+        }
+    }
+}
+
+
 bool Foam::plasmaTransport::mechanismSourceTerms
 (
     List<autoPtr<fvScalarMatrix>>& eqns,
@@ -836,6 +1020,15 @@ bool Foam::plasmaTransport::mechanismSourceTerms
     if (!rates_)
     {
         return false;   // caller falls back to the legacy fits
+    }
+
+    // With operator-split chemistry the sources are applied by
+    // applyChemistry(), not here. Returning true keeps the caller from adding
+    // its legacy fits on top; returning false would do exactly that.
+    if (chemistrySolver_ == csODE)
+    {
+        rates_->correct();
+        return true;
     }
 
     // Interpolation only; cheap, and never throttled -- skipping it would leave

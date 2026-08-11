@@ -1,4 +1,6 @@
 EXE_INC = \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaChemistry/lnInclude \
+    -I$(LIB_SRC)/ODE/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaReactionRates/lnInclude \
     -I$(LIB_SRC)/finiteVolume/lnInclude \
     -I$(LIB_SRC)/OpenFOAM/lnInclude \
@@ -13,6 +15,8 @@ EXE_INC = \
     -I$(SoPLASMA_SRC)/profilers/lnInclude
 
 LIB_LIBS = \
+    -L$(FOAM_USER_LIBBIN) -lplasmaChemistry \
+    -lODE \
     -lplasmaReactionRates \
     -L$(FOAM_USER_LIBBIN) \
     -lfiniteVolume \

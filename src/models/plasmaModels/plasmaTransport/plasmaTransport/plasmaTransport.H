@@ -67,6 +67,7 @@ namespace Foam
 // the include path onto bcs, tools and the solver, all of which then fail
 // to build.
 class plasmaReactionRates;
+class plasmaChemistry;
     
 class photoionizationModel;
 /*---------------------------------------------------------------------------*\
@@ -88,6 +89,15 @@ private:
 
     //- Build rates_ from the `chemistry` sub-dictionary, if present
     void readChemistry(const dictionary& dict);
+
+    //- Integrate the chemistry over `dt` in every active cell.
+    //
+    //  Called twice per timestep with dt/2, either side of the transport
+    //  solve. Strang splitting is second order in time where applying the
+    //  chemistry once, before or after, is only first order -- and splitting
+    //  this way, by halving the CHEMISTRY substep rather than the transport
+    //  one, leaves the transport time discretisation untouched.
+    void applyChemistry(const scalar dt);
 
     //- Mechanism-driven species sources. Returns false when no mechanism is
     //  configured, so the caller falls back to the legacy hard-coded fits and
@@ -142,6 +152,28 @@ protected:
     //  Off by default: discarding a charged product breaks charge conservation
     //  silently, which is not something to warn about.
     bool allowChargeNonConservation_ = false;
+
+    //- Operator-split chemistry. Null unless `chemistrySolver` asks for it,
+    //  in which case it replaces the in-equation source terms entirely --
+    //  applying both would count the chemistry twice.
+    autoPtr<plasmaChemistry> chem_;
+
+    //- none: sources go into the transport equations, as before.
+    //  ode:   Strang splitting with a stiff ODE substep.
+    enum chemSolverType { csNone, csODE };
+    chemSolverType chemistrySolver_ = csNone;
+
+    //- Cells below this electron density are skipped by the chemistry.
+    //  Most of a streamer domain is undisturbed gas at the floor, where the
+    //  ODE integrates a state that does not change; skipping it is what makes
+    //  a per-cell stiff solve affordable at all.
+    scalar chemActivityThreshold_ = 0;
+
+    //- Active-cell count reported once rather than every step
+    bool chemCellsReported_ = false;
+
+    //- Worst relative charge residual seen in the first step
+    scalar chemResidualMax_ = 0;
 
     //- Charge-imbalance warning emitted once
     mutable bool chargeWarned_ = false;
