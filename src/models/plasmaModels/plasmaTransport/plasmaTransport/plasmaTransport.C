@@ -987,10 +987,27 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         chemActivityThreshold_ =
             cd.getOrDefault<scalar>("chemActivityThreshold", 0.0);
 
-        // L*dt above which `adaptive` integrates a cell rather than
-        // linearising it. 1 means "a loss timescale shorter than the
-        // timestep" -- the point at which linearising around the current
-        // state stops being obviously safe.
+        // L*dt at which `adaptive` stops linearising a cell and integrates it.
+        //
+        // L_s is the LOSS COEFFICIENT of species s -- dn_s/dt = P_s - L_s n_s
+        // -- so 1/L_s is its loss timescale and L*dt is the number of loss
+        // timescales crossed in one step:
+        //
+        //   L*dt << 1   the species barely decays in a step; linearise
+        //   L*dt ~  1   one loss timescale per step; either path works
+        //   L*dt >> 1   consumed many times over within a step; integrate,
+        //               because linearising about a state the cell is leaving
+        //               is extrapolation
+        //
+        // 1.0 is where linearising stops being obviously safe -- NOT a
+        // stability boundary. The implicit sink guarantees positivity at any
+        // L*dt; what degrades above 1 is the accuracy of linearising a
+        // nonlinear system about a state that is being left behind.
+        //
+        // Raising it buys speed by linearising more cells, and the cost is
+        // silent: it does not crash, it produces a less accurate source in
+        // exactly the cells that are reacting. The Picard-change report is
+        // what makes that visible, so raise it only with that number in view.
         chemStiffLimit_ =
             cd.getOrDefault<scalar>("chemStiffnessLimit", 1.0);
 

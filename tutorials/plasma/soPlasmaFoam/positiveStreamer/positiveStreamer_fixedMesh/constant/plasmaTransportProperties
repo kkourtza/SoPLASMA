@@ -38,9 +38,22 @@ chemistry
     // BoltzmannSolver docs/numerics-chemistry-coupling.md section 8.
     chemistrySolver adaptive;
 
-    // L*dt above which `adaptive` integrates a cell rather than linearising
-    // it: 1 means "a loss timescale shorter than the timestep". Lower it if
-    // the run reports the source still changing on the last outer iteration.
+    // L*dt at which `adaptive` integrates a cell instead of linearising it.
+    //
+    // L is a species' loss COEFFICIENT (dn/dt = P - L n), so L*dt is the
+    // number of loss timescales crossed in one step. Below 1 the species
+    // barely decays in a step and linearising is accurate and cheap; far
+    // above 1 it is consumed several times over within the step, and
+    // linearising about a state the cell is leaving is extrapolation.
+    //
+    // 1.0 is where linearising stops being obviously safe, NOT a stability
+    // limit -- the implicit sink keeps densities positive at any L*dt.
+    //
+    // LOWER it if the run reports the chemistry source still changing on the
+    // last outer iteration while cells are already being integrated: the
+    // warning says so and names the current value.
+    // RAISING it buys speed and costs accuracy silently, in the cells that
+    // are actually reacting. Watch the reported Picard change if you do.
     chemStiffnessLimit 1.0;
 
     // Cells below this electron density are skipped. 0 = every cell. Raise it
