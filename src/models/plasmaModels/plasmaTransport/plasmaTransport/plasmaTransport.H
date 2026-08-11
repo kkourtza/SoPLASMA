@@ -198,6 +198,13 @@ protected:
     //- Worst relative charge residual seen in the first step
     scalar chemResidualMax_ = 0;
 
+    //- Worst relative charge residual of the INTEGRATED source, and how many
+    //  cells the explicit source would drive negative
+    scalar chemSourceChargeMax_ = 0;
+    label  chemNegativeCells_ = 0;
+    label  chemUnprojectedCells_ = 0;
+    scalar chemSourceChargeAfter_ = 0;
+
     //- Timestep whose start-of-step state is held in chemN0_
     label chemTimeIndex_ = -1;
 

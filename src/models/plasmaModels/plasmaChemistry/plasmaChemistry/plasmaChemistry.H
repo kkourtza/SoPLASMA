@@ -50,6 +50,7 @@ SourceFiles
 #include "fileName.H"
 #include "HashTable.H"
 #include "autoPtr.H"
+#include "scalarMatrices.H"
 
 namespace Foam
 {
@@ -135,6 +136,13 @@ public:
             const scalar Tgas,
             const scalar dt
         ) const;
+
+        //- Right-hand side and Jacobian at a state, for verification.
+        void derivatives(const scalarField& n, const scalarField& kTab,
+                         const scalar Tgas, scalarField& dndt) const;
+        void jacobian(const scalarField& n, const scalarField& kTab,
+                      const scalar Tgas, scalarField& dfdx,
+                      scalarSquareMatrix& dfdy) const;
 
         //- Relative charge residual of the right-hand side at this state.
         //  Identically zero for a charge-conserving mechanism, whatever the

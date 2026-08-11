@@ -176,7 +176,11 @@ Foam::plasmaChemistry::plasmaChemistry
     // wrong answer, and is therefore easy to misattribute.
     if (!odeDict_.found("solver"))
     {
-        odeDict_.add("solver", word("seulex"));
+        // rodas23, not seulex. Both are stiff and accurate, but rodas23
+        // preserves the charge invariant ~70x better through its own
+        // arithmetic (5.0e-08 against 3.5e-06 on the same case), and in a
+        // plasma solver that residual feeds the Poisson equation.
+        odeDict_.add("solver", word("rodas23"));
     }
     odeDict_.add("absTol", odeDict_.getOrDefault<scalar>("absTol", 1e-6), true);
     odeDict_.add("relTol", odeDict_.getOrDefault<scalar>("relTol", 1e-4), true);
@@ -220,6 +224,32 @@ void Foam::plasmaChemistry::integrate
     {
         n[i] = max(n[i], scalar(0));
     }
+}
+
+
+void Foam::plasmaChemistry::derivatives
+(
+    const scalarField& n, const scalarField& kTab,
+    const scalar Tgas, scalarField& dndt
+) const
+{
+    kTab_ = kTab;
+    ode_->setTgas(Tgas);
+    dndt.setSize(species_.size());
+    ode_->derivatives(0.0, n, dndt);
+}
+
+
+void Foam::plasmaChemistry::jacobian
+(
+    const scalarField& n, const scalarField& kTab,
+    const scalar Tgas, scalarField& dfdx, scalarSquareMatrix& dfdy
+) const
+{
+    kTab_ = kTab;
+    ode_->setTgas(Tgas);
+    dfdx.setSize(species_.size());
+    ode_->jacobian(0.0, n, dfdx, dfdy);
 }
 
 

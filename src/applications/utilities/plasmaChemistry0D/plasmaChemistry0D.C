@@ -150,6 +150,63 @@ int main(int argc, char *argv[])
         << "  charge residual of the RHS at t=0: "
         << chem.chargeResidual(n, kTab, Tgas) << endl;
 
+    // ---- Jacobian verification -------------------------------------------
+    //
+    // A linearly-implicit method preserves a linear invariant EXACTLY only if
+    // the Jacobian is exact: q.f = 0 for all states implies q.J = 0, and the
+    // preservation follows from that. So a charge leak in the integrated
+    // result is evidence about the JACOBIAN, not about the integrator -- which
+    // is why this check exists rather than a tolerance study.
+    {
+        const label nEq = chem.nSpecie();
+        scalarField y(n);
+        scalarField f0(nEq), fp(nEq), dfdx(nEq);
+        scalarSquareMatrix J(nEq, Zero);
+
+        chem.derivatives(y, kTab, Tgas, f0);
+        chem.jacobian(y, kTab, Tgas, dfdx, J);
+
+        // Scaled comparison. A naive relative error is meaningless here:
+        // d(N2)/dt is ~1e20 while perturbing a trace species changes it by
+        // ~1e-3, so the finite difference is pure cancellation noise and
+        // reports an "error" of 1 for a perfectly correct entry. Only entries
+        // whose contribution rises above the cancellation floor of the column
+        // are compared.
+        scalar worst = 0; label wi = -1, wj = -1; label nCmp = 0;
+        for (label j = 0; j < nEq; ++j)
+        {
+            const scalar h = 1e-6*max(mag(y[j]), scalar(1));
+            scalarField yp(y); yp[j] += h;
+            chem.derivatives(yp, kTab, Tgas, fp);
+
+            // Cancellation floor: double precision on the largest |f| in this
+            // column, times a safety margin.
+            scalar fmax = 0;
+            for (label i = 0; i < nEq; ++i) fmax = max(fmax, mag(f0[i]));
+            const scalar floor = 1e4*SMALL*fmax/h;
+
+            for (label i = 0; i < nEq; ++i)
+            {
+                const scalar fd = (fp[i] - f0[i])/h;
+                const scalar sc = max(mag(fd), mag(J(i, j)));
+                if (sc < floor) continue;          // unresolvable, not wrong
+                ++nCmp;
+                const scalar e = mag(fd - J(i, j))/sc;
+                if (e > worst) { worst = e; wi = i; wj = j; }
+            }
+        }
+        Info<< "  Jacobian: " << nCmp << " entries above the cancellation floor"
+            << endl;
+        Info<< "  Jacobian vs finite difference: worst relative error "
+            << worst;
+        if (wi >= 0)
+        {
+            Info<< "  at d(" << chem.species()[wi] << ")/d("
+                << chem.species()[wj] << ")";
+        }
+        Info<< endl;
+    }
+
     OFstream os(out);
     os << "t";
     forAll(species, s) os << "," << species[s];
