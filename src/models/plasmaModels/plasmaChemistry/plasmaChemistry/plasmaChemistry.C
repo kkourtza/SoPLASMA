@@ -176,10 +176,48 @@ Foam::plasmaChemistry::plasmaChemistry
     // wrong answer, and is therefore easy to misattribute.
     if (!odeDict_.found("solver"))
     {
-        // rodas23, not seulex. Both are stiff and accurate, but rodas23
-        // preserves the charge invariant ~70x better through its own
-        // arithmetic (5.0e-08 against 3.5e-06 on the same case), and in a
-        // plasma solver that residual feeds the Poisson equation.
+        // DEFAULT: rodas23. Why this one, out of the dozen ODESolver offers.
+        //
+        // Plasma chemistry is stiff by a wide margin -- rate coefficients here
+        // span roughly twenty orders of magnitude, from three-body attachment
+        // at 1e-43 m^6/s to electron-impact ionisation at 1e-14 m^3/s -- and
+        // it is integrated ONCE PER CELL, millions of times per timestep. The
+        // choice is therefore governed by three things at once:
+        //
+        //   STABILITY.  Anything explicit (Euler, RKCK45, RKDP45, RKF45) is
+        //     limited by the fastest reaction, not by the transport. It will
+        //     appear to work and then demand timesteps orders below the CFD
+        //     limit, which presents as a slow run rather than a wrong answer
+        //     and is therefore easy to misattribute. Ruled out on principle,
+        //     not by benchmark.
+        //
+        //   COST PER STEP.  rodas23 is a Rosenbrock method: it needs ONE
+        //     Jacobian and ONE LU factorisation per step and takes no Newton
+        //     iterations at all. There is consequently no nonlinear
+        //     convergence failure to handle -- valuable when the same code
+        //     runs unattended over a million cells. seulex reaches higher
+        //     order by extrapolation, but pays with several factorisations per
+        //     step, and the extra order buys little here because the accuracy
+        //     that matters is set by the splitting (first order, see
+        //     docs/numerics-chemistry-coupling.md), not by the substep.
+        //
+        //   LINEAR INVARIANTS.  Charge conservation is a linear invariant of
+        //     the reaction set. In exact arithmetic any linearly-implicit
+        //     method preserves it, because q.f = 0 implies q.J = 0. In
+        //     floating point they do not, and they differ: measured on the
+        //     same case, the residual of the integrated source was 3.5e-06
+        //     with seulex against 5.0e-08 with rodas23, a factor of 70. That
+        //     residual feeds the Poisson equation through the net charge, so
+        //     it is not a cosmetic difference. (It is projected out
+        //     afterwards regardless -- but starting closer is worth having.)
+        //
+        // rodas23 is also L-stable and stiffly accurate, so it damps the fast
+        // transients instead of ringing on them, which is the behaviour wanted
+        // when a substep is much longer than the fastest chemical timescale.
+        //
+        // `seulex` remains a reasonable choice if substep accuracy ever
+        // becomes the limiting error; `EulerSI` is there for cheap, low-accuracy
+        // work. Both are selectable through odeCoeffs/solver.
         odeDict_.add("solver", word("rodas23"));
     }
     odeDict_.add("absTol", odeDict_.getOrDefault<scalar>("absTol", 1e-6), true);
@@ -208,11 +246,13 @@ void Foam::plasmaChemistry::integrate
     scalarField& n,
     const scalarField& kTab,
     const scalar Tgas,
-    const scalar dt
+    const scalar dt,
+    const scalarField* ext
 ) const
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
+    ode_->setExternal(ext);
 
     scalar dtTry = dt;
     solver_->solve(0.0, dt, n, dtTry);
@@ -220,6 +260,8 @@ void Foam::plasmaChemistry::integrate
     // Densities cannot be negative. An ODE solver can return a small negative
     // value for a species being consumed to near-exhaustion, and letting it
     // through turns the next step's rate law into nonsense.
+    ode_->setExternal(nullptr);
+
     forAll(n, i)
     {
         n[i] = max(n[i], scalar(0));

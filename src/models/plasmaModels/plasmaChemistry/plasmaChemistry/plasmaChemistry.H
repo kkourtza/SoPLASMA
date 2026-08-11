@@ -129,12 +129,18 @@ public:
         //  already interpolated and in tabulatedIds() order. They are held
         //  fixed across the substep: under operator splitting the field does
         //  not change while the chemistry integrates.
+        //  `ext`, when given, is the constant TRANSPORT rate for this cell
+        //  over the step. Supplying it makes the integrated trajectory the
+        //  cell's actual one rather than a closed-cell one, which is what
+        //  raises the coupling from first to second order once it is iterated
+        //  to convergence in the outer loop.
         void integrate
         (
             scalarField& n,
             const scalarField& kTab,
             const scalar Tgas,
-            const scalar dt
+            const scalar dt,
+            const scalarField* ext = nullptr
         ) const;
 
         //- Right-hand side and Jacobian at a state, for verification.

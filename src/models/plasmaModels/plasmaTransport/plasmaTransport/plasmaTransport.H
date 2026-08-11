@@ -215,9 +215,17 @@ protected:
     //  iteration is idempotent rather than cumulative.
     List<scalarField> chemN0_;
 
-    //- Mean chemical production rate over the timestep, (n_chem - n^n)/dt,
-    //  added to the transport equations as an explicit source.
+    //- Mean chemical production rate over the timestep, added to the
+    //  transport equations as an explicit source.
     List<scalarField> chemRR_;
+
+    //- Mean TRANSPORT rate over the timestep, from the previous outer
+    //  iteration. Fed into the chemistry ODE as a constant source so that the
+    //  trajectory it integrates is the cell's actual one rather than a
+    //  closed-cell one -- which is what lifts the coupling to second order
+    //  once the outer loop converges. Zero on the first iteration, where the
+    //  scheme degrades gracefully to the closed-cell (first-order) form.
+    List<scalarField> chemExt_;
 
     //- Outer iterations taken in the current timestep, and how many are
     //  configured

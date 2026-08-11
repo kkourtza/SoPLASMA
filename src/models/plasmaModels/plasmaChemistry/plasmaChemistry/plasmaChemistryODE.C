@@ -41,7 +41,17 @@ void Foam::plasmaChemistryODE::derivatives
     scalarField& dydx
 ) const
 {
-    dydx = Zero;
+    // The transport contribution enters as a constant rate, so the trajectory
+    // the chemistry follows is the one the cell actually takes rather than the
+    // one it would take if it were closed.
+    if (ext_)
+    {
+        dydx = *ext_;
+    }
+    else
+    {
+        dydx = Zero;
+    }
 
     forAll(reactions_, r)
     {
@@ -189,8 +199,16 @@ void Foam::plasmaChemistryODE::jacobian
 
 Foam::scalar Foam::plasmaChemistryODE::chargeResidual(const scalarField& y) const
 {
+    // Measured on the REACTIONS only. Transport moves charge between cells, so
+    // including it here would report a non-zero residual for a perfectly
+    // balanced mechanism.
+    const scalarField* saved = ext_;
+    const_cast<plasmaChemistryODE*>(this)->ext_ = nullptr;
+
     scalarField dydx(nSpecie_, Zero);
     derivatives(0.0, y, dydx);
+
+    const_cast<plasmaChemistryODE*>(this)->ext_ = saved;
 
     scalar net = 0.0, traffic = 0.0;
     forAll(dydx, s)

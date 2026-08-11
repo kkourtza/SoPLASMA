@@ -309,9 +309,12 @@ void plasmaTransport::solve(const bool finalIter)
         {
             chemTimeIndex_ = mesh_.time().timeIndex();
             chemN0_.setSize(species_.nSpecies());
+            chemExt_.setSize(species_.nSpecies());
             forAll(chemN0_, s)
             {
                 chemN0_[s] = species_.numberDensities()[s].primitiveField();
+                chemExt_[s].setSize(mesh_.nCells(), Zero);
+                chemExt_[s] = Zero;
             }
         }
 
@@ -535,6 +538,28 @@ S_iz_.correctBoundaryConditions();
     // plasmaSimulationProfiler::start("Clamp number densities");
     species_.clampNumberDensities();
     // plasmaSimulationProfiler::stop("Clamp number densities");
+
+    // Transport rate implied by the solution just obtained, for the next outer
+    // iteration's chemistry integration:
+    //
+    //     (n - n^n)/dt = T + RR      =>      T = (n - n^n)/dt - RR
+    //
+    // Iterating this to convergence is what makes the split second order: at
+    // the fixed point the ODE integrates along the cell's true trajectory
+    // rather than a closed-cell one, so its mean rate is the mean of the true
+    // rate and not merely its value at the start of the step.
+    if (chem_ && !chemN0_.empty())
+    {
+        const scalar rdt = 1.0/mesh_.time().deltaTValue();
+        forAll(chemExt_, s)
+        {
+            const scalarField& nNow = species_.numberDensities()[s].primitiveField();
+            forAll(chemExt_[s], c)
+            {
+                chemExt_[s][c] = (nNow[c] - chemN0_[s][c])*rdt - chemRR_[s][c];
+            }
+        }
+    }
 
 
 
@@ -983,6 +1008,7 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
     const label nTab = chem_->nTabulated();
     scalarField kTab(max(nTab, 1), Zero);
     scalarField n(nSp, Zero);
+    scalarField ext(nSp, Zero);
 
     const scalar Tgas =
         species_.backgroundDict().subOrEmptyDict("energy")
@@ -1015,11 +1041,23 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
                 max(chemResidualMax_, chem_->chargeResidual(n, kTab, Tgas));
         }
 
-        chem_->integrate(n, kTab, Tgas, dt);
+        // Transport rate for this cell, from the previous outer iteration.
+        const bool haveExt = !chemExt_.empty() && !chemExt_[0].empty();
+        if (haveExt)
+        {
+            for (label s = 0; s < nSp; ++s) ext[s] = chemExt_[s][celli];
+        }
 
+        chem_->integrate(n, kTab, Tgas, dt, haveExt ? &ext : nullptr);
+
+        // The integrated change contains BOTH processes, so the transport part
+        // is removed to leave the chemical source alone. Adding the whole
+        // change would count transport twice -- once here and once in the
+        // equation that is about to be solved.
         for (label s = 0; s < nSp; ++s)
         {
-            chemRR_[s][celli] = (n[s] - chemN0_[s][celli])/dt;
+            chemRR_[s][celli] =
+                (n[s] - chemN0_[s][celli])/dt - (haveExt ? ext[s] : 0.0);
         }
 
         // Project the source onto exact charge conservation.

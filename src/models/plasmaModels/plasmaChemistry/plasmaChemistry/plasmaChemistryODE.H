@@ -130,6 +130,19 @@ class plasmaChemistryODE
 
         label nSpecie_;
 
+        //- Constant external rate added to every derivative [m^-3 s^-1].
+        //
+        //  The TRANSPORT contribution over the step, held fixed while the
+        //  chemistry integrates. Without it the ODE follows a trajectory in
+        //  which the cell is closed -- no drift in, no diffusion out -- and
+        //  the mean rate along that trajectory is only a first-order
+        //  approximation to the mean along the true one. Including it, and
+        //  iterating it to convergence in the outer loop, is what makes the
+        //  coupling second order.
+        //
+        //  Null when not supplied, which is the closed-cell case.
+        const scalarField* ext_ = nullptr;
+
         //- Reaction rates, sized once and reused: derivatives() is called
         //  several times per step by every ODE solver worth using.
         mutable scalarField rate_;
@@ -155,6 +168,9 @@ public:
 
         //- Gas temperature used by the Arrhenius rates
         void setTgas(const scalar T) { Tgas_ = T; }
+
+        //- Constant external (transport) rate for this cell; null to disable
+        void setExternal(const scalarField* e) { ext_ = e; }
 
         void derivatives
         (
