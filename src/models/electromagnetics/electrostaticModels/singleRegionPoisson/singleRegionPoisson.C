@@ -140,8 +140,23 @@ singleRegionPoisson::singleRegionPoisson
 
     nNonOrthCorr_ = coeffs.getOrDefault<label>("nNonOrthogonalCorrectors", 0);
 
-    backgroundDensityUniform_.value() =
-        coeffs.getOrDefault<scalar>("backgroundDensity", 2.5e25);
+    // NOT read from this dictionary. The gas density has one owner --
+    // `backgroundGas` in plasmaSpeciesProperties, where it is either stated or
+    // closed from pressure and temperature -- and plasmaSpecies pushes it in
+    // through setBackgroundDensity(). A second copy here silently evaluated
+    // reducedE, and therefore every rate coefficient and mobility in the run,
+    // at a different gas state than the case declared.
+    if (coeffs.found("backgroundDensity"))
+    {
+        FatalIOErrorInFunction(coeffs)
+            << "`backgroundDensity` in " << coeffs.name() << " is no longer"
+            << " read: it was a second, independent definition of the gas"
+            << " density and it did not agree with the one in"
+            << " plasmaSpeciesProperties." << nl
+            << "    Remove it. The density comes from `backgroundGas` there,"
+            << " as `numberDensity` or as `pressure` + `T`." << nl
+            << exit(FatalIOError);
+    }
 }
 
 // * * * * * * * * * * * * * * Public Member Functions * * * * * * * * * * * //

@@ -180,6 +180,20 @@ public:
         const dimensionedScalar& epsilon() const { return epsilon_; }
         scalar epsilonR() const { return epsilonR_; }
 
+        //- Gas number density used to reduce E into E/N.
+        //
+        //  Pushed in by plasmaSpecies, which owns it. It must NOT be read
+        //  independently from electromagneticsProperties: the chemistry and
+        //  the transport coefficients are looked up at E/N, so a second
+        //  definition of N means the rates are evaluated at a different gas
+        //  state than the one the case declares -- silently, and by whatever
+        //  factor the two happen to differ. That is what happened here: the
+        //  Poisson model defaulted to 1 atm while the species model derived
+        //  1 bar from the ideal gas law, and every rate lookup in the run was
+        //  off by 1.3%.
+        virtual void setBackgroundDensity(const dimensionedScalar& N) = 0;
+        virtual void setBackgroundDensity(const volScalarField& N) = 0;
+
         virtual const word& PoissonScheme() const = 0;
         virtual label nNonOrthCorr() const = 0;
         virtual const word& EScheme() const = 0;

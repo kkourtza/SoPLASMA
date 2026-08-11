@@ -162,14 +162,14 @@ public:
     // Configuration
 
         //- Set uniform background density for reducedE
-        void setBackgroundDensity(const dimensionedScalar& N)
+        void setBackgroundDensity(const dimensionedScalar& N) override
         {
             backgroundDensityUniform_ = N;
             backgroundDensityFieldPtr_ = nullptr;
         }
 
         //- Set spatially varying background density for reducedE
-        void setBackgroundDensity(const volScalarField& N)
+        void setBackgroundDensity(const volScalarField& N) override
         {
             backgroundDensityFieldPtr_ = &N;
         }

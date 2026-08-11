@@ -123,35 +123,25 @@ speciesProperties
   // Negative ions keep the 1e5 floor: they are reaction products, not
   // background, and floors on them would put net negative charge into
   // undisturbed gas.
+  // Charge, mass and transport now come from the mechanism and from
+  // `ionTransport`; only the floor density is a case decision.
   N2p
   {
-    transportModel            immobile;
-    charge                    +1;
-    mass                      4.6495e-26;
     minNumberDensity          7.9e12;
   }
 
   O2p
   {
-    transportModel            immobile;
-    charge                    +1;
-    mass                      5.3137e-26;
     minNumberDensity          2.1e12;
   }
 
   Om
   {
-    transportModel            immobile;
-    charge                    -1;
-    mass                      2.6569e-26;
     minNumberDensity          1e5;
   }
 
   O2m
   {
-    transportModel            immobile;
-    charge                    -1;
-    mass                      5.3137e-26;
     minNumberDensity          1e5;
   }
 }

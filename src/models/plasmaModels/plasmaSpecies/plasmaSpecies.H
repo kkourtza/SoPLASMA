@@ -139,6 +139,10 @@ protected:
             HashTable<scalar> mechCharge_;
             HashTable<scalar> mechMass_;
 
+            //- How derived ions are transported: immobile | driftDiffusion
+            word ionTransport_ = "immobile";
+            word ionFluxScheme_ = "standard";
+
             //- Total neutral number density field [1/m3] 
             //- Sum of nBackground_ + all active neutrals
             volScalarField totalNeutralDensity_;
@@ -215,7 +219,9 @@ public:
         (
             const dictionary& speciesDict,
             HashTable<scalar>* chargeOut = nullptr,
-            HashTable<scalar>* massOut = nullptr
+            HashTable<scalar>* massOut = nullptr,
+            word* ionTrOut = nullptr,
+            word* fluxOut = nullptr
         );
 
 

@@ -31,7 +31,8 @@ defineTypeNameAndDebug(plasmaSpecies, 0);
 void Foam::plasmaSpecies::readMechanismSpecies()
 {
     fromMechanism_ = true;
-    speciesNames_ = speciesFromMechanism(*this, &mechCharge_, &mechMass_);
+    speciesNames_ = speciesFromMechanism(*this, &mechCharge_, &mechMass_,
+                                        &ionTransport_, &ionFluxScheme_);
 }
 
 
@@ -39,7 +40,9 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
 (
     const dictionary& speciesDict,
     HashTable<scalar>* chargeOut,
-    HashTable<scalar>* massOut
+    HashTable<scalar>* massOut,
+    word* ionTrOut,
+    word* fluxOut
 )
 {
     // Static, and taking only the dictionary, because two callers need it: this
@@ -99,6 +102,25 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
     //                       fixed by construction, so transporting it both
     //                       doubles its cost and lets it drift from the density
     //                       the rate tables were built at.
+    // How derived IONS are transported.
+    //
+    //   immobile         (default) they carry space charge but do not move.
+    //                    Correct on nanosecond timescales -- an ion drifts a
+    //                    few microns while an electron crosses the domain --
+    //                    and what the streamer benchmark assumes.
+    //   driftDiffusion   they drift and diffuse, using the mu*N and D*N tables
+    //                    ionmob writes from LXCat measurements. Needed for
+    //                    anything longer: ion motion sets the timescale of
+    //                    afterglow, and of a DBD's memory between pulses.
+    const word ionTr = md.getOrDefault<word>("ionTransport", "immobile");
+    if (ionTr != "immobile" && ionTr != "driftDiffusion")
+    {
+        FatalIOErrorInFunction(speciesDict)
+            << "Unknown `ionTransport` '" << ionTr << "' in mechanismSpecies"
+            << nl << "Valid: immobile | driftDiffusion" << nl
+            << exit(FatalIOError);
+    }
+
     const word select = md.getOrDefault<word>("include", "charged");
     if (select != "charged" && select != "chargedAndExcited" && select != "all")
     {
@@ -158,6 +180,9 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
 
     if (chargeOut) *chargeOut = mechCharge_;
     if (massOut)   *massOut   = mechMass_;
+    if (ionTrOut)  *ionTrOut  = ionTr;
+    if (fluxOut)   *fluxOut   =
+        md.getOrDefault<word>("ionFluxScheme", "standard");
     return names;
 }
 
@@ -283,6 +308,11 @@ plasmaSpecies::plasmaSpecies
 
     totalNeutralDensity_ == backgroundDensity_;
 
+    // One owner for the gas density. The electromagnetics model needs it to
+    // form reducedE = |E|/N, and reading its own copy is how E/N came to be
+    // evaluated at 1 atm while the case was at 1 bar.
+    em_.setBackgroundDensity(backgroundDensity_);
+
     const dictionary bgEnergyDict = backgroundDict_.subOrEmptyDict("energy");
     bool solveBg = bgEnergyDict.getOrDefault<bool>("solve", false);
     bool bgIsField = solveBg || !bgEnergyDict.found("T");
@@ -368,6 +398,56 @@ plasmaSpecies::plasmaSpecies
         if (propsDict.found(sName))
         {
             mergedDict.merge(propsDict.subDict(sName));
+        }
+
+        // `ionTransport driftDiffusion` gives every derived ION a
+        // drift-diffusion model reading the tables ionmob generated, without
+        // the case naming a single one of them. The point of deriving species
+        // from the mechanism is that the case does not restate what the
+        // mechanism already knows; making the user then hand-write a
+        // driftDiffusionCoeffs block per ion would give that back.
+        //
+        // A species with its own sub-dictionary still wins, so one ion can be
+        // treated differently without opting the rest out.
+        // Gated on `transportModel` specifically, not on whether the species
+        // has a block at all: the ions have blocks that set only a floor
+        // density, and treating any block as an override made
+        // `ionTransport driftDiffusion` a silent no-op.
+        if (fromMechanism_
+         && ionTransport_ == "driftDiffusion"
+         && mag(mechCharge_.lookup(sName, 0.0)) > SMALL
+         && sName != speciesNames_[0]
+         && !mergedDict.found("transportModel"))
+        {
+            dictionary dd;
+            dd.add("fluxScheme", ionFluxScheme_);
+
+            dictionary mu;
+            mu.add("type", word("fromMechanism"));
+            mu.add("quantity", word("muN_" + sName));
+            dd.add("mobility", mu);
+
+            dictionary dif;
+            dif.add("type", word("fromMechanism"));
+            dif.add("quantity", word("DLN_" + sName));
+            dd.add("diffusivity", dif);
+
+            mergedDict.add("transportModel", word("driftDiffusion"));
+            mergedDict.add("driftDiffusionCoeffs", dd);
+        }
+        else if (fromMechanism_
+              && ionTransport_ == "driftDiffusion"
+              && mag(mechCharge_.lookup(sName, 0.0)) > SMALL
+              && sName != speciesNames_[0])
+        {
+            // Asked for mobile ions and got an override. Legitimate -- one ion
+            // may need different treatment -- but silence here would let a
+            // case believe its ions move when they do not.
+            WarningInFunction
+                << "`ionTransport driftDiffusion` is set, but species '"
+                << sName << "' declares its own transportModel ("
+                << mergedDict.get<word>("transportModel")
+                << "), which takes precedence." << endl;
         }
         speciesDicts_.insert(sName, mergedDict);
 
