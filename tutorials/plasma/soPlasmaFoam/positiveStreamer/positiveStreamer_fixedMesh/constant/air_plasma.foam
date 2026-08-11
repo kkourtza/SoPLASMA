@@ -112,3 +112,45 @@ processes
     { index 42; id EI_O2_ION_O2; target O2; reactants (Electron O2); products (O2p Electron Electron); threshold 12.06; }
 );
 
+// Heavy chemistry: everything that is NOT electron impact --
+// recombination, ion-ion neutralisation, detachment, quenching.
+//
+// Rates are Arrhenius in the GAS temperature, k = A T^b exp(-Ta/T),
+// in molecular units (m^3/s, or m^6/s where an order-3 reaction
+// names a collider). No EEDF is involved, which is why these do not
+// need the Boltzmann solver and can be evaluated directly.
+//
+// Stoichiometry is expanded by repetition, as in `processes` above,
+// so one source-term loop can apply both.
+nHeavyReactions 26;
+
+heavyReactions
+(
+    { index 0; id HV_0; equation "Electron + N2+ => 2 N"; order 2; reactants (Electron N2p); products (N N); A 1.8000000000e-13; b -0.39; Ta 0; }
+    { index 1; id HV_1; equation "Electron + O2+ => 2 O"; order 2; reactants (Electron O2p); products (O O); A 2.0000000000e-13; b -0.7; Ta 0; }
+    { index 2; id HV_2; equation "O- + O2+ => O + O2"; order 2; reactants (Om O2p); products (O O2); A 2.0000000000e-13; b -0.5; Ta 0; }
+    { index 3; id HV_3; equation "N2+ + O- => N2 + O"; order 2; reactants (N2p Om); products (N2 O); A 2.0000000000e-13; b -0.5; Ta 0; }
+    { index 4; id HV_4; equation "O2+ + O2- => 2 O2"; order 2; reactants (O2p O2m); products (O2 O2); A 2.0000000000e-13; b -0.5; Ta 0; }
+    { index 5; id HV_5; equation "N2+ + O2- => N2 + O2"; order 2; reactants (N2p O2m); products (N2 O2); A 2.0000000000e-13; b -0.5; Ta 0; }
+    { index 6; id HV_6; equation "O + O- => Electron + O2"; order 2; reactants (O Om); products (Electron O2); A 5.0000000000e-16; b 0; Ta 0; }
+    { index 7; id HV_7; equation "O- + N2 => Electron + O + N2"; order 2; reactants (Om); products (Electron O); collider N2; A 1.1600000000e-18; b 0; Ta 0; }
+    { index 8; id HV_8; equation "O + O2- => O- + O2"; order 2; reactants (O O2m); products (Om O2); A 3.3000000000e-16; b 0; Ta 0; }
+    { index 9; id HV_9; equation "O2- + O2 => Electron + O2 + O2"; order 2; reactants (O2m); products (Electron O2); collider O2; A 2.7000000000e-16; b 0.5; Ta 5590; }
+    { index 10; id HV_10; equation "N2(A3) + O2 => N2 + 2 O"; order 2; reactants (N2_A3 O2); products (N2 O O); A 2.5400000000e-18; b 0; Ta 0; }
+    { index 11; id HV_11; equation "N2(A3) + O => N2 + O"; order 2; reactants (N2_A3 O); products (N2 O); A 3.0000000000e-17; b 0; Ta 0; }
+    { index 12; id HV_12; equation "N2 + N2(A3) => 2 N2"; order 2; reactants (N2 N2_A3); products (N2 N2); A 3.0000000000e-22; b 0; Ta 0; }
+    { index 13; id HV_13; equation "N2 + N2(B3) => N2 + N2(A3)"; order 2; reactants (N2 N2_B3); products (N2 N2_A3); A 3.0000000000e-17; b 0; Ta 0; }
+    { index 14; id HV_14; equation "N2(B3) + O2 => N2 + 2 O"; order 2; reactants (N2_B3 O2); products (N2 O O); A 3.0000000000e-16; b 0; Ta 0; }
+    { index 15; id HV_15; equation "N2(a'1) + O2 => N2 + 2 O"; order 2; reactants (N2_aP1 O2); products (N2 O O); A 2.8000000000e-17; b 0; Ta 0; }
+    { index 16; id HV_16; equation "N2 + N2(a'1) => N2 + N2(B3)"; order 2; reactants (N2 N2_aP1); products (N2 N2_B3); A 2.0000000000e-19; b 0; Ta 0; }
+    { index 17; id HV_17; equation "N2 + N2(C3) => N2 + N2(a'1)"; order 2; reactants (N2 N2_C3); products (N2 N2_aP1); A 1.0000000000e-17; b 0; Ta 0; }
+    { index 18; id HV_18; equation "N2(C3) + O2 => N2 + 2 O"; order 2; reactants (N2_C3 O2); products (N2 O O); A 2.5000000000e-16; b 0; Ta 0; }
+    { index 19; id HV_19; equation "O2 + O2(a1) => 2 O2"; order 2; reactants (O2 O2_a1); products (O2 O2); A 2.2000000000e-24; b 0.8; Ta 0; }
+    { index 20; id HV_20; equation "N2 + O2(a1) => N2 + O2"; order 2; reactants (N2 O2_a1); products (N2 O2); A 3.0000000000e-27; b 0; Ta 0; }
+    { index 21; id HV_21; equation "O2 + O2(b1) => O2 + O2(a1)"; order 2; reactants (O2 O2_b1); products (O2 O2_a1); A 4.3000000000e-28; b 2.4; Ta -241; }
+    { index 22; id HV_22; equation "N2 + O2(b1) => N2 + O2(a1)"; order 2; reactants (N2 O2_b1); products (N2 O2_a1); A 1.7000000000e-21; b 0; Ta 0; }
+    { index 23; id HV_23; equation "2 N2(A3) => Electron + N2 + N2+"; order 2; reactants (N2_A3 N2_A3); products (Electron N2 N2p); A 5.0000000000e-17; b 0; Ta 0; }
+    { index 24; id HV_24; equation "2 O + N2 => O2 + N2"; order 3; reactants (O O); products (O2); collider N2; A 1.2000000000e-44; b -1; Ta 0; }
+    { index 25; id HV_25; equation "2 N + N2 => N2 + N2"; order 3; reactants (N N); products (N2); collider N2; A 8.3000000000e-46; b 0; Ta 500; }
+);
+
