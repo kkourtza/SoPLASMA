@@ -97,9 +97,22 @@ private:
     //  chemistry once, before or after, is only first order -- and splitting
     //  this way, by halving the CHEMISTRY substep rather than the transport
     //  one, leaves the transport time discretisation untouched.
-    void applyChemistry(const scalar dt);
+    //- Integrate the chemistry over `dt` from the start-of-step state and
+    //  store the mean rate in chemRR_. Does NOT modify the species fields.
+    //
+    //  Modifying them directly is what the first implementation did, and it
+    //  is wrong in OpenFOAM: fvm::ddt(n) differences against n.oldTime(),
+    //  which is stored before the chemistry runs and does not follow it.
+    //  The transport solve then sees the chemical change as a transport
+    //  change and partially undoes it -- measured directly, oldTime kept the
+    //  pre-chemistry value at every step. Delivering the chemistry as a
+    //  SOURCE keeps ddt and oldTime consistent by construction, which is
+    //  what reactingFoam does with its RR field.
+    void computeChemistrySources(const scalar dt);
 
-    //- True on the last PIMPLE outer iteration of this timestep.
+    //- True on the last PIMPLE outer iteration of this timestep. Retained
+    //  for reporting; the source formulation no longer needs it, because
+    //  recomputing the source each outer iteration is idempotent.
     //
     //  solve() is called once per OUTER ITERATION, not once per timestep, and
     //  Strang splitting has to bracket the timestep. plasmaTransport holds no
@@ -185,10 +198,19 @@ protected:
     //- Worst relative charge residual seen in the first step
     scalar chemResidualMax_ = 0;
 
-    //- Timestep the first chemistry half-step was taken in, so the pair
-    //  brackets the TIMESTEP and not each PIMPLE outer iteration
+    //- Timestep whose start-of-step state is held in chemN0_
     label chemTimeIndex_ = -1;
-    bool  chemFirstHalfDone_ = false;
+
+    //- Species densities at the START of the timestep, n^n.
+    //
+    //  The chemistry is always integrated FROM this state, never from the
+    //  partially-updated field, so recomputing the source on every outer
+    //  iteration is idempotent rather than cumulative.
+    List<scalarField> chemN0_;
+
+    //- Mean chemical production rate over the timestep, (n_chem - n^n)/dt,
+    //  added to the transport equations as an explicit source.
+    List<scalarField> chemRR_;
 
     //- Outer iterations taken in the current timestep, and how many are
     //  configured

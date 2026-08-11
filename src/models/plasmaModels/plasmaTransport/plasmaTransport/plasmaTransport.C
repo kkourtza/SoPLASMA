@@ -280,36 +280,43 @@ void plasmaTransport::solve(const bool finalIter)
     // first order. Rate coefficients are interpolated at the field as it
     // stands, which is what "the field does not move while the chemistry
     // integrates" means in practice.
-    // STRANG SPLITTING: C(dt/2) T(dt) C(dt/2), bracketing the TIMESTEP.
+    // Chemistry as a SOURCE, not as a field update.
     //
-    // solve() is called once per PIMPLE OUTER ITERATION, not once per
-    // timestep. Applying a half-step on every call advanced the chemistry by
-    // nOuterCorrectors*dt while the transport advanced dt -- invisible with
-    // the tutorial's single corrector, and a factor of 8 with eight.
+    // The first implementation advanced the species fields directly, Strang
+    // split around the transport solve. That is wrong in OpenFOAM and the
+    // measurement showed it: fvm::ddt(n) differences against n.oldTime(),
+    // which is stored before the chemistry runs and does not follow it, so
+    // the transport solve saw the chemical change as a transport change and
+    // partially undid it. Audited directly -- oldTime kept the pre-chemistry
+    // value at every step -- and it capped the coupled scheme at first order
+    // while the unsplit path reached p = 1.94.
     //
-    // The trailing half-step needs PIMPLE's finalIter(), which the caller
-    // passes in: counting outer iterations here was wrong as soon as residual
-    // control let the loop exit before nOuterCorrectors, and that discrepancy
-    // is what made nOuterCorrectors 8 disagree with 1.
+    // Instead the ODE is integrated from the START-OF-STEP state over dt and
+    // the mean rate (n_chem - n^n)/dt is handed to the transport equations as
+    // an explicit source, exactly as reactingFoam does with RR. ddt and
+    // oldTime then stay consistent by construction.
     //
-    // Measured temporal order of the coupled solve, 40x40 case, t_end 200 ps:
-    //
-    //     chemistrySolver none, nOuterCorrectors 1     p = 0.87
-    //     chemistrySolver none, nOuterCorrectors 8     p = 1.94
-    //
-    // The first-order behaviour is the EXPLICIT Poisson-species coupling, not
-    // the chemistry: converge the outer loop and the underlying scheme is
-    // second order, as `backward` ddt implies. Strang becomes worth its
-    // complication only once a case runs with a converged outer loop.
-    if (chem_ && mesh_.time().timeIndex() != chemTimeIndex_)
+    // Recomputed on EVERY outer iteration, from n^n rather than from the
+    // partially updated field, so it is idempotent rather than cumulative --
+    // which is what made the previous version scale with nOuterCorrectors --
+    // and the chemistry-transport coupling becomes implicit as the outer loop
+    // converges.
+    if (chem_)
     {
-        chemTimeIndex_ = mesh_.time().timeIndex();
-        chemFirstHalfDone_ = true;
-
         plasmaSimulationProfiler::start("Plasma Transport", "chemistry ODE");
+
+        if (mesh_.time().timeIndex() != chemTimeIndex_)
+        {
+            chemTimeIndex_ = mesh_.time().timeIndex();
+            chemN0_.setSize(species_.nSpecies());
+            forAll(chemN0_, s)
+            {
+                chemN0_[s] = species_.numberDensities()[s].primitiveField();
+            }
+        }
+
         rates_->correct();
-        applyChemistry(0.5*mesh_.time().deltaTValue());
-        species_.clampNumberDensities();
+        computeChemistrySources(mesh_.time().deltaTValue());
         plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
     }
 
@@ -529,23 +536,6 @@ S_iz_.correctBoundaryConditions();
     species_.clampNumberDensities();
     // plasmaSimulationProfiler::stop("Clamp number densities");
 
-    // ── Chemistry, trailing half-step ─────────────────────────────────────
-    //
-    // On PIMPLE's final outer iteration, so the pair brackets the TIMESTEP:
-    // C(dt/2) T(dt) C(dt/2). The caller supplies finalIter() because only it
-    // knows -- residual control can end the loop before nOuterCorrectors, so
-    // counting iterations here would silently drop this half-step and leave
-    // the chemistry advancing dt/2 per step.
-    if (chem_ && chemFirstHalfDone_ && finalIter)
-    {
-        chemFirstHalfDone_ = false;
-
-        plasmaSimulationProfiler::start("Plasma Transport", "chemistry ODE");
-        rates_->correct();
-        applyChemistry(0.5*mesh_.time().deltaTValue());
-        species_.clampNumberDensities();
-        plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
-    }
 
 
     // ── 5. Update fluxes for mobile species ───────────────────────────────
@@ -971,9 +961,16 @@ bool Foam::plasmaTransport::finalOuterIteration()
 }
 
 
-void Foam::plasmaTransport::applyChemistry(const scalar dt)
+void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
 {
     if (!chem_ || dt <= 0) return;
+
+    chemRR_.setSize(species_.nSpecies());
+    forAll(chemRR_, s)
+    {
+        chemRR_[s].setSize(mesh_.nCells(), Zero);
+        chemRR_[s] = Zero;
+    }
 
 
     const label nSp = species_.nSpecies();
@@ -997,9 +994,11 @@ void Foam::plasmaTransport::applyChemistry(const scalar dt)
         if (neI[celli] < chemActivityThreshold_) continue;
         ++nActive;
 
+        // FROM THE START-OF-STEP STATE, not from the partially updated
+        // field: that is what makes recomputation idempotent.
         for (label s = 0; s < nSp; ++s)
         {
-            n[s] = species_.numberDensities()[s].primitiveField()[celli];
+            n[s] = chemN0_[s][celli];
         }
         for (label j = 0; j < nTab; ++j)
         {
@@ -1020,7 +1019,7 @@ void Foam::plasmaTransport::applyChemistry(const scalar dt)
 
         for (label s = 0; s < nSp; ++s)
         {
-            species_.numberDensity(s).primitiveFieldRef()[celli] = n[s];
+            chemRR_[s][celli] = (n[s] - chemN0_[s][celli])/dt;
         }
     }
 
@@ -1073,9 +1072,29 @@ bool Foam::plasmaTransport::mechanismSourceTerms
     // With operator-split chemistry the sources are applied by
     // applyChemistry(), not here. Returning true keeps the caller from adding
     // its legacy fits on top; returning false would do exactly that.
+    // With the source formulation the chemistry is delivered HERE, as an
+    // explicit source per species, rather than by advancing the fields.
     if (chemistrySolver_ == csODE)
     {
-        rates_->correct();
+        forAll(chemRR_, s)
+        {
+            if (s >= eqns.size() || !eqns[s] || chemRR_[s].empty()) continue;
+
+            volScalarField src
+            (
+                IOobject
+                (
+                    "chemRR_" + species_.speciesNames()[s],
+                    mesh_.time().timeName(), mesh_,
+                    IOobject::NO_READ, IOobject::NO_WRITE
+                ),
+                mesh_,
+                dimensionedScalar(dimensionSet(0, -3, -1, 0, 0, 0, 0), Zero)
+            );
+            src.primitiveFieldRef() = chemRR_[s];
+
+            *eqns[s] -= src;
+        }
         return true;
     }
 
