@@ -225,6 +225,7 @@ protected:
 
     //- Cells taking each path, for reporting
     label chemNstiff_ = 0;
+    label chemODEFailures_ = 0;
 
     //- Relative change of the chemistry source between consecutive outer
     //  iterations. Small means the Picard iteration is converging and

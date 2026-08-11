@@ -270,15 +270,21 @@ void Foam::plasmaChemistryODE::productionLoss
         {
             const label s = rx.reactants[i];
             if (s < 0) continue;
+            // The loss COEFFICIENT is q/n, so a vanishing density makes it
+            // unbounded. VSMALL (1e-300) as the floor produces L ~ 1e300,
+            // which overflows the matrix and raises SIGFPE in the linear
+            // solver -- found by a stress test, not in review.
+            //
+            // The floor is physical rather than numerical: below one particle
+            // per cubic metre there is nothing to lose, and a sink for an
+            // absent species is meaningless.
             const scalar ns = max(y[s], scalar(0));
-            if (ns > VSMALL)
+            if (ns > 1.0)
             {
                 L[s] += q/ns;
             }
             else
             {
-                // Nothing there to lose. Adding a coefficient here would
-                // manufacture a sink for a species that is absent.
                 P[s] -= q;
             }
         }

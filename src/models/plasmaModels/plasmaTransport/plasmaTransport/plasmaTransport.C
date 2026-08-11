@@ -14,6 +14,7 @@
 #include "plasmaTransport.H"
 #include "plasmaReactionRates.H"
 #include "plasmaChemistry.H"
+#include <cmath>
 #include "IFstream.H"
 #include "plasmaTransportModel.H"
 #include "plasmaWallBC.H"
@@ -1425,6 +1426,32 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 nEnd = n0;
                 chem_->integrate(nEnd, kTab, Tgas, dtNow);
 
+                // An ODE solver can fail on a step far longer than the
+                // chemistry it is integrating, and it does not always say so:
+                // it returns non-finite values. Feeding those into the matrix
+                // raises SIGFPE inside the linear solver, several layers away
+                // from the cause -- which is how this was found.
+                //
+                // Fall back to the linearised P/L already computed for this
+                // cell. That is exactly the right fallback: it is stable at
+                // any L*dt, only less accurate, which is the trade the cell
+                // was going to make anyway.
+                bool ok = true;
+                for (label sp = 0; sp < nSp; ++sp)
+                {
+                    if (!std::isfinite(nEnd[sp]) || nEnd[sp] < 0)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (!ok)
+                {
+                    ++chemODEFailures_;
+                }
+                else
+
+                {
                 // Mean rate over the step, then projected onto exact charge
                 // conservation -- the integrator does not preserve the linear
                 // invariant exactly in floating point.
@@ -1456,11 +1483,25 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                         P[sp] = rr[sp];
                         L[sp] = 0;
                     }
+                    else if (n[sp] > 1.0)
+                    {
+                        // Loss coefficient, capped so that a species being
+                        // consumed to exhaustion cannot put an unbounded
+                        // entry on the matrix diagonal. L*dt = 1e3 already
+                        // removes all but 1e-3 of it in one step, so the cap
+                        // is physically indistinguishable from complete
+                        // consumption and numerically finite.
+                        P[sp] = 0;
+                        L[sp] = min(-rr[sp]/n[sp], 1.0e3/dtNow);
+                    }
                     else
                     {
+                        // Below one particle per cubic metre there is nothing
+                        // to lose.
                         P[sp] = 0;
-                        L[sp] = -rr[sp]/max(n[sp], VSMALL);
+                        L[sp] = 0;
                     }
+                }
                 }
             }
 
@@ -1500,6 +1541,17 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             reduce(chemActiveCount_, sumOp<label>());
             reduce(chemStiffness_, maxOp<scalar>());
             reduce(chemNstiff_, sumOp<label>());
+            reduce(chemODEFailures_, sumOp<label>());
+            if (chemODEFailures_ > 0)
+            {
+                WarningInFunction
+                    << chemODEFailures_ << " cell(s) had the stiff integration"
+                    << " return non-finite values and fell back to the"
+                    << " linearised source." << nl
+                    << "    deltaT is far longer than the chemistry in those"
+                    << " cells. The fallback is stable but less accurate;"
+                    << " reduce deltaT if they matter." << endl;
+            }
             if (chemistrySolver_ == csAdaptive)
             {
                 Info<< "plasmaChemistry: adaptive, " << chemNstiff_ << " of "

@@ -14,7 +14,7 @@ set -e
 source /usr/lib/openfoam/openfoam2412/etc/bashrc >/dev/null 2>&1 || true
 export SoPLASMA=$HOME/soplasma-scratch SoPLASMA_SRC=$HOME/soplasma-scratch/src SoPLASMA_ETC=$HOME/soplasma-scratch/etc
 SRC=$HOME/soplasma-scratch/tutorials/plasma/soPlasmaFoam/positiveStreamer/positiveStreamer_fixedMesh
-CASE=$HOME/streamer-smoke
+CASE=${CASE:-$HOME/streamer-smoke}
 
 rm -rf "$CASE"; cp -r "$SRC" "$CASE"; cd "$CASE"
 rm -rf .snapshot0 processor* [0-9]*e-* logs log.* 2>/dev/null || true
@@ -29,8 +29,12 @@ sed -i 's|^python initGaussianSeed.py|~/ct-env/bin/python initGaussianSeed.py|' 
 sed -i 's|^cp -r 0.orig/\* 0/|mkdir -p 0 \&\& cp -r 0.orig/* 0/|' Allrun-serial
 
 # Coarse base mesh, and no refinement passes at all.
-sed -i 's|    (130 130 1)|    (40 40 1)|' system/blockMeshDict
-sed -i '/topoSet -dict/d;/refineMesh -dict/d' Allrun-serial
+sed -i "s|    (130 130 1)|    (${NCELL:-40} ${NCELL:-40} 1)|" system/blockMeshDict
+if [ "${NREFINE:-0}" -lt 5 ]; then
+  for lvl in $(seq $(( ${NREFINE:-0} + 1 )) 5); do
+    sed -i "/topoSetDict$lvl/d;/refineMeshDict$lvl/d" Allrun-serial
+  done
+fi
 
 # Two timesteps is enough to exercise every path: sources, the charge
 # diagnostic, transport, and the second-step reuse of the generated tables.
