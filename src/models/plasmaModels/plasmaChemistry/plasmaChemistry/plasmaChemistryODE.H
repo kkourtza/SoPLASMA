@@ -195,6 +195,31 @@ public:
         //  unambiguously, where checking densities after a step confounds it
         //  with integration error.
         scalar chargeResidual(const scalarField& y) const;
+
+        //- Split the instantaneous reaction rate into production and a LOSS
+        //  COEFFICIENT: dn_s/dt = P_s - L_s * n_s.
+        //
+        //  The loss is returned as a coefficient rather than a rate so the
+        //  caller can treat it implicitly (fvm::Sp). Two things follow from
+        //  that, and both matter for a stiff system driven by an explicit
+        //  source:
+        //
+        //    * POSITIVITY. An implicit sink cannot drive a density negative,
+        //      whatever the timestep. An explicit one can, and does, as soon
+        //      as a loss timescale falls below dt.
+        //    * CONVERGENCE. The Picard iteration over the outer loop is a
+        //      contraction on the loss term once it is implicit; left
+        //      explicit, a fast sink makes it diverge.
+        //
+        //  Evaluated at the state given -- not averaged over a step -- because
+        //  BDF2 requires the right-hand side at t^{n+1}. Supplying a mean
+        //  instead is a Lie composition and caps the scheme at first order.
+        void productionLoss
+        (
+            const scalarField& y,
+            scalarField& P,
+            scalarField& L
+        ) const;
 };
 
 

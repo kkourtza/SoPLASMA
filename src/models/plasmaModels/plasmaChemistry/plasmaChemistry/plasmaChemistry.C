@@ -295,6 +295,19 @@ void Foam::plasmaChemistry::jacobian
 }
 
 
+void Foam::plasmaChemistry::productionLoss
+(
+    const scalarField& n, const scalarField& kTab,
+    const scalar Tgas, scalarField& P, scalarField& L
+) const
+{
+    kTab_ = kTab;
+    ode_->setTgas(Tgas);
+    ode_->setExternal(nullptr);
+    ode_->productionLoss(n, P, L);
+}
+
+
 Foam::scalar Foam::plasmaChemistry::chargeResidual
 (
     const scalarField& n,

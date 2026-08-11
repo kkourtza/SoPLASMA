@@ -150,6 +150,12 @@ public:
                       const scalar Tgas, scalarField& dfdx,
                       scalarSquareMatrix& dfdy) const;
 
+        //- Instantaneous production and loss coefficient at this state,
+        //  dn_s/dt = P_s - L_s n_s. See plasmaChemistryODE::productionLoss.
+        void productionLoss(const scalarField& n, const scalarField& kTab,
+                            const scalar Tgas, scalarField& P,
+                            scalarField& L) const;
+
         //- Relative charge residual of the right-hand side at this state.
         //  Identically zero for a charge-conserving mechanism, whatever the
         //  state, so a non-zero value is an unbalanced reaction and nothing

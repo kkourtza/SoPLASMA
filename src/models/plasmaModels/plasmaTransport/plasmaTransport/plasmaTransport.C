@@ -319,7 +319,10 @@ void plasmaTransport::solve(const bool finalIter)
         }
 
         rates_->correct();
-        computeChemistrySources(mesh_.time().deltaTValue());
+        if (chemistrySolver_ == csODE)
+        {
+            computeChemistrySources(mesh_.time().deltaTValue());
+        }
         plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
     }
 
@@ -548,7 +551,9 @@ S_iz_.correctBoundaryConditions();
     // the fixed point the ODE integrates along the cell's true trajectory
     // rather than a closed-cell one, so its mean rate is the mean of the true
     // rate and not merely its value at the start of the step.
-    if (chem_ && !chemN0_.empty())
+    // csODE only: implicitRate never fills chemRR_, and indexing it here
+    // segfaulted on the first timestep.
+    if (chem_ && chemistrySolver_ == csODE && !chemN0_.empty() && !chemRR_.empty())
     {
         const scalar rdt = 1.0/mesh_.time().deltaTValue();
         forAll(chemExt_, s)
@@ -887,14 +892,18 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     {
         chemistrySolver_ = csODE;
     }
+    else if (cs == "implicitRate")
+    {
+        chemistrySolver_ = csImplicitRate;
+    }
     else
     {
         FatalErrorInFunction
             << "Unknown chemistrySolver '" << cs << "'" << nl
-            << "Valid: none | ode" << nl << exit(FatalError);
+            << "Valid: none | ode | implicitRate" << nl << exit(FatalError);
     }
 
-    if (chemistrySolver_ == csODE)
+    if (chemistrySolver_ == csODE || chemistrySolver_ == csImplicitRate)
     {
         // Skipping quiescent cells is not an optimisation to add later: a
         // stiff ODE in every cell of a 1.1M-cell mesh, where all the chemistry
@@ -1234,6 +1243,120 @@ bool Foam::plasmaTransport::mechanismSourceTerms
     // With operator-split chemistry the sources are applied by
     // applyChemistry(), not here. Returning true keeps the caller from adding
     // its legacy fits on top; returning false would do exactly that.
+    // INSTANTANEOUS rate at the current iterate, loss implicit.
+    //
+    // BDF2 asks for the right-hand side at t^{n+1}. A mean rate over the step
+    // is not that, and supplying one is a Lie composition that caps the scheme
+    // at first order however accurately the mean itself is computed. Evaluating
+    // the rate at the current iterate makes the source implicit as the outer
+    // loop converges, which is exactly why the legacy electron-impact path
+    // reaches second order -- generalised here to the whole mechanism.
+    //
+    // The loss goes in through fvm::Sp so a fast sink cannot drive a density
+    // negative and cannot break the Picard iteration.
+    if (chemistrySolver_ == csImplicitRate)
+    {
+        const label nSp = species_.nSpecies();
+        const label nTab = rates_->size();
+
+        chemP_.setSize(nSp);
+        chemL_.setSize(nSp);
+        forAll(chemP_, s)
+        {
+            chemP_[s].setSize(mesh_.nCells(), Zero); chemP_[s] = Zero;
+            chemL_[s].setSize(mesh_.nCells(), Zero); chemL_[s] = Zero;
+        }
+
+        const scalar Tgas =
+            species_.backgroundDict().subOrEmptyDict("energy")
+                .getOrDefault<scalar>("T", 300.0);
+
+        scalarField n(nSp, Zero), kTab(max(nTab, 1), Zero);
+        scalarField P(nSp, Zero), L(nSp, Zero);
+        const scalarField& neI =
+            species_.numberDensity(species_.electronSpeciesID()).primitiveField();
+
+        forAll(neI, celli)
+        {
+            if (neI[celli] < chemActivityThreshold_) continue;
+
+            for (label sp = 0; sp < nSp; ++sp)
+            {
+                n[sp] = species_.numberDensities()[sp].primitiveField()[celli];
+            }
+            for (label j = 0; j < nTab; ++j)
+            {
+                kTab[j] = rates_->k(j).primitiveField()[celli];
+            }
+
+            chem_->productionLoss(n, kTab, Tgas, P, L);
+
+            // Charge conservation needs NO projection in this mode. The source
+            // is the instantaneous rate, so sum q_s (P_s - L_s n_s) is exactly
+            // the right-hand-side residual -- zero for a balanced mechanism, no
+            // integration involved to spoil it. Measured rather than assumed.
+            if (!chemCellsReported_)
+            {
+                scalar netQ = 0, traffic = 0;
+                for (label sp = 0; sp < nSp; ++sp)
+                {
+                    const scalar q = species_.speciesChargeNumbers()[sp];
+                    const scalar rr = P[sp] - L[sp]*n[sp];
+                    netQ    += q*rr;
+                    traffic += mag(q*rr);
+                }
+                if (traffic > VSMALL)
+                {
+                    chemSourceChargeAfter_ =
+                        max(chemSourceChargeAfter_, mag(netQ)/traffic);
+                }
+                ++chemActiveCount_;
+            }
+
+            for (label sp = 0; sp < nSp; ++sp)
+            {
+                chemP_[sp][celli] = P[sp];
+                chemL_[sp][celli] = L[sp];
+            }
+        }
+
+        if (!chemCellsReported_)
+        {
+            chemCellsReported_ = true;
+            reduce(chemSourceChargeAfter_, maxOp<scalar>());
+            reduce(chemActiveCount_, sumOp<label>());
+            Info<< "plasmaChemistry: implicitRate, " << chemActiveCount_
+                << " active cells" << nl
+                << "    charge residual of the SOURCE, worst cell: "
+                << chemSourceChargeAfter_
+                << " (exact by construction: no integration)" << endl;
+        }
+
+        forAll(chemP_, sp)
+        {
+            if (sp >= eqns.size() || !eqns[sp]) continue;
+
+            volScalarField Pf
+            (
+                IOobject("chemP", mesh_.time().timeName(), mesh_,
+                         IOobject::NO_READ, IOobject::NO_WRITE),
+                mesh_, dimensionedScalar(dimensionSet(0,-3,-1,0,0,0,0), Zero)
+            );
+            volScalarField Lf
+            (
+                IOobject("chemL", mesh_.time().timeName(), mesh_,
+                         IOobject::NO_READ, IOobject::NO_WRITE),
+                mesh_, dimensionedScalar(dimensionSet(0,0,-1,0,0,0,0), Zero)
+            );
+            Pf.primitiveFieldRef() = chemP_[sp];
+            Lf.primitiveFieldRef() = chemL_[sp];
+
+            *eqns[sp] -= Pf;
+            *eqns[sp] += fvm::Sp(Lf, species_.numberDensity(sp));
+        }
+        return true;
+    }
+
     // With the source formulation the chemistry is delivered HERE, as an
     // explicit source per species, rather than by advancing the fields.
     if (chemistrySolver_ == csODE)

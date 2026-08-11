@@ -221,3 +221,66 @@ Foam::scalar Foam::plasmaChemistryODE::chargeResidual(const scalarField& y) cons
 
 
 // ************************************************************************* //
+
+
+void Foam::plasmaChemistryODE::productionLoss
+(
+    const scalarField& y,
+    scalarField& P,
+    scalarField& L
+) const
+{
+    P.setSize(nSpecie_); P = Zero;
+    L.setSize(nSpecie_); L = Zero;
+
+    forAll(reactions_, r)
+    {
+        const plasmaReactionSpec& rx = reactions_[r];
+
+        const scalar k =
+            (rx.tabulated >= 0)
+          ? kTab_[rx.tabulated]
+          : rx.A*Foam::pow(Tgas_, rx.b)
+              *(rx.Ta > 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+
+        scalar q = k*rx.fixedReactantDensity;
+        forAll(rx.reactants, i)
+        {
+            const label s = rx.reactants[i];
+            if (s >= 0) q *= max(y[s], scalar(0));
+        }
+        if (rx.collider >= 0)
+        {
+            q *= max(y[rx.collider], scalar(0));
+        }
+        else if (rx.colliderFixedDensity > 0)
+        {
+            q *= rx.colliderFixedDensity;
+        }
+
+        // Products are production. Reactants are loss, expressed as a
+        // coefficient by dividing out the species' own density -- which is
+        // exact here, because the species appears as a factor of q.
+        forAll(rx.products, i)
+        {
+            const label s = rx.products[i];
+            if (s >= 0) P[s] += q;
+        }
+        forAll(rx.reactants, i)
+        {
+            const label s = rx.reactants[i];
+            if (s < 0) continue;
+            const scalar ns = max(y[s], scalar(0));
+            if (ns > VSMALL)
+            {
+                L[s] += q/ns;
+            }
+            else
+            {
+                // Nothing there to lose. Adding a coefficient here would
+                // manufacture a sink for a species that is absent.
+                P[s] -= q;
+            }
+        }
+    }
+}

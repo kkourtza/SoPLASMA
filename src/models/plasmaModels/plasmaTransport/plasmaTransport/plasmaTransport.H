@@ -183,7 +183,13 @@ protected:
 
     //- none: sources go into the transport equations, as before.
     //  ode:   Strang splitting with a stiff ODE substep.
-    enum chemSolverType { csNone, csODE };
+    //  none          sources in the equations, electron-impact only (legacy)
+    //  ode           whole mechanism, MEAN rate from a stiff ODE over the
+    //                step. Lie composition: robust, first order.
+    //  implicitRate  whole mechanism, INSTANTANEOUS rate at the current
+    //                iterate, loss implicit. Second order with BDF2, because
+    //                that is the right-hand side BDF2 asks for.
+    enum chemSolverType { csNone, csODE, csImplicitRate };
     chemSolverType chemistrySolver_ = csNone;
 
     //- Cells below this electron density are skipped by the chemistry.
@@ -203,6 +209,7 @@ protected:
     scalar chemSourceChargeMax_ = 0;
     label  chemNegativeCells_ = 0;
     label  chemUnprojectedCells_ = 0;
+    label  chemActiveCount_ = 0;
     scalar chemSourceChargeAfter_ = 0;
 
     //- Timestep whose start-of-step state is held in chemN0_
@@ -226,6 +233,10 @@ protected:
     //  once the outer loop converges. Zero on the first iteration, where the
     //  scheme degrades gracefully to the closed-cell (first-order) form.
     List<scalarField> chemExt_;
+
+    //- Instantaneous production and loss coefficient, for csImplicitRate
+    List<scalarField> chemP_;
+    List<scalarField> chemL_;
 
     //- Outer iterations taken in the current timestep, and how many are
     //  configured
