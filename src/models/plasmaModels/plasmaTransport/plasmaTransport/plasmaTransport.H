@@ -189,7 +189,13 @@ protected:
     //  implicitRate  whole mechanism, INSTANTANEOUS rate at the current
     //                iterate, loss implicit. Second order with BDF2, because
     //                that is the right-hand side BDF2 asks for.
-    enum chemSolverType { csNone, csODE, csImplicitRate };
+    //  adaptive      per CELL: implicitRate where the linearisation resolves
+    //                the chemistry, the stiff ODE substep where it does not.
+    //                The criterion is local because the stiffness is -- a
+    //                streamer head can be stiff while the bulk is not, so
+    //                switching globally would either pay the ODE cost
+    //                everywhere or lose robustness where it is needed.
+    enum chemSolverType { csNone, csODE, csImplicitRate, csAdaptive };
     chemSolverType chemistrySolver_ = csNone;
 
     //- Cells below this electron density are skipped by the chemistry.
@@ -213,6 +219,12 @@ protected:
 
     //- Stiffness as the solver meets it, max over cells and species of L*dt
     scalar chemStiffness_ = 0;
+
+    //- L*dt above which a cell is integrated rather than linearised
+    scalar chemStiffLimit_ = 1.0;
+
+    //- Cells taking each path, for reporting
+    label chemNstiff_ = 0;
 
     //- Relative change of the chemistry source between consecutive outer
     //  iterations. Small means the Picard iteration is converging and

@@ -9,6 +9,50 @@ chemistry
     sourceModel     reactions;
     outOfBounds     extrapolate;
     manifest        "constant/air_plasma.mech.json";
+
+    // How the reaction source reaches the transport equations. This is the
+    // only mode family in which ions have a loss channel at all: recombination
+    // and detachment live in the heavy reaction set, which the legacy
+    // in-equation sources never evaluate.
+    //
+    //   adaptive      (default) chooses PER CELL between the two below, on
+    //                 the local stiffness L*dt. The criterion is local because
+    //                 the stiffness is: a streamer head can be stiff while the
+    //                 bulk is not, so a global choice would either pay the
+    //                 integration cost everywhere or lose robustness where it
+    //                 is needed. Both paths return the same P/L form, so a
+    //                 stiff cell keeps its implicit sink and its positivity.
+    //   implicitRate  instantaneous rate at the current iterate,
+    //                 loss implicit via fvm::Sp. Second order ONCE THE OUTER
+    //                 LOOP CONVERGES -- so it wants nOuterCorrectors > 1 --
+    //                 with exact charge conservation, guaranteed positivity,
+    //                 and one O(n_reactions) evaluation per cell.
+    //   ode           stiff substep, mean rate over the step. First order, but
+    //                 it integrates THROUGH stiffness. Use it when a chemical
+    //                 timescale is far below deltaT.
+    //   none          legacy: electron-impact only, so ions never decay.
+    //
+    // Which one a case needs is MEASURED, not guessed: the run reports
+    // max(L*dt) and the Picard change at start-up, and warns when the
+    // linearisation is not resolving the chemistry. See
+    // BoltzmannSolver docs/numerics-chemistry-coupling.md section 8.
+    chemistrySolver adaptive;
+
+    // L*dt above which `adaptive` integrates a cell rather than linearising
+    // it: 1 means "a loss timescale shorter than the timestep". Lower it if
+    // the run reports the source still changing on the last outer iteration.
+    chemStiffnessLimit 1.0;
+
+    // Cells below this electron density are skipped. 0 = every cell. Raise it
+    // only against your own case's densities and check the reported active
+    // fraction: a threshold above the background silently disables the
+    // chemistry entirely, which looks exactly like a converged solution.
+    chemActivityThreshold 0;
+
+    // Used only by `ode`. rodas23 preserves the charge invariant ~70x better
+    // than seulex and takes no Newton iterations, so there is no nonlinear
+    // convergence failure to handle across a million cells.
+    odeCoeffs { solver rodas23; absTol 1e-6; relTol 1e-4; }
     // never | interval | time | relativeChange
     //
     // A refresh RE-SOLVES the EEDF at the current composition and gas

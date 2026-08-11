@@ -554,8 +554,8 @@ S_iz_.correctBoundaryConditions();
     // Report the Picard convergence once the timestep's outer loop is done.
     // Reported whether it passes or fails: a check whose only evidence of
     // success is silence cannot be told from one that never ran.
-    if (chem_ && chemistrySolver_ == csImplicitRate && finalIter
-     && !chemPicardReported_)
+    if (chem_ && !chemPicardReported_ && finalIter
+     && (chemistrySolver_ == csImplicitRate || chemistrySolver_ == csAdaptive))
     {
         chemPicardReported_ = true;
 
@@ -572,6 +572,19 @@ S_iz_.correctBoundaryConditions();
                 << " from the outer loop making it implicit. Raise"
                 << " nOuterCorrectors, or accept first order knowingly."
                 << endl;
+        }
+        else if (chemPicardChange_ > 1e-2 && chemistrySolver_ == csAdaptive)
+        {
+            // In adaptive mode the stiff cells are already being integrated,
+            // so a residual change here means the LIMIT is set too high for
+            // this case rather than that the mode is wrong.
+            WarningInFunction
+                << "the chemistry source is still changing by "
+                << chemPicardChange_ << " on the last outer iteration, with "
+                << chemNstiff_ << " cell(s) already integrated." << nl
+                << "    Lower `chemStiffnessLimit` (currently "
+                << chemStiffLimit_ << ") so more cells take the integrated"
+                << " path, or reduce deltaT." << endl;
         }
         else if (chemPicardChange_ > 1e-2)
         {
@@ -928,7 +941,11 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // far below dt, where linearising around the current state is not enough;
     // the run reports which situation it is in (see the convergence check
     // below) rather than leaving it to judgement.
-    const word cs = cd.getOrDefault<word>("chemistrySolver", "implicitRate");
+    // DEFAULT: adaptive -- per cell, the accurate path where it is valid and
+    // the robust one where it is not, so neither accuracy nor robustness is
+    // traded for the other across a domain where the stiffness varies by
+    // orders of magnitude.
+    const word cs = cd.getOrDefault<word>("chemistrySolver", "adaptive");
     if (cs == "none")
     {
         chemistrySolver_ = csNone;
@@ -941,14 +958,19 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     {
         chemistrySolver_ = csImplicitRate;
     }
+    else if (cs == "adaptive")
+    {
+        chemistrySolver_ = csAdaptive;
+    }
     else
     {
         FatalErrorInFunction
             << "Unknown chemistrySolver '" << cs << "'" << nl
-            << "Valid: none | ode | implicitRate" << nl << exit(FatalError);
+            << "Valid: none | ode | implicitRate | adaptive" << nl
+            << exit(FatalError);
     }
 
-    if (chemistrySolver_ == csODE || chemistrySolver_ == csImplicitRate)
+    if (chemistrySolver_ != csNone)
     {
         // Skipping quiescent cells is not an optimisation to add later: a
         // stiff ODE in every cell of a 1.1M-cell mesh, where all the chemistry
@@ -964,6 +986,13 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         // densities, which only the user knows.
         chemActivityThreshold_ =
             cd.getOrDefault<scalar>("chemActivityThreshold", 0.0);
+
+        // L*dt above which `adaptive` integrates a cell rather than
+        // linearising it. 1 means "a loss timescale shorter than the
+        // timestep" -- the point at which linearising around the current
+        // state stops being obviously safe.
+        chemStiffLimit_ =
+            cd.getOrDefault<scalar>("chemStiffnessLimit", 1.0);
 
         dictionary ccfg(cd);
         ccfg.add("electronName", species_.speciesNames()[species_.electronSpeciesID()], true);
@@ -1312,7 +1341,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
     //
     // The loss goes in through fvm::Sp so a fast sink cannot drive a density
     // negative and cannot break the Picard iteration.
-    if (chemistrySolver_ == csImplicitRate)
+    if (chemistrySolver_ == csImplicitRate || chemistrySolver_ == csAdaptive)
     {
         const label nSp = species_.nSpecies();
         const label nTab = rates_->size();
@@ -1354,9 +1383,68 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             // number of loss timescales crossed in one step. Large is not
             // unstable -- the implicit sink handles that -- but it is where
             // linearising around the current state stops being enough.
+            scalar cellStiff = 0;
             for (label sp = 0; sp < nSp; ++sp)
             {
-                chemStiffness_ = max(chemStiffness_, L[sp]*dtNow);
+                cellStiff = max(cellStiff, L[sp]*dtNow);
+            }
+            chemStiffness_ = max(chemStiffness_, cellStiff);
+
+            // ADAPTIVE: integrate this cell instead of linearising it, when
+            // the linearisation cannot be expected to hold. The result is
+            // returned to the SAME P/L form, so the equation assembly does not
+            // know or care which path a cell took -- and a stiff cell keeps
+            // the implicit sink, hence positivity, rather than reverting to a
+            // bare explicit source.
+            if (chemistrySolver_ == csAdaptive && cellStiff > chemStiffLimit_)
+            {
+                ++chemNstiff_;
+
+                scalarField n0(nSp), nEnd(nSp);
+                for (label sp = 0; sp < nSp; ++sp)
+                {
+                    n0[sp] = chemN0_[sp][celli];
+                }
+                nEnd = n0;
+                chem_->integrate(nEnd, kTab, Tgas, dtNow);
+
+                // Mean rate over the step, then projected onto exact charge
+                // conservation -- the integrator does not preserve the linear
+                // invariant exactly in floating point.
+                scalarField rr(nSp);
+                scalar netQ = 0, traffic = 0;
+                for (label sp = 0; sp < nSp; ++sp)
+                {
+                    rr[sp] = (nEnd[sp] - n0[sp])/dtNow;
+                    const scalar q = species_.speciesChargeNumbers()[sp];
+                    netQ    += q*rr[sp];
+                    traffic += mag(q*rr[sp]);
+                }
+                if (traffic > VSMALL && mag(netQ)/traffic < 1e-3)
+                {
+                    for (label sp = 0; sp < nSp; ++sp)
+                    {
+                        const scalar q = species_.speciesChargeNumbers()[sp];
+                        if (mag(q) < SMALL) continue;
+                        rr[sp] -= (netQ/traffic)*mag(rr[sp])*sign(q);
+                    }
+                }
+
+                // Back into production / loss-coefficient form, so the sink
+                // stays implicit. Exact at the current state by construction.
+                for (label sp = 0; sp < nSp; ++sp)
+                {
+                    if (rr[sp] >= 0)
+                    {
+                        P[sp] = rr[sp];
+                        L[sp] = 0;
+                    }
+                    else
+                    {
+                        P[sp] = 0;
+                        L[sp] = -rr[sp]/max(n[sp], VSMALL);
+                    }
+                }
             }
 
             // Charge conservation needs NO projection in this mode. The source
@@ -1394,7 +1482,16 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             reduce(chemSourceChargeAfter_, maxOp<scalar>());
             reduce(chemActiveCount_, sumOp<label>());
             reduce(chemStiffness_, maxOp<scalar>());
-            Info<< "plasmaChemistry: implicitRate, " << chemActiveCount_
+            reduce(chemNstiff_, sumOp<label>());
+            if (chemistrySolver_ == csAdaptive)
+            {
+                Info<< "plasmaChemistry: adaptive, " << chemNstiff_ << " of "
+                    << chemActiveCount_ << " cells integrated (L*dt > "
+                    << chemStiffLimit_ << "), the rest linearised" << endl;
+            }
+            Info<< "plasmaChemistry: " << (chemistrySolver_ == csAdaptive
+                                           ? "adaptive" : "implicitRate")
+                << ", " << chemActiveCount_
                 << " active cells, max(L*dt) = " << chemStiffness_ << nl
                 << "    charge residual of the SOURCE, worst cell: "
                 << chemSourceChargeAfter_
