@@ -61,6 +61,26 @@ using namespace Foam;
 //
 // Mixing rule, Millikan-White extended to several partners:
 //     1/tau_k = SUM_m X_m / tau_{k,m}
+// Constant-volume heat capacity of air [J/kg/K], cubic in T over 300-3500 K.
+//
+// NOT the 300 K value. c_v rises from 723 to 996 J/kg/K between 300 and 2400 K
+// as the vibrational modes of N2 and O2 become active, and a discharge that
+// heats air to 2000 K spends most of its time in the range where the constant
+// is 30-40% wrong. Rusterholtz et al. (J. Phys. D 46 (2013) 464010) implicitly
+// use ~1038 J/kg/K when converting their measured 900 K rise into 140 uJ.
+//
+// Fitted here against Cantera's own NASA polynomials for 79/21 N2/O2, max
+// error 18 J/kg/K over the range. Composition dependence is neglected: a
+// discharge that dissociates half the O2 changes c_v by a few percent, which
+// is far below the uncertainty in the energy partitions feeding it.
+static Foam::scalar cvAir(const Foam::scalar T)
+{
+    const scalar t = min(max(T, scalar(200)), scalar(3500));
+    return 6.165129e+02 + 3.212567e-01*t
+         - 8.907555e-05*t*t + 8.870573e-09*t*t*t;
+}
+
+
 static Foam::scalar tauVT_N2
 (
     const Foam::scalar T,
@@ -150,6 +170,13 @@ int main(int argc, char *argv[])
         "solve the gas temperature from the deposited power");
     argList::addOption("ENpulse", "peak:centre_ns:fwhm_ns",
         "Gaussian E/N pulse instead of a fixed field");
+    argList::addOption("X", "N2=0.774 O2=0.186 O=0.04",
+        "initial mole fractions, overriding the mechanism's own composition."
+        " Needed to reproduce an experiment that starts partly dissociated by"
+        " earlier pulses");
+    argList::addOption("profile", "file",
+        "CSV of t_ns,EN_Td,ne_cm3 -- measured discharge history, which is how a"
+        " 0-D reactor is compared with an experiment");
     argList::addOption("tauVT", "s",
         "vibrational-translational relaxation time (default 1e-5 s)");
     argList args(argc, argv, false, false, false);
@@ -195,8 +222,48 @@ int main(int argc, char *argv[])
         tc_ns = std::atof(f[1].c_str());
         fwhm_ns = std::atof(f[2].c_str());
     }
+    // Measured discharge history, if given. A pin-to-pin experiment supplies
+    // E/N(t) from voltage and gap, and n_e(t) from Stark broadening; imposing
+    // both is what makes the comparison a test of the CHEMISTRY rather than of
+    // a discharge model we do not have in 0-D.
+    DynamicList<scalar> pT, pEN, pNE;
+    const bool profiled = args.found("profile");
+    if (profiled)
+    {
+        IFstream pf(args.get<fileName>("profile"));
+        if (!pf.good())
+        {
+            FatalErrorInFunction << "cannot open profile" << exit(FatalError);
+        }
+        string line;
+        while (pf.good())
+        {
+            pf.getLine(line);
+            if (line.empty() || line[0] == '#' || line[0] == 't') continue;
+            std::string l(line);
+            for (auto& c : l) if (c == ',') c = ' ';
+            IStringStream is(l);
+            scalar a, b, c;
+            is >> a >> b >> c;
+            pT.append(a*1e-9); pEN.append(b); pNE.append(c*1e6);
+        }
+        Info<< "profile: " << pT.size() << " points, "
+            << pT[0]*1e9 << " to " << pT[pT.size()-1]*1e9 << " ns" << endl;
+    }
+
+    auto interpAt = [&](const DynamicList<scalar>& y, const scalar t) -> scalar
+    {
+        if (t <= pT[0]) return y[0];
+        if (t >= pT[pT.size()-1]) return y[y.size()-1];
+        label i = 0;
+        while (i + 1 < pT.size() && pT[i+1] < t) ++i;
+        const scalar w = (t - pT[i])/(pT[i+1] - pT[i]);
+        return y[i] + w*(y[i+1] - y[i]);
+    };
+
     auto fieldAt = [&](const scalar t) -> scalar
     {
+        if (profiled) return interpAt(pEN, t);
         if (!pulsed) return EN_Td;
         const scalar sig = fwhm_ns*1e-9/(2.0*Foam::sqrt(2.0*Foam::log(2.0)));
         const scalar x = (t - tc_ns*1e-9)/sig;
@@ -259,6 +326,29 @@ int main(int argc, char *argv[])
             n[s] = readScalar(comp.lookup(species[s]))*nGas;
         }
     }
+    if (args.found("X"))
+    {
+        n = Zero;
+        std::string spec(args.get<string>("X"));
+        for (auto& c : spec) if (c == '=' || c == ',') c = ' ';
+        IStringStream is(spec);
+        while (true)
+        {
+            word nm; scalar x;
+            is >> nm;
+            if (!is.good() && nm.empty()) break;
+            is >> x;
+            const label si = species.find(nm);
+            if (si < 0)
+            {
+                FatalErrorInFunction << "-X names " << nm
+                    << ", which the mechanism does not carry" << exit(FatalError);
+            }
+            n[si] = x*nGas;
+            if (!is.good()) break;
+        }
+    }
+
     const label ie = species.find(electron);
     if (ie >= 0) n[ie] = ne0;
     // charge-neutral start: the electrons are balanced by N2+
@@ -356,7 +446,7 @@ int main(int argc, char *argv[])
     // the first, so it is right within a single pulse and over-predicts the
     // temperature of anything longer -- which matters most for repetitive
     // pulsing, where the error accumulates pulse on pulse.
-    const scalar cv = 718.0;                  // J/kg/K, air at 300 K
+
     const scalar Mair = 28.96e-3/6.02214076e23;   // kg per particle
     const scalar EVJ = 1.602176634e-19;
 
@@ -407,6 +497,13 @@ int main(int argc, char *argv[])
                         : 0.0;
                 }
             }
+
+            // The measured electron density is IMPOSED, not integrated. In 0-D
+            // there is no space charge to stop ionisation running away, so the
+            // experiment's own n_e(t) is the only honest driver -- the same
+            // choice Cheng et al. (Combust. Flame 240 (2022) 111990) and the
+            // simulations they compare against make.
+            if (profiled && ie >= 0) n[ie] = interpAt(pNE, t);
 
             // Floor the state before integrating. Species pushed to denormal
             // values (~1e-323) destabilise the stiff solver without carrying
@@ -465,7 +562,7 @@ int main(int argc, char *argv[])
                 eVib += (Pvib - Qvt)*dt;
 
                 const scalar Qgas = Qprompt + Qheavy + Qvt;
-                T += Qgas*dt/(rho*cv);
+                T += Qgas*dt/(rho*cvAir(T));
 
                 Edep += Pdep*dt;
                 Egas += Qgas*dt;
