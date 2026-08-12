@@ -2,16 +2,63 @@
    family -- WITHOUT the chemistryModel stack above it. ODESystem is a bare
    abstract class with derivatives() and jacobian() and no thermo dependency,
    which is what makes plasma chemistry expressible here: number densities
-   rather than mass fractions, and a separate electron temperature. */
+   rather than mass fractions, and a separate electron temperature.
+
+   CANTERA is OPTIONAL, and both the 3.x and 4.x series are supported. Point
+   CANTERA_DIR at an install prefix to build the `chemistryBackend cantera`
+   path; without it the native path is built alone and selecting `cantera` is a
+   runtime error naming this variable:
+
+       wmake -- CANTERA_DIR=/path/to/cantera
+
+   Two things differ between the series and both are handled here rather than
+   asking the user to care:
+
+     * LANGUAGE STANDARD. Cantera 4 uses std::span throughout its public
+       headers, so its translation units need C++20; wmake compiles with
+       -std=c++17. The standard flag is appended AFTER wmake's, and the last
+       -std on a gcc/clang command line wins, so this raises the standard for
+       this library alone -- nothing else in SoPLASMA is affected, and the
+       library's own headers expose no C++20 type, so callers stay at C++17.
+
+     * API SHAPE. -DCANTERA_MAJOR reaches the source, which adapts the two or
+       three calls whose signatures changed (raw pointer vs span). */
+CANTERA_DIR ?= $(HOME)/cantera-cxx
+
+CANTERA_HEADER := $(wildcard $(CANTERA_DIR)/include/cantera/base/config.h)
+
+CANTERA_INC =
+CANTERA_LIB =
+
+ifneq ($(CANTERA_HEADER),)
+
+    /* Major version read straight from the installed header, so moving or
+       upgrading the install needs no edit here. Matched without the leading
+       hash of the define: a hash anywhere on a line makes GNU make discard the
+       rest of it, sed script or not. */
+    CANTERA_MAJOR := $(shell sed -n 's/.*CANTERA_VERSION "\([0-9][0-9]*\)\..*/\1/p' $(CANTERA_HEADER))
+
+    CANTERA_INC = -DHAVE_CANTERA -DCANTERA_MAJOR=$(CANTERA_MAJOR) \
+        -isystem $(CANTERA_DIR)/include
+    CANTERA_LIB = -L$(CANTERA_DIR)/lib -lcantera_shared \
+        -Wl,-rpath,$(CANTERA_DIR)/lib
+
+    ifeq ($(shell test $(CANTERA_MAJOR) -ge 4 && echo yes),yes)
+        CANTERA_INC += -std=c++20
+    endif
+
+endif
 
 EXE_INC = \
     -I$(LIB_SRC)/finiteVolume/lnInclude \
     -I$(LIB_SRC)/meshTools/lnInclude \
     -I$(LIB_SRC)/ODE/lnInclude \
-    -I$(SoPLASMA_SRC)/constants/lnInclude
+    -I$(SoPLASMA_SRC)/constants/lnInclude \
+    $(CANTERA_INC)
 
 LIB_LIBS = \
     -lfiniteVolume \
     -lmeshTools \
     -lODE \
-    -L$(FOAM_USER_LIBBIN) -lSoPLASMAConstants
+    -L$(FOAM_USER_LIBBIN) -lSoPLASMAConstants \
+    $(CANTERA_LIB)

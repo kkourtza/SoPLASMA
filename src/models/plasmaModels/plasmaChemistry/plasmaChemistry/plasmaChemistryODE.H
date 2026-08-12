@@ -67,6 +67,8 @@ SourceFiles
 namespace Foam
 {
 
+class plasmaChemistryCantera;
+
 /*---------------------------------------------------------------------------*\
                       Class plasmaReactionSpec Declaration
 \*---------------------------------------------------------------------------*/
@@ -130,6 +132,24 @@ class plasmaChemistryODE
 
         label nSpecie_;
 
+        //- Whether the HEAVY (Arrhenius) reactions are evaluated here.
+        //
+        //  False under `chemistryBackend cantera`: the same reactions are then
+        //  evaluated by Cantera and added by the caller, and evaluating them
+        //  in both places would double every heavy rate. The reactions stay in
+        //  the list either way, because the Jacobian is still taken from them.
+        bool heavy_ = true;
+
+        //- Heavy backend, when it is not this class. Non-null exactly when
+        //  heavy_ is false: the heavy reactions have to enter the integrated
+        //  trajectory from SOMEWHERE, and leaving them out of derivatives()
+        //  would silently drop recombination and quenching from the ODE path
+        //  while the implicit-rate path still had them.
+        const plasmaChemistryCantera* ct_ = nullptr;
+
+        //- Cantera production and loss, sized on first use
+        mutable scalarField Pc_, Lc_;
+
         //- Constant external rate added to every derivative [m^-3 s^-1].
         //
         //  The TRANSPORT contribution over the step, held fixed while the
@@ -171,6 +191,15 @@ public:
 
         //- Constant external (transport) rate for this cell; null to disable
         void setExternal(const scalarField* e) { ext_ = e; }
+
+        //- Evaluate the heavy reactions here (true) or leave them to the
+        //  Cantera backend (false). Affects derivatives() and
+        //  productionLoss(); jacobian() always includes them, see there.
+        void setHeavy(const bool b) { heavy_ = b; }
+
+        //- Heavy backend to consult in derivatives(); null for native
+        void setCantera(const plasmaChemistryCantera* c) { ct_ = c; }
+        bool heavy() const { return heavy_; }
 
         void derivatives
         (

@@ -47,6 +47,7 @@ SourceFiles
 #include "plasmaChemistryODE.H"
 #include "ODESolver.H"
 #include "dictionary.H"
+#include "plasmaChemistryCantera.H"
 #include "fileName.H"
 #include "HashTable.H"
 #include "autoPtr.H"
@@ -87,10 +88,47 @@ class plasmaChemistry
 
         dictionary odeDict_;
 
+        //- `chemistryBackend`: who evaluates the HEAVY reactions.
+        //
+        //    native   the Arrhenius forms in the mechanism dictionary,
+        //             evaluated by plasmaChemistryODE. No dependencies.
+        //    cantera  the same reactions from <mech>.heavy.yaml, evaluated by
+        //             libcantera. Adds falloff, PLOG, Chebyshev, reversible
+        //             reactions with equilibrium constants from thermo data --
+        //             forms the native parser does not implement.
+        //
+        //  Electron-impact rates come from the Boltzmann tables in BOTH cases.
+        //  Letting Cantera evaluate those as well would double-count them and
+        //  would need the EEDF injected per cell, which is the cost the tables
+        //  exist to avoid.
+        word backend_;
+
+        autoPtr<plasmaChemistryCantera> cantera_;
+
+        //- Cantera-side names of the carried species (`N2+` where OpenFOAM
+        //  must say `N2p`), from the mechanism's speciesAlias table
+        wordList canteraNames_;
+
+        //- The same mapping for EVERY species the mechanism mentions, carried
+        //  or not: an untransported background species needs translating too.
+        HashTable<word> alias_;
+
+        //- Heavy production and loss from Cantera, sized once
+        mutable scalarField Pc_, Lc_;
+
+        //- Largest relative disagreement between the native and Cantera heavy
+        //  rates at the reference state, measured once at construction
+        scalar backendMismatch_ = 0.0;
+
 
     // Private Member Functions
 
         label stateIndex(const word& name) const;
+
+        //- Compare native and Cantera heavy P/L at a reference state.
+        //  Returns the largest relative difference; see the constructor for
+        //  why this is checked rather than assumed.
+        scalar checkBackends(const scalar Tgas) const;
         void readMechanism(const fileName& path, const dictionary& dict);
 
 
@@ -116,6 +154,18 @@ public:
         //- Mechanism ids of the table-driven reactions, in the order
         //  integrate() expects their rate coefficients
         const wordList& tabulatedIds() const { return tabulatedIds_; }
+
+        //- Which backend evaluates the heavy reactions
+        const word& backend() const { return backend_; }
+
+        //- True when the Cantera backend supplies its analytic Jacobian
+        bool canteraAnalyticJacobian() const
+        {
+            return cantera_ && cantera_->analyticJacobian();
+        }
+
+        //- Largest relative native-vs-Cantera disagreement found at startup
+        scalar backendMismatch() const { return backendMismatch_; }
 
         label nReactions() const { return reactions_.size(); }
         label nTabulated() const { return nTabulated_; }

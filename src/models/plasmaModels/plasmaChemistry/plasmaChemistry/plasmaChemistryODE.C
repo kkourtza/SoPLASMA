@@ -12,6 +12,7 @@ License
 
 #include "plasmaChemistryODE.H"
 #include "scalarMatrices.H"
+#include "plasmaChemistryCantera.H"
 
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
 
@@ -56,15 +57,22 @@ void Foam::plasmaChemistryODE::derivatives
     forAll(reactions_, r)
     {
         const plasmaReactionSpec& rx = reactions_[r];
+        if (!heavy_ && rx.tabulated < 0) continue;
 
         // Rate coefficient. Electron-impact rates were interpolated from the
         // EEDF tables before the substep began and are frozen; heavy rates are
         // Arrhenius in the gas temperature.
+        //
+        // Ta is tested against zero, not against positive: a NEGATIVE
+        // activation temperature is physical and common in this mechanism --
+        // O2(b1) + O2 has Ta = -241 K -- and skipping the exponential for it
+        // dropped a factor of 2.2 from that rate. Found by the Cantera
+        // cross-check, which is the argument for having two backends at all.
         scalar k =
             (rx.tabulated >= 0)
           ? kTab_[rx.tabulated]
           : rx.A*Foam::pow(Tgas_, rx.b)
-              *(rx.Ta > 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+              *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
 
         // Rate = k * PRODUCT(n_reactant), with repetition giving the order.
         // A negative density cannot occur physically but does occur
@@ -103,6 +111,20 @@ void Foam::plasmaChemistryODE::derivatives
             if (s >= 0) dydx[s] += q;
         }
     }
+
+    // Heavy contribution from the external backend, as production minus the
+    // loss it was split into. Evaluated at the CURRENT state y, so it tracks
+    // the trajectory through the substep exactly as the native terms do --
+    // freezing it at the entry state would make the heavy chemistry a constant
+    // source and cap the step at first order.
+    if (ct_)
+    {
+        ct_->productionLoss(y, Tgas_, Pc_, Lc_);
+        forAll(dydx, s)
+        {
+            dydx[s] += Pc_[s] - Lc_[s]*max(y[s], scalar(0));
+        }
+    }
 }
 
 
@@ -121,15 +143,25 @@ void Foam::plasmaChemistryODE::jacobian
     dfdx = Zero;
     dfdy = Zero;
 
+    // Under `chemistryBackend cantera` the heavy reactions are SKIPPED here
+    // and their block is contributed by Cantera below, from its own analytic
+    // composition derivative. Taking the heavy Jacobian from the native
+    // Arrhenius data instead would be exact only while the two backends
+    // describe the same reactions -- and inexact in precisely the cases
+    // Cantera is selected for (falloff, PLOG, Chebyshev, reversible). A
+    // Rosenbrock method is not Newton-iterated, so that costs ORDER, not just
+    // convergence rate; the whole scheme would quietly drop to first.
+
     forAll(reactions_, r)
     {
         const plasmaReactionSpec& rx = reactions_[r];
+        if (!heavy_ && rx.tabulated < 0) continue;
 
         scalar k =
             (rx.tabulated >= 0)
           ? kTab_[rx.tabulated]
           : rx.A*Foam::pow(Tgas_, rx.b)
-              *(rx.Ta > 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+              *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
 
         scalar base = k*rx.fixedReactantDensity;
         if (rx.collider >= 0)
@@ -194,6 +226,14 @@ void Foam::plasmaChemistryODE::jacobian
             }
         }
     }
+
+    // Heavy block from the external backend, in the same state ordering. Its
+    // entries need no unit conversion: the rate and the state carry the same
+    // factor of Avogadro's number and it cancels in the derivative.
+    if (ct_)
+    {
+        ct_->jacobian(y, Tgas_, dfdy);
+    }
 }
 
 
@@ -236,12 +276,13 @@ void Foam::plasmaChemistryODE::productionLoss
     forAll(reactions_, r)
     {
         const plasmaReactionSpec& rx = reactions_[r];
+        if (!heavy_ && rx.tabulated < 0) continue;
 
         const scalar k =
             (rx.tabulated >= 0)
           ? kTab_[rx.tabulated]
           : rx.A*Foam::pow(Tgas_, rx.b)
-              *(rx.Ta > 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+              *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
 
         scalar q = k*rx.fixedReactantDensity;
         forAll(rx.reactants, i)

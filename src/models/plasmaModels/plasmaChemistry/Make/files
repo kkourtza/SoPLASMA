@@ -1,4 +1,5 @@
 plasmaChemistry/plasmaChemistryODE.C
 plasmaChemistry/plasmaChemistry.C
+plasmaChemistry/plasmaChemistryCantera.C
 
 LIB = $(FOAM_USER_LIBBIN)/libplasmaChemistry

@@ -59,6 +59,23 @@ void Foam::plasmaChemistry::readMechanism
         return (raw == electron) ? caseElectron : raw;
     };
 
+    // Cantera-side names of the carried species. The mechanism writes the
+    // OpenFOAM-safe spelling everywhere (`N2p`, `O2m`) because a `+` or `-` is
+    // not a legal OpenFOAM word; `speciesAlias` maps back to what Cantera
+    // parses. Species absent from the table are spelt identically in both.
+    canteraNames_ = species_;
+    if (mech.found("speciesAlias"))
+    {
+        for (const entry& e : mech.subDict("speciesAlias"))
+        {
+            alias_.set(e.keyword(), word(string(e.stream()), false));
+        }
+        forAll(species_, i)
+        {
+            canteraNames_[i] = alias_.lookup(species_[i], species_[i]);
+        }
+    }
+
     // Fill a reaction's stoichiometry, folding untransported reactants into a
     // fixed density product so the right-hand side does not re-multiply them.
     auto fill = [&](const wordList& names, labelList& out, scalar& fixed)
@@ -150,6 +167,61 @@ void Foam::plasmaChemistry::readMechanism
 }
 
 
+Foam::scalar Foam::plasmaChemistry::checkBackends(const scalar Tgas) const
+{
+    if (!cantera_) return 0.0;
+
+    // A reference state with every carried species present. The comparison is
+    // only meaningful where a reaction actually proceeds, and a state built
+    // from the case's own initial condition would leave most of the mechanism
+    // at zero rate and therefore untested. Fractions of the background density
+    // rather than equal values, so the test spans the range of magnitudes the
+    // solver really sees.
+    scalar nGas = 0;
+    forAllConstIters(background_, it) nGas += it.val();
+    if (nGas <= 0) nGas = 2.5e25;
+
+    scalarField n(species_.size(), Zero);
+    forAll(n, i) n[i] = nGas*Foam::pow(10.0, -3.0 - 3.0*scalar(i % 4));
+
+    // Native heavy only: the electron-impact rates are tabulated and are not
+    // part of what Cantera evaluates, so they must be out of both sides.
+    scalarField kZero(kTab_.size(), Zero);
+    kTab_ = kZero;
+
+    const bool savedHeavy = ode_->heavy();
+    const plasmaChemistryCantera* savedCt = nullptr;
+    ode_->setCantera(nullptr);
+    ode_->setHeavy(true);
+    ode_->setTgas(Tgas);
+
+    scalarField Pn, Ln;
+    ode_->productionLoss(n, Pn, Ln);
+
+    ode_->setHeavy(savedHeavy);
+    ode_->setCantera(savedHeavy ? savedCt : cantera_.get());
+
+    scalarField Pc, Lc;
+    cantera_->productionLoss(n, Tgas, Pc, Lc);
+
+    // Compared on the NET rate, not on P and L separately: the two backends
+    // may legitimately split a reversible reaction differently between
+    // production and loss while agreeing on dn/dt, which is the only thing
+    // that reaches the solution.
+    scalar worst = 0.0, scale = 0.0;
+    scalarField dn(n.size(), Zero);
+    forAll(n, i)
+    {
+        dn[i] = (Pn[i] - Ln[i]*n[i]) - (Pc[i] - Lc[i]*n[i]);
+        scale = max(scale, mag(Pn[i] - Ln[i]*n[i]));
+    }
+    if (scale <= VSMALL) return 0.0;
+
+    forAll(dn, i) worst = max(worst, mag(dn[i])/scale);
+    return worst;
+}
+
+
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
 
 Foam::plasmaChemistry::plasmaChemistry
@@ -224,6 +296,118 @@ Foam::plasmaChemistry::plasmaChemistry
     odeDict_.add("relTol", odeDict_.getOrDefault<scalar>("relTol", 1e-4), true);
 
     solver_ = ODESolver::New(*ode_, odeDict_);
+
+    // ---- heavy-chemistry backend -------------------------------------------
+    backend_ = dict.getOrDefault<word>("chemistryBackend", "native");
+
+    if (backend_ == "cantera")
+    {
+        // Cantera reads <mech>.heavy.yaml, written by mechc beside the .foam
+        // dictionary from the same master mechanism. Deriving the name rather
+        // than asking for it keeps the two from being paired wrongly: they are
+        // two projections of one file and must never be mixed across versions.
+        fileName yaml(mechanismDict.lessExt() + ".heavy.yaml");
+
+        cantera_.reset
+        (
+            new plasmaChemistryCantera(yaml, species_, canteraNames_)
+        );
+
+        forAllConstIters(background_, it)
+        {
+            // ONLY species the case does not transport. background_ holds a
+            // reference density for every species in the mechanism's
+            // composition, including ones that are carried -- the native path
+            // consults it solely when stateIndex() fails, so a carried species
+            // never reads it. Pushing those to Cantera as well would add the
+            // reference density on top of the transported one and count the
+            // bulk gas twice, which is most of the mixture.
+            if (stateIndex(it.key()) >= 0) continue;
+
+            // background_ is keyed on the OpenFOAM spelling; translate.
+            cantera_->setBackground(alias_.lookup(it.key(), it.key()), it.val());
+        }
+
+        // How the heavy Jacobian is obtained. `auto` takes Cantera's analytic
+        // composition derivative where the mechanism's kinetics manager
+        // implements it, which is the fast and exact path; `finiteDifference`
+        // forces the fallback, at nSpecie+1 kinetics evaluations per Jacobian.
+        // There is no option to borrow the native Jacobian: it is wrong in
+        // exactly the cases Cantera was selected for.
+        const word jac(dict.getOrDefault<word>("canteraJacobian", "auto"));
+        if (jac == "finiteDifference")
+        {
+            cantera_->useFiniteDifferenceJacobian();
+        }
+        else if (jac != "auto")
+        {
+            FatalErrorInFunction
+                << "Unknown canteraJacobian " << jac << nl
+                << "    Valid: auto, finiteDifference" << nl
+                << exit(FatalError);
+        }
+
+        // Heavy reactions are now Cantera's job; evaluating them natively too
+        // would double every heavy rate.
+        ode_->setHeavy(false);
+        ode_->setCantera(cantera_.get());
+
+        const wordList missing(cantera_->unmatched());
+
+        // The two backends are cross-checked on the reactions they share. This
+        // is no longer load-bearing for the Jacobian -- Cantera supplies its
+        // own analytic composition derivative, so `ode` and `adaptive` are
+        // exact under either backend -- but it stays because it is the only
+        // thing that turns a silent factor-of-N error into a message at t=0.
+        // A units block, a third body counted twice, a mismatched alias and a
+        // dropped negative activation energy have all been caught by it.
+        //
+        // A LARGE value is not necessarily a defect: a mechanism using falloff,
+        // PLOG or Chebyshev is one the native parser cannot express, and
+        // Cantera's answer is then the correct one. It is reported either way,
+        // because "the backends differ and here is by how much" is information
+        // the user needs and cannot get anywhere else.
+        backendMismatch_ = checkBackends(dict.getOrDefault<scalar>("Tgas", 300.0));
+
+        Info<< "plasmaChemistry: heavy chemistry from Cantera, " << yaml.name()
+            << nl
+            << "    species Cantera does not carry: "
+            << (missing.empty() ? wordList({word("none")}) : missing) << nl
+            << "    native-vs-Cantera heavy rate agreement: "
+            << backendMismatch_ << " (relative)" << nl
+            << "    heavy Jacobian: "
+            << (cantera_->analyticJacobian()
+                  ? "Cantera analytic (netProductionRates_ddCi)"
+                  : "finite-difference fallback -- nSpecie+1 evaluations per"
+                    " Jacobian, only in cells the adaptive switch integrates")
+            << endl;
+
+        if (backendMismatch_ > 1e-6)
+        {
+            WarningInFunction
+                << "The native and Cantera heavy rates differ by "
+                << backendMismatch_ << " at the reference state." << nl
+                << "    Expected when the mechanism uses reaction forms the"
+                << " native parser cannot represent (falloff, PLOG, Chebyshev,"
+                << " reversible): Cantera's rates are then the correct ones and"
+                << " this number is the size of what the native path was"
+                << " missing." << nl
+                << "    Unexpected otherwise -- for a mechanism of plain"
+                << " Arrhenius and three-body reactions the two evaluate the"
+                << " same expressions and agree to roundoff (~1e-15). Anything"
+                << " larger is a defect in one of them." << nl
+                << "    Either way both `implicitRate` and `ode` remain valid:"
+                << " the Jacobian is Cantera's own where Cantera supplies the"
+                << " rates." << endl;
+        }
+    }
+    else if (backend_ != "native")
+    {
+        FatalErrorInFunction
+            << "Unknown chemistryBackend " << backend_ << nl
+            << "    Valid: native, cantera" << nl
+            << exit(FatalError);
+    }
 
     Info<< "plasmaChemistry: " << reactions_.size() << " reactions ("
         << nTabulated_ << " electron-impact, "
@@ -305,6 +489,13 @@ void Foam::plasmaChemistry::productionLoss
     ode_->setTgas(Tgas);
     ode_->setExternal(nullptr);
     ode_->productionLoss(n, P, L);
+
+    if (cantera_)
+    {
+        cantera_->productionLoss(n, Tgas, Pc_, Lc_);
+        P += Pc_;
+        L += Lc_;
+    }
 }
 
 

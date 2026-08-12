@@ -20,3 +20,9 @@ variables
 # Ignore vscode files
 .vscode
 
+
+# wmake-generated lnInclude symlink farms
+**/lnInclude/
+
+# local validation/scratch run directories (not part of the source tree)
+smoke/
