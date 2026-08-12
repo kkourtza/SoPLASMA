@@ -365,6 +365,10 @@ int main(int argc, char *argv[])
     const scalar eedfTol = args.getOrDefault<scalar>("eedfTol", 0.05);
     label nSolves = 0, nUnconverged = 0;
 
+    // Transport and power channels from the most recent dynamic solve. Negative
+    // means "no solve yet" -- the tables are used until the first one lands.
+    scalar muNdyn = -1.0, PelDyn = -1.0, PgsDyn = -1.0, PvbDyn = -1.0;
+
     if (dynamicEEDF)
     {
         // Gas density in cm^-3, for the density-scaled (three-body) processes.
@@ -439,6 +443,18 @@ int main(int argc, char *argv[])
         // wrong, so every rate taken from it is scaled by an unknown factor.
         // Counted rather than silently used.
         if (!r.converged) ++nUnconverged;
+
+        // The POWER channels must come from the same EEDF as the rates. Left on
+        // the tables they are evaluated at the sweep's reference composition and
+        // temperature (here N2/O2/O = 0.774/0.186/0.04 at 1500 K) while the gas
+        // is actually approaching 2600 K and 17% atomic O -- so the elastic and
+        // vibrational shares, which depend on WHICH species the electrons hit,
+        // would be taken from a state the gas left long ago. Refreshing the
+        // rates but not the partition is not a consistent EEDF.
+        muNdyn = r.transport.muN;
+        PelDyn = r.transport.PelasticN;
+        PgsDyn = r.transport.PgasN;
+        PvbDyn = r.transport.PvibN;
 
         static bool dbg = Foam::getEnv("SOEEDF_DEBUG_EEDF").size();
         forAll(idToRate, i)
@@ -725,11 +741,20 @@ int main(int argc, char *argv[])
                 const scalar ne = (ie >= 0) ? max(n[ie], scalar(0)) : 0.0;
                 const scalar rho = nGas*Mair;
 
-                // Per electron per unit gas density, straight from the sweep.
-                const scalar Pel = (en > 0) ? tableAt(tableDir/"PelasticN_vs_reducedE", en*1e-21) : 0.0;
-                const scalar Pgs = (en > 0) ? tableAt(tableDir/"PgasN_vs_reducedE",     en*1e-21) : 0.0;
-                const scalar Pvb = (en > 0) ? tableAt(tableDir/"PvibN_vs_reducedE",     en*1e-21) : 0.0;
-                const scalar muN = (en > 0) ? tableAt(tableDir/"muN_vs_reducedE",       en*1e-21) : 0.0;
+                // Per electron per unit gas density. From the live EEDF when
+                // one is being solved, otherwise from the sweep. Mixing the two
+                // is what has to be avoided: the rates and the power channels
+                // are moments of the SAME f0, and taking them from different
+                // states breaks the energy budget they are supposed to close.
+                const bool live = (muNdyn >= 0.0);
+                const scalar Pel = (en <= 0) ? 0.0 : live ? PelDyn
+                    : tableAt(tableDir/"PelasticN_vs_reducedE", en*1e-21);
+                const scalar Pgs = (en <= 0) ? 0.0 : live ? PgsDyn
+                    : tableAt(tableDir/"PgasN_vs_reducedE",     en*1e-21);
+                const scalar Pvb = (en <= 0) ? 0.0 : live ? PvbDyn
+                    : tableAt(tableDir/"PvibN_vs_reducedE",     en*1e-21);
+                const scalar muN = (en <= 0) ? 0.0 : live ? muNdyn
+                    : tableAt(tableDir/"muN_vs_reducedE",       en*1e-21);
 
                 const scalar EN_SI2 = en*1e-21;
                 const scalar Pdep = muN*EN_SI2*EN_SI2*ne*nGas*EVJ;   // W/m^3
