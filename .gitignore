@@ -27,4 +27,14 @@ smoke/
 # per-component build logs and local run helpers: machine-specific, and they
 # churn on every build
 buildlogs/
+build.log
+rebuild.log
+
+# local run helpers: personal workflow, not part of the toolkit. build-all.sh
+# is kept -- it is the documented, dependency-ordered build entry point.
 watchdog.sh
+check-run.sh
+make-smoke-case.sh
+rerun.sh
+run-guarded.sh
+run-long.sh
