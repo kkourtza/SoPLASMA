@@ -5,9 +5,9 @@
    needed: constructing a Mechanism happens inside the library.
 
    The rpath is not optional. Without it the solver links but will not START --
-   the loader cannot find libBoltzmannSolver.so at run time -- and the fix
+   the loader cannot find libSoEEDF.so at run time -- and the fix
    would otherwise be an LD_LIBRARY_PATH every user has to know about. */
-BOLTZMANN_DIR ?= $(HOME)/Projects/BoltzmannSolver
+BOLTZMANN_DIR ?= $(HOME)/Projects/SoEEDF
 
 EXE_INC = \
     -I$(LIB_SRC)/finiteVolume/lnInclude \
@@ -17,5 +17,5 @@ EXE_INC = \
 LIB_LIBS = \
     -lfiniteVolume \
     -lmeshTools \
-    -L$(BOLTZMANN_DIR)/build -lBoltzmannSolver \
+    -L$(BOLTZMANN_DIR)/build -lSoEEDF \
     -Wl,-rpath,$(BOLTZMANN_DIR)/build
