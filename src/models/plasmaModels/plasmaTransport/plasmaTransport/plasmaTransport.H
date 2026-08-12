@@ -204,6 +204,28 @@ protected:
     //  a per-cell stiff solve affordable at all.
     scalar chemActivityThreshold_ = 0;
 
+    //- Diagnostics are reported every `chemReportInterval_` timesteps, not
+    //  once. Reporting only at start-up samples the run at t=0, where the
+    //  densities are at their floor and the chemistry is at its LEAST stiff --
+    //  the least informative moment there is. A discharge becomes stiff when
+    //  it ignites, which is after the one sample a start-up-only report takes.
+    //
+    //  0 disables periodic reporting (start-up only, the old behaviour).
+    label chemReportInterval_ = 0;
+
+    //- Timestep index of the last report, per report family
+    label chemLastReport_ = -1;
+    label chemPicardLastReport_ = -1;
+
+    //- Running maxima since the last report. Peak values matter more than
+    //  instantaneous ones: a single step whose chemistry was unresolved is a
+    //  defect in the solution whether or not the step that gets printed
+    //  happens to show it.
+    scalar chemStiffnessPeak_ = 0;
+    label  chemNstiffPeak_ = 0;
+    scalar chemPicardPeak_ = 0;
+    scalar chemChargePeak_ = 0;
+
     //- Active-cell count reported once rather than every step
     bool chemCellsReported_ = false;
 

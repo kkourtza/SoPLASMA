@@ -56,6 +56,42 @@ chemistry
     // are actually reacting. Watch the reported Picard change if you do.
     chemStiffnessLimit 1.0;
 
+    // How often the chemistry diagnostics above are printed, in timesteps.
+    //
+    // They used to be printed once, at start-up, which samples the run at its
+    // LEAST informative moment: at t = 0 the densities are at their floor and
+    // the chemistry is at its least stiff. A discharge becomes stiff when it
+    // ignites, which is long after that single sample.
+    //
+    // Values are peak-held between reports, so a single unresolved step is
+    // still reported even if it falls between two samples. Set 0 for the old
+    // start-up-only behaviour.
+    chemReportInterval 200;
+
+    // Who evaluates the HEAVY (Arrhenius) reactions. Electron-impact rates
+    // come from the Boltzmann tables either way -- letting Cantera evaluate
+    // those as well would double-count them and would need the EEDF injected
+    // per cell, which is the cost the tables exist to avoid.
+    //
+    //   native   (default) the Arrhenius forms in the mechanism dictionary
+    //            above. No external dependency, and the reaction set this
+    //            mechanism uses is expressed exactly.
+    //   cantera  the same reactions read from <mechanism>.heavy.yaml, written
+    //            by mechc beside the .foam from the same master file. Adds
+    //            falloff (Troe/SRI/Lindemann), PLOG, Chebyshev and reversible
+    //            reactions with equilibrium constants from thermo data --
+    //            forms the native parser does not implement. Needs
+    //            libplasmaChemistry built with CANTERA_DIR set.
+    //
+    // The two are cross-checked numerically at start-up and agree to roundoff
+    // on this mechanism -- rates to ~1e-15, Jacobian to ~1e-15 -- so `cantera`
+    // is for reaction forms the native path cannot express, not for accuracy.
+    //
+    // Either backend works with every chemistrySolver above, `adaptive`
+    // included: Cantera supplies its own analytic composition derivative, so
+    // the stiff branch has an exact Jacobian rather than a borrowed one.
+    chemistryBackend native;
+
     // Cells below this electron density are skipped. 0 = every cell. Raise it
     // only against your own case's densities and check the reported active
     // fraction: a threshold above the background silently disables the

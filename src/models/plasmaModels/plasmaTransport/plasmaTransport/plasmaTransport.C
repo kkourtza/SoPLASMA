@@ -555,51 +555,73 @@ S_iz_.correctBoundaryConditions();
     // Report the Picard convergence once the timestep's outer loop is done.
     // Reported whether it passes or fails: a check whose only evidence of
     // success is silence cannot be told from one that never ran.
-    if (chem_ && !chemPicardReported_ && finalIter
+    if (chem_ && finalIter
      && (chemistrySolver_ == csImplicitRate || chemistrySolver_ == csAdaptive))
     {
-        chemPicardReported_ = true;
+        chemPicardPeak_ = max(chemPicardPeak_, chemPicardChange_);
 
-        Info<< "plasmaChemistry: Picard change over the last outer iteration: "
-            << chemPicardChange_ << " (" << chemOuterCount_
-            << " iterations)" << endl;
+        const label ti = mesh_.time().timeIndex();
+        const bool firstReport = !chemPicardReported_;
+        const bool duePicard =
+            firstReport
+         || (chemReportInterval_ > 0
+          && ti - chemPicardLastReport_ >= chemReportInterval_);
 
-        if (chemOuterCount_ < 2)
+        if (duePicard)
         {
-            WarningInFunction
-                << "implicitRate with nOuterCorrectors = 1." << nl
-                << "    The source is then evaluated once, explicitly, and the"
-                << " scheme is FIRST order -- the second-order behaviour comes"
-                << " from the outer loop making it implicit. Raise"
-                << " nOuterCorrectors, or accept first order knowingly."
-                << endl;
-        }
-        else if (chemPicardChange_ > 1e-2 && chemistrySolver_ == csAdaptive)
-        {
-            // In adaptive mode the stiff cells are already being integrated,
-            // so a residual change here means the LIMIT is set too high for
-            // this case rather than that the mode is wrong.
-            WarningInFunction
-                << "the chemistry source is still changing by "
-                << chemPicardChange_ << " on the last outer iteration, with "
-                << chemNstiff_ << " cell(s) already integrated." << nl
-                << "    Lower `chemStiffnessLimit` (currently "
-                << chemStiffLimit_ << ") so more cells take the integrated"
-                << " path, or reduce deltaT." << endl;
-        }
-        else if (chemPicardChange_ > 1e-2)
-        {
-            WarningInFunction
-                << "the chemistry source is still changing by "
-                << chemPicardChange_ << " on the last outer iteration, so the"
-                << " Picard iteration has NOT converged." << nl
-                << "    max(L*dt) = " << chemStiffness_
-                << ": the chemistry is stiffer than this timestep, and"
-                << " linearising around the current state is not resolving it."
-                << nl
-                << "    Either reduce deltaT, raise nOuterCorrectors, or switch"
-                << " to `chemistrySolver ode`, which integrates through the"
-                << " stiffness at the cost of first order." << endl;
+            chemPicardReported_ = true;
+            chemPicardLastReport_ = ti;
+
+            // The PEAK since the last report, not this step's value: one
+            // unresolved step is a defect in the solution whether or not the
+            // step that happens to be sampled shows it.
+            const scalar change = chemPicardPeak_;
+            chemPicardPeak_ = 0;
+
+            Info<< "plasmaChemistry: Picard change over the last outer"
+                << " iteration: " << change << " (" << chemOuterCount_
+                << " iterations, peak since last report)" << endl;
+
+            // A configuration warning, so it is worth saying once and not on
+            // every report -- nothing about it changes during the run.
+            if (chemOuterCount_ < 2 && firstReport)
+            {
+                WarningInFunction
+                    << "implicitRate with nOuterCorrectors = 1." << nl
+                    << "    The source is then evaluated once, explicitly, and"
+                    << " the scheme is FIRST order -- the second-order"
+                    << " behaviour comes from the outer loop making it"
+                    << " implicit. Raise nOuterCorrectors, or accept first"
+                    << " order knowingly." << endl;
+            }
+            else if (change > 1e-2 && chemistrySolver_ == csAdaptive)
+            {
+                // In adaptive mode the stiff cells are already being
+                // integrated, so a residual change here means the LIMIT is set
+                // too high for this case rather than that the mode is wrong.
+                WarningInFunction
+                    << "the chemistry source is still changing by "
+                    << change << " on the last outer iteration, with "
+                    << chemNstiff_ << " cell(s) already integrated." << nl
+                    << "    Lower `chemStiffnessLimit` (currently "
+                    << chemStiffLimit_ << ") so more cells take the integrated"
+                    << " path, or reduce deltaT." << endl;
+            }
+            else if (change > 1e-2)
+            {
+                WarningInFunction
+                    << "the chemistry source is still changing by "
+                    << change << " on the last outer iteration, so the"
+                    << " Picard iteration has NOT converged." << nl
+                    << "    max(L*dt) = " << chemStiffness_
+                    << ": the chemistry is stiffer than this timestep, and"
+                    << " linearising around the current state is not resolving"
+                    << " it." << nl
+                    << "    Either reduce deltaT, raise nOuterCorrectors, or"
+                    << " switch to `chemistrySolver ode`, which integrates"
+                    << " through the stiffness at the cost of first order."
+                    << endl;
+            }
         }
     }
 
@@ -1011,6 +1033,18 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         // what makes that visible, so raise it only with that number in view.
         chemStiffLimit_ =
             cd.getOrDefault<scalar>("chemStiffnessLimit", 1.0);
+
+        // How often the chemistry diagnostics are printed, in timesteps.
+        //
+        // NOT once at start-up, which is what this used to do and which is the
+        // worst possible sampling point: at t=0 the densities are at their
+        // floor and the chemistry is at its least stiff. A discharge becomes
+        // stiff when it ignites, which is after that single sample is taken.
+        //
+        // Between reports the values are peak-held, so a stiff step is not
+        // missed by falling between two samples. 0 restores start-up-only.
+        chemReportInterval_ =
+            cd.getOrDefault<label>("chemReportInterval", 200);
 
         dictionary ccfg(cd);
         ccfg.add("electronName", species_.speciesNames()[species_.electronSpeciesID()], true);
@@ -1534,9 +1568,30 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             }
         }
 
-        if (!chemCellsReported_)
+        // Peak-hold between reports, so a stiff step is not missed just
+        // because it fell between two samples.
+        chemStiffnessPeak_ = max(chemStiffnessPeak_, chemStiffness_);
+        chemNstiffPeak_    = max(chemNstiffPeak_, chemNstiff_);
+        chemChargePeak_    = max(chemChargePeak_, chemSourceChargeAfter_);
+
+        const label ti = mesh_.time().timeIndex();
+        const bool due =
+            !chemCellsReported_
+         || (chemReportInterval_ > 0 && ti - chemLastReport_ >= chemReportInterval_);
+
+        if (due)
         {
             chemCellsReported_ = true;
+            chemLastReport_ = ti;
+
+            // Report the PEAK since the last report, not this step's value.
+            chemSourceChargeAfter_ = chemChargePeak_;
+            chemStiffness_ = chemStiffnessPeak_;
+            chemNstiff_ = chemNstiffPeak_;
+            chemStiffnessPeak_ = 0;
+            chemNstiffPeak_ = 0;
+            chemChargePeak_ = 0;
+
             reduce(chemSourceChargeAfter_, maxOp<scalar>());
             reduce(chemActiveCount_, sumOp<label>());
             reduce(chemStiffness_, maxOp<scalar>());
