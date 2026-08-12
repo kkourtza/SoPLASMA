@@ -219,6 +219,63 @@ If the compilation finishes without errors, the installation is complete.
 
 ⚠️ **IMPORTANT:** Some ThirdParty packages included with the SoPLASMA (but not required as prerequisites) may fail to build (for example, **petsc4foam**). To install these optional components, refer to the corresponding instructions in the `docs/` directory.
 
+⚠️ **The plasma chemistry libraries need SoEEDF.** `plasmaBoltzmann` links the
+electron Boltzmann solver, so `./Allwmake` fails on it unless `BOLTZMANN_DIR`
+points at a SoEEDF checkout. See the section below.
+
+
+## Mechanism-driven plasma chemistry
+
+A case declares **one mechanism file**. The transported species, their charges and
+masses, the electron transport coefficients, the electron-impact rate coefficients
+and the heavy chemistry are all derived from it — nothing is re-typed between
+codes, and every generated artifact carries a hash of the master mechanism so a
+mismatched pair is refused rather than silently used.
+
+| library | role |
+|---|---|
+| `plasmaBoltzmann` | solves the EEDF **in process at start-up** and writes the coefficient tables; staleness-checked against the mechanism hash |
+| `plasmaChemistry` | the whole reaction set as an OpenFOAM `ODESystem`; native and optional Cantera heavy backends |
+| `plasmaSpecies` | derives `activeSpecies`, charges and masses from the mechanism |
+| `plasmaTransport` | assembles the chemistry source into the species equations |
+
+The chemistry source is returned as production and a **loss coefficient**
+(`dn/dt = P − L·n`) so the sink is implicit via `fvm::Sp`: densities stay positive
+at any timestep, and the outer Picard iteration is a contraction on the loss term.
+`chemistrySolver adaptive` chooses **per cell** between linearising and stiff
+integration, because the stiffness is local — a streamer head is stiff while the
+bulk is not.
+
+### Requirements
+
+**[SoEEDF](https://github.com/kkourtza/SoEEDF)** — the two-term electron Boltzmann
+solver that produces the EEDF and the mechanism compiler that generates the case
+files. Build it first, then point `BOLTZMANN_DIR` at it (it defaults to
+`$HOME/Projects/SoEEDF`):
+
+```bash
+git clone git@github.com:kkourtza/SoEEDF.git ~/Projects/SoEEDF
+cd ~/Projects/SoEEDF && cmake -S . -B build && cmake --build build -j
+```
+
+**Cantera is optional.** Without it everything builds and runs; selecting
+`chemistryBackend cantera` then fails with a message naming the variable to set.
+Both the 3.x and 4.x series are supported.
+
+### Documentation
+
+Installation, a step-by-step first case, modelling guidelines and the full
+validation record live in the SoEEDF repository, indexed at
+[`docs/INDEX.md`](https://github.com/kkourtza/SoEEDF/blob/master/docs/INDEX.md).
+The chemistry–transport coupling — operator splitting, temporal order, the
+dictionary reference and the Cantera backend — is in
+[`docs/numerics-chemistry-coupling.md`](https://github.com/kkourtza/SoEEDF/blob/master/docs/numerics-chemistry-coupling.md).
+
+### Backward compatibility
+
+Existing cases are unaffected: `chemistrySolver none` is the previous behaviour
+and remains available. The mechanism-driven path is opt-in per case.
+
 
 ## Contributors
 
