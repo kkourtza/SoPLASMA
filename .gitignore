@@ -21,8 +21,10 @@ variables
 .vscode
 
 
-# wmake-generated lnInclude symlink farms
-**/lnInclude/
-
 # local validation/scratch run directories (not part of the source tree)
 smoke/
+
+# per-component build logs and local run helpers: machine-specific, and they
+# churn on every build
+buildlogs/
+watchdog.sh
