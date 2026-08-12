@@ -99,6 +99,17 @@ struct plasmaReactionSpec
     //- k = A T^b exp(-Ta/T) for heavy reactions.
     scalar A = 0.0, b = 0.0, Ta = 0.0;
 
+    //- Reaction enthalpy [eV], products minus reactants, from the mechanism's
+    //  own thermo. EXOTHERMIC is NEGATIVE, so the heat released to the gas is
+    //  -deltaH per event -- emitted with the thermodynamic sign so it cannot be
+    //  mistaken for "heat out".
+    //
+    //  This is where fast gas heating comes from: quenching of the electronic
+    //  states by O2 releases most of what the electrons stored, tens of
+    //  nanoseconds after they stored it. Computed by mechc from species
+    //  enthalpies, never apportioned by hand.
+    scalar deltaH = 0.0;
+
     //- Index into the pre-interpolated electron-impact rate array, or -1 for
     //  a heavy reaction evaluated from A, b, Ta.
     label tabulated = -1;
@@ -224,6 +235,25 @@ public:
         //  unambiguously, where checking densities after a step confounds it
         //  with integration error.
         scalar chargeResidual(const scalarField& y) const;
+
+        //- Heat released to the gas by the HEAVY reactions [eV m^-3 s^-1].
+        //
+        //  sum over heavy reactions of  q_r * (-deltaH_r)
+        //
+        //  This is fast gas heating. The electronic states store what the
+        //  electrons gave them, and quenching by O2 hands it to the gas tens
+        //  of nanoseconds later; the delay is physical and comes out of the
+        //  kinetics rather than being modelled.
+        //
+        //  DELIBERATELY EXCLUDES the electron-impact reactions, and the
+        //  exclusion is the whole reason this is a separate function rather
+        //  than a loop over `reactions_`. Their contribution to gas heating is
+        //  the tabulated PgasN, which is a sum over EVERY electron-impact
+        //  channel including the `energy-only` ones that carry no species and
+        //  never reach this reaction list at all. Adding a per-reaction term
+        //  here on top of the table would count the resolved channels twice
+        //  and still miss the lumped ones.
+        scalar heavyHeatRelease(const scalarField& y) const;
 
         //- Split the instantaneous reaction rate into production and a LOSS
         //  COEFFICIENT: dn_s/dt = P_s - L_s * n_s.

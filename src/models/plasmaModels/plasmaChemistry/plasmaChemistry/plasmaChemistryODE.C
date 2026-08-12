@@ -331,3 +331,45 @@ void Foam::plasmaChemistryODE::productionLoss
         }
     }
 }
+
+
+Foam::scalar Foam::plasmaChemistryODE::heavyHeatRelease
+(
+    const scalarField& y
+) const
+{
+    scalar Q = 0.0;
+
+    forAll(reactions_, r)
+    {
+        const plasmaReactionSpec& rx = reactions_[r];
+
+        // Heavy only: tabulated channels are accounted by PgasN. See the
+        // header for why mixing the two double-counts.
+        if (rx.tabulated >= 0 || rx.deltaH == 0.0) continue;
+
+        const scalar k = rx.A*Foam::pow(Tgas_, rx.b)
+                       *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+
+        scalar q = k*rx.fixedReactantDensity;
+        forAll(rx.reactants, i)
+        {
+            const label s = rx.reactants[i];
+            if (s >= 0) q *= max(y[s], scalar(0));
+        }
+        if (rx.collider >= 0)
+        {
+            q *= max(y[rx.collider], scalar(0));
+        }
+        else if (rx.colliderFixedDensity > 0)
+        {
+            q *= rx.colliderFixedDensity;
+        }
+
+        // deltaH is products minus reactants, so exothermic is negative and
+        // the heat delivered to the gas is -deltaH.
+        Q += q*(-rx.deltaH);
+    }
+
+    return Q;
+}

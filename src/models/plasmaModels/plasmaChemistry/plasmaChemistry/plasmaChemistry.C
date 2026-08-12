@@ -138,6 +138,7 @@ void Foam::plasmaChemistry::readMechanism
             rx.A  = h.get<scalar>("A");
             rx.b  = h.get<scalar>("b");
             rx.Ta = h.get<scalar>("Ta");
+            rx.deltaH = h.getOrDefault<scalar>("deltaH", 0.0);
 
             rx.fixedReactantDensity = 1.0;
             fill(h.get<wordList>("reactants"), rx.reactants,
@@ -496,6 +497,17 @@ void Foam::plasmaChemistry::productionLoss
         P += Pc_;
         L += Lc_;
     }
+}
+
+
+Foam::scalar Foam::plasmaChemistry::heavyHeatRelease
+(
+    const scalarField& n,
+    const scalar Tgas
+) const
+{
+    ode_->setTgas(Tgas);
+    return ode_->heavyHeatRelease(n);
 }
 
 

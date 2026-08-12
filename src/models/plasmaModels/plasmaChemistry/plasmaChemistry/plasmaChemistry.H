@@ -206,6 +206,11 @@ public:
                             const scalar Tgas, scalarField& P,
                             scalarField& L) const;
 
+        //- Heat released to the gas by the HEAVY reactions [eV m^-3 s^-1].
+        //  Fast gas heating. Excludes the electron-impact channels, which are
+        //  covered by the tabulated PgasN -- see plasmaChemistryODE.
+        scalar heavyHeatRelease(const scalarField& n, const scalar Tgas) const;
+
         //- Relative charge residual of the right-hand side at this state.
         //  Identically zero for a charge-conserving mechanism, whatever the
         //  state, so a non-zero value is an unbalanced reaction and nothing
