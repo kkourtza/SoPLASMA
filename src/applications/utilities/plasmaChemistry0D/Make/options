@@ -1,12 +1,22 @@
+/* SoEEDF is linked directly so the EEDF can be RE-SOLVED during the run rather
+   than interpolated from tables frozen at one composition. A discharge in air
+   dissociates, and the rates change by tens of percent as it does -- measured
+   at +84% on N2 ionisation at 100 Td between the start and end of the
+   Rusterholtz benchmark. Tables cannot represent that; only re-solving can. */
+BOLTZMANN_DIR ?= $(HOME)/Projects/SoEEDF
+
 EXE_INC = \
     -I$(LIB_SRC)/finiteVolume/lnInclude \
     -I$(LIB_SRC)/meshTools/lnInclude \
     -I$(LIB_SRC)/ODE/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaChemistry/lnInclude \
-    -I$(SoPLASMA_SRC)/constants/lnInclude
+    -I$(SoPLASMA_SRC)/constants/lnInclude \
+    -I$(BOLTZMANN_DIR)/include \
+    -isystem /usr/include/eigen3
 
 EXE_LIBS = \
     -lfiniteVolume \
     -lmeshTools \
     -lODE \
-    -L$(FOAM_USER_LIBBIN) -lplasmaChemistry -lSoPLASMAConstants
+    -L$(FOAM_USER_LIBBIN) -lplasmaChemistry -lSoPLASMAConstants \
+    -L$(BOLTZMANN_DIR)/build -lSoEEDF -Wl,-rpath,$(BOLTZMANN_DIR)/build

@@ -25,6 +25,12 @@ Usage
 #include "OFstream.H"
 #include "dictionary.H"
 #include "plasmaChemistry.H"
+
+// SoEEDF, for re-solving the EEDF in process.
+#undef Log            // OpenFOAM defines this; SoEEDF's headers do not want it
+#include "Mechanism.H"
+#include "BoltzmannSolver.H"
+#include "TransportCoefficients.H"
 #include "DynamicList.H"
 #include <cstdlib>
 
@@ -170,6 +176,13 @@ int main(int argc, char *argv[])
         "solve the gas temperature from the deposited power");
     argList::addOption("ENpulse", "peak:centre_ns:fwhm_ns",
         "Gaussian E/N pulse instead of a fixed field");
+    argList::addOption("manifest", "file",
+        "<mech>.mech.json. Supplying it enables DYNAMIC EEDF: the Boltzmann"
+        " equation is re-solved at the current composition and gas temperature"
+        " instead of interpolating tables frozen at the initial ones");
+    argList::addOption("eedfTol", "frac",
+        "re-solve when any mole fraction or T has drifted by this relative"
+        " amount since the last solve (default 0.05)");
     argList::addOption("X", "N2=0.774 O2=0.186 O=0.04",
         "initial mole fractions, overriding the mechanism's own composition."
         " Needed to reproduce an experiment that starts partly dissociated by"
@@ -315,6 +328,138 @@ int main(int argc, char *argv[])
         kTab[i] = tableAt(tableDir/("k_" + chem.tabulatedIds()[i]
                                     + "_vs_reducedE"), EN_SI);
     }
+
+    // ---- dynamic EEDF ------------------------------------------------------
+    // With a manifest, the Boltzmann equation is re-solved during the run at
+    // the CURRENT composition and gas temperature. Tables are a functional of
+    // the whole mixture, and a discharge changes the mixture: dissociating O2
+    // removes vibrational and Herzberg energy sinks, the EEDF runs hotter, and
+    // every threshold rate accelerates. Measured on the Rusterholtz benchmark,
+    // N2 ionisation at 100 Td is 84% higher at the end of the run than the
+    // frozen table says. That is a feedback loop -- dissociation begets faster
+    // ionisation -- and no table can carry it.
+    //
+    // Re-solved on a TOLERANCE rather than every step: one solve costs
+    // milliseconds, which is far more than one RHS evaluation, and the EEDF
+    // responds to composition that moves slowly compared with the timestep.
+    // The trigger is the same idea Shao et al. use in ChemPlasKin.
+    std::unique_ptr<Boltzmann::Mechanism> bmech;
+    std::unique_ptr<Boltzmann::BoltzmannSolver> bsolver;
+    std::unique_ptr<Boltzmann::TransportCalculator> bcalc;
+    List<label> idToRate(chem.nTabulated(), -1);
+
+    // Unit conversion per process, and it is NOT cosmetic. A `density-cm3`
+    // process -- LXCat's three-body attachment -- is tabulated as a true
+    // third-order k3 [m^6/s], with the collider density divided back out,
+    // because the chemistry multiplies by that density itself. The solver
+    // returns a second-order k [m^3/s] with the density already inside the
+    // scaled cross section.
+    //
+    // Taking the solver's value raw made the attachment rate 1.03e24 times too
+    // large, and the electron density was annihilated inside one timestep. The
+    // table writer applies exactly this factor (MechTables.C); the dynamic path
+    // has to apply it too, or the two disagree by twenty-four orders of
+    // magnitude while looking like the same quantity.
+    scalarField rateConv(chem.nTabulated(), 1.0);
+    const bool dynamicEEDF = args.found("manifest");
+    const scalar eedfTol = args.getOrDefault<scalar>("eedfTol", 0.05);
+    label nSolves = 0, nUnconverged = 0;
+
+    if (dynamicEEDF)
+    {
+        // Gas density in cm^-3, for the density-scaled (three-body) processes.
+        // It must be p/(k_B T) at the CASE temperature, not Loschmidt's number
+        // scaled by pressure: at 1500 K those differ by 5.5x, and three-body
+        // attachment scales linearly with it. Getting this wrong made
+        // attachment 5.5x too strong and annihilated the electron density
+        // mid-pulse -- a collapse that looked like a stiff-chemistry failure
+        // and was a units error.
+        //
+        // Constant through the run because the reactor is isochoric.
+        bmech.reset(new Boltzmann::Mechanism(
+            args.get<fileName>("manifest"), nGas*1.0e-6));
+
+        // Map our tabulated ids onto the solver's rate-coefficient vector.
+        // Done ONCE, by string id: the two orderings are different and pairing
+        // them by position is exactly the class of error the mechanism hash
+        // exists to prevent.
+        forAll(chem.tabulatedIds(), i)
+        {
+            const int mi = bmech->indexOf(chem.tabulatedIds()[i]);
+            idToRate[i] = (mi >= 0) ? bmech->mechToRate(mi) : -1;
+            if (mi >= 0)
+            {
+                const auto& mp = bmech->processes()[mi];
+                if (mp.scaling == "density-cm3" && mp.sigmaScale > 0)
+                {
+                    rateConv[i] = 1.0e-6/mp.sigmaScale;   // CM3_TO_M3/sigmaScale
+                }
+            }
+        }
+        label nMapped = 0;
+        forAll(idToRate, i) if (idToRate[i] >= 0) ++nMapped;
+        Info<< "dynamic EEDF: " << nMapped << " of " << chem.nTabulated()
+            << " tabulated processes mapped, tolerance " << eedfTol << endl;
+    }
+
+    // Re-solve and refill kTab at this (E/N, T, composition).
+    auto solveEEDF = [&](const scalar en_Td, const scalar Tg,
+                         const scalarField& dens)
+    {
+        std::map<std::string, double> X;
+        scalar tot = 0;
+        forAll(species, si) if (dens[si] > 0) tot += dens[si];
+        forAll(species, si)
+        {
+            // Only species the Boltzmann database actually carries; the rest
+            // (ions, excited states without cross sections) are not part of
+            // the mixture it can represent.
+            bool known = false;
+            for (const auto& gs : bmech->db().species())
+            {
+                if (gs.name == std::string(species[si])) { known = true; break; }
+            }
+            if (dens[si] > 0 && known)
+            {
+                X[species[si]] = dens[si]/tot;
+            }
+        }
+        if (X.empty()) return;
+
+        bmech->setMixture(X);
+        Boltzmann::SolverConfig cfg;
+        cfg.T_gas_K = Tg;
+        cfg.T_exc_K = Tg;
+        cfg.growth  = Boltzmann::GrowthModel::Temporal;
+        Boltzmann::BoltzmannSolver sol(bmech->db(), cfg);
+        const auto r = sol.solve(en_Td);
+        ++nSolves;
+
+        // An unconverged EEDF is not merely inaccurate -- its normalisation is
+        // wrong, so every rate taken from it is scaled by an unknown factor.
+        // Counted rather than silently used.
+        if (!r.converged) ++nUnconverged;
+
+        static bool dbg = Foam::getEnv("SOEEDF_DEBUG_EEDF").size();
+        forAll(idToRate, i)
+        {
+            if (idToRate[i] >= 0
+             && idToRate[i] < label(r.transport.rateCoeffs.size()))
+            {
+                const scalar kNew =
+                    rateConv[i]*r.transport.rateCoeffs[idToRate[i]];
+                if (dbg && nSolves <= 3)
+                {
+                    Info<< "  [eedf " << nSolves << "] EN=" << en_Td
+                        << " T=" << Tg << "  " << chem.tabulatedIds()[i]
+                        << "  table=" << kTab[i] << "  solved=" << kNew
+                        << "  ratio=" << (kTab[i] > 0 ? kNew/kTab[i] : -1)
+                        << endl;
+                }
+                kTab[i] = kNew;
+            }
+        }
+    };
 
     // Initial state: dry air at the reference composition, lightly ionised.
     scalarField n(species.size(), Zero);
@@ -464,8 +609,36 @@ int main(int argc, char *argv[])
     // So: fixed fine steps through the pulse, then geometric growth. The
     // afterglow is smooth on a log axis -- V-T relaxation and recombination
     // are exponentials -- so geometric steps resolve it at a few dozen points.
-    const scalar tPulseEnd = pulsed ? (tc_ns + 5.0*fwhm_ns)*1e-9 : 0.0;
-    const scalar dtFine = pulsed ? fwhm_ns*1e-9/50.0 : endTime/nOut;
+    // A PROFILED run must resolve its own profile. With -profile the field is
+    // not a Gaussian this code knows the width of, so the fine-step window runs
+    // until the profile's field has decayed to 1% of its peak, and the step is
+    // set from the profile's own sampling.
+    //
+    // Without this the step grew to 2 ns while the pulse was 10 ns wide. The
+    // static-table run absorbed it; the dynamic-EEDF run, whose rates are
+    // higher, went unstable and oscillated the electron density between zero
+    // and 8.6e21 m^-3 -- which reads as a chemistry failure and is a
+    // resolution failure.
+    scalar tPulseEnd = pulsed ? (tc_ns + 5.0*fwhm_ns)*1e-9 : 0.0;
+    scalar dtFine = pulsed ? fwhm_ns*1e-9/50.0 : endTime/nOut;
+    if (profiled)
+    {
+        scalar enMax = 0;
+        forAll(pEN, i) enMax = max(enMax, pEN[i]);
+        tPulseEnd = pT[pT.size()-1];
+        for (label i = pT.size() - 1; i >= 0; --i)
+        {
+            if (pEN[i] > 0.01*enMax) { tPulseEnd = pT[i]; break; }
+        }
+        scalar dtMin = GREAT;
+        for (label i = 1; i < pT.size(); ++i)
+        {
+            if (pT[i] <= tPulseEnd) dtMin = min(dtMin, pT[i] - pT[i-1]);
+        }
+        dtFine = min(dtMin/10.0, tPulseEnd/200.0);
+        Info<< "profile: fine step " << dtFine << " s until " << tPulseEnd
+            << " s, then growing" << endl;
+    }
 
     scalar t = 0.0, dt = min(dtFine, endTime/10.0);
     label k = 0;
@@ -495,6 +668,40 @@ int main(int argc, char *argv[])
                         ? tableAt(tableDir/("k_" + chem.tabulatedIds()[i]
                                             + "_vs_reducedE"), en*1e-21)
                         : 0.0;
+                }
+            }
+
+            // Re-solve the EEDF when the state has drifted past tolerance.
+            if (dynamicEEDF)
+            {
+                static scalarField Xlast; static scalar Tlast = -1, ENlast = -1;
+                scalar tot = 0;
+                forAll(species, si) if (n[si] > 0) tot += n[si];
+                if (Xlast.size() != species.size())
+                {
+                    Xlast.setSize(species.size(), Zero); Tlast = -1;
+                }
+                bool due = (Tlast < 0)
+                        || (mag(T - Tlast) > eedfTol*Tlast)
+                        || (ENlast > 0 && mag(en - ENlast) > eedfTol*ENlast);
+                if (!due && tot > 0)
+                {
+                    forAll(species, si)
+                    {
+                        const scalar x = n[si]/tot;
+                        // Absolute floor as well as relative: a trace species
+                        // doubling from 1e-12 is not a change in the mixture.
+                        if (mag(x - Xlast[si]) > eedfTol*max(Xlast[si], 1e-3))
+                        {
+                            due = true; break;
+                        }
+                    }
+                }
+                if (due && en > 0 && tot > 0)
+                {
+                    solveEEDF(en, T, n);
+                    forAll(species, si) Xlast[si] = n[si]/tot;
+                    Tlast = T; ENlast = en;
                 }
             }
 
@@ -578,6 +785,19 @@ int main(int argc, char *argv[])
         t += dt;
     }
     Info<< "  steps taken: " << k << endl;
+
+    if (dynamicEEDF)
+    {
+        Info<< "dynamic EEDF: " << nSolves << " Boltzmann solves over the run, "
+            << nUnconverged << " unconverged" << endl;
+        if (nUnconverged > 0)
+        {
+            WarningInFunction
+                << nUnconverged << " of " << nSolves << " EEDF solves did not"
+                << " converge. Their normalisation is wrong, so every rate"
+                << " taken from them is scaled by an unknown factor." << endl;
+        }
+    }
 
     if (heating)
     {
