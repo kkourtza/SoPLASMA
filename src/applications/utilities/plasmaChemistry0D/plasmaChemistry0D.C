@@ -30,6 +30,67 @@ Usage
 
 using namespace Foam;
 
+
+// ---------------------------------------------------------------------------
+// Vibrational-translational relaxation time of N2(v) in air [s].
+//
+// Landau-Teller relaxation needs a timescale, and a single constant is wrong by
+// DECADES in a discharge: V-T relaxation of N2 by atomic OXYGEN is ~1e3 times
+// faster than by N2 or O2, so tau collapses as the discharge dissociates O2.
+// That is the whole reason this is a function of composition and not a number.
+//
+// Millikan & White, J. Chem. Phys. 39 (1963) 3209, for the molecular partners:
+//
+//     p0 tau_{k,m} = exp[ a (T^-1/3 - b) - 18.42 ]      [atm s]
+//
+// with (a,b) = (220, 0.03) for N2-N2 and (162, 0.03) for N2-O2 [Shao et al.,
+// Appl. Energy Combust. Sci. 19 (2024) 100280, from Colgan & Levitt 1967].
+//
+// The N2-O channel is taken from POPOV's rate constant directly,
+//
+//     k = 4.5e-21 (T/300)^2.1  m^3/s     [Popov, J. Phys. D 44 (2011) 285201]
+//     tau_{N2,O} = 1/(k n_O)
+//
+// rather than from the fitted form 488.5/(p0 T^1.1) quoted alongside it in
+// Shao et al. eq. (7). Those two disagree by a factor of 101325 -- exactly Pa
+// per atm -- so that constant requires p0 in PASCALS while the surrounding text
+// says atm. Implemented as written with atm, V-T relaxation comes out 1e5 times
+// too slow and the reservoir never empties. Deriving from the rate constant
+// avoids the trap entirely, which is the general lesson: prefer the underlying
+// quantity to a fitted restatement of it.
+//
+// Mixing rule, Millikan-White extended to several partners:
+//     1/tau_k = SUM_m X_m / tau_{k,m}
+static Foam::scalar tauVT_N2
+(
+    const Foam::scalar T,
+    const Foam::scalar p_atm,
+    const Foam::scalar xN2,
+    const Foam::scalar xO2,
+    const Foam::scalar nO           // atomic oxygen number density [m^-3]
+)
+{
+    const scalar Tm13 = Foam::pow(T, -1.0/3.0);
+    auto mw = [&](const scalar a, const scalar b)
+    {
+        return Foam::exp(a*(Tm13 - b) - 18.42)/max(p_atm, SMALL);   // [s]
+    };
+
+    scalar inv = 0.0;
+    if (xN2 > 0) inv += xN2/mw(220.0, 0.03);       // N2 - N2
+    if (xO2 > 0) inv += xO2/mw(162.0, 0.03);       // N2 - O2
+
+    // N2 - O, from the rate constant. Written as a frequency because that is
+    // what it is: k n_O, with no mole fraction needed.
+    if (nO > 0)
+    {
+        inv += 4.5e-21*Foam::pow(T/300.0, 2.1)*nO;
+    }
+
+    return (inv > 0) ? 1.0/inv : GREAT;
+}
+
+
 // Read an OpenFOAM ((x y) ...) table and interpolate linearly.
 static scalar tableAt(const fileName& path, const scalar x)
 {
@@ -107,7 +168,10 @@ int main(int argc, char *argv[])
     // counted as prompt heat. A physics-based tau (Millikan-White, with the
     // atomic-oxygen correction that moves it by decades once O2 dissociates)
     // is the tier-2 model in docs/gas-heating-plan.md.
-    const scalar tauVT = args.getOrDefault<scalar>("tauVT", 1.0e-5);
+    // Negative means COMPUTE it per step from Millikan-White plus the
+    // atomic-oxygen channel; a positive value forces a fixed one, which is
+    // still useful for isolating the reservoir from the relaxation model.
+    const scalar tauVTfixed = args.getOrDefault<scalar>("tauVT", -1.0);
 
     // Gaussian pulse "peak:centre_ns:fwhm_ns", or a fixed field.
     scalar pkEN = EN_Td, tc_ns = 0.0, fwhm_ns = 0.0;
@@ -136,7 +200,15 @@ int main(int argc, char *argv[])
         if (!pulsed) return EN_Td;
         const scalar sig = fwhm_ns*1e-9/(2.0*Foam::sqrt(2.0*Foam::log(2.0)));
         const scalar x = (t - tc_ns*1e-9)/sig;
-        return max(pkEN*Foam::exp(-0.5*x*x), scalar(0.1));
+        const scalar en = pkEN*Foam::exp(-0.5*x*x);
+
+        // The field goes to ZERO after the pulse, and it matters that it does.
+        // An earlier version floored it at 0.1 Td to keep table lookups inside
+        // range -- and that floor kept depositing into the vibrational
+        // reservoir for the whole 100 us afterglow, because at low E/N nearly
+        // all electron energy goes to vibration. The apparent vibrational
+        // share climbed from 47% to 66% on nothing but the floor.
+        return (en < 1e-4*pkEN) ? 0.0 : en;
     };
     const scalar endTime = args.getOrDefault<scalar>("endTime", 1e-8);
     const label  nOut    = args.getOrDefault<label>("nOut", 100);
@@ -267,9 +339,23 @@ int main(int argc, char *argv[])
     // rise is precisely what launches the blast wave, and it is the quantity
     // G3/G4 exist to propagate.
     //
-    // So c_v, not c_p. Using c_p here -- the obvious mistake, since "constant
-    // pressure reactor" is the Cantera habit -- would under-predict the
-    // temperature rise by 40% and the pressure rise with it.
+    // So c_v, not c_p, DURING THE PULSE. Using c_p -- the natural habit, since
+    // Cantera's is a constant-pressure reactor -- under-predicts the
+    // temperature rise by 29% (dT scales as 1/c, and c_v/c_p = 1/gamma =
+    // 0.714). Worse than the 29%, it loses the pressure rise ENTIRELY: at
+    // constant pressure there is no pressure perturbation, and therefore no
+    // blast wave to propagate.
+    //
+    // AFTER the pulse the opposite holds. Once the acoustic wave has crossed
+    // the kernel -- hundreds of ns -- the pressure equalises with the
+    // surroundings and the gas expands, which is a c_p process AND a genuine
+    // energy loss from the kernel. Shao et al., Appl. Energy Combust. Sci. 19
+    // (2024) 100280 handle exactly this: constant volume during the pulse
+    // (their eq. 2a), an isentropic expansion at pulse end (eq. 12), then
+    // constant pressure between pulses (eq. 14). This reactor implements only
+    // the first, so it is right within a single pulse and over-predicts the
+    // temperature of anything longer -- which matters most for repetitive
+    // pulsing, where the error accumulates pulse on pulse.
     const scalar cv = 718.0;                  // J/kg/K, air at 300 K
     const scalar Mair = 28.96e-3/6.02214076e23;   // kg per particle
     const scalar EVJ = 1.602176634e-19;
@@ -277,24 +363,56 @@ int main(int argc, char *argv[])
     scalar T = Tgas;
     scalar eVib = 0.0;                        // J/m^3 in the reservoir
     scalar Edep = 0.0, Egas = 0.0, Evib = 0.0;
+    scalar tauVTend = 0.0;
 
-    const scalar dt = endTime/nOut;
-    for (label k = 0; k <= nOut; ++k)
+    // TWO-PHASE STEPPING, because a nanosecond pulse followed by a millisecond
+    // afterglow spans six decades and a uniform step cannot serve both. At
+    // dt = endTime/nOut a 1 ms run steps at 250 ns and NEVER SAMPLES a 10 ns
+    // pulse: the run reported zero deposited energy and a temperature rise of
+    // 0.01 K, which looks like a physics result and is a sampling failure.
+    //
+    // So: fixed fine steps through the pulse, then geometric growth. The
+    // afterglow is smooth on a log axis -- V-T relaxation and recombination
+    // are exponentials -- so geometric steps resolve it at a few dozen points.
+    const scalar tPulseEnd = pulsed ? (tc_ns + 5.0*fwhm_ns)*1e-9 : 0.0;
+    const scalar dtFine = pulsed ? fwhm_ns*1e-9/50.0 : endTime/nOut;
+
+    scalar t = 0.0, dt = min(dtFine, endTime/10.0);
+    label k = 0;
+    while (t < endTime)
     {
-        const scalar t = k*dt;
-        const scalar en = fieldAt(t);
-
-        if (k > 0)
+        if (pulsed && t > tPulseEnd)
         {
-            // Rates follow the field, and the field follows the pulse.
+            // Grow, but CAPPED. Left to reach endTime/50 the step reaches
+            // ~20 us in the afterglow, where recombination is still fast
+            // enough that the stiff solver gives up -- it failed with species
+            // driven to denormals (1e-323). The cap is a property of the
+            // chemistry rather than of the output cadence, hence absolute.
+            dt = min(min(dt*1.05, endTime/50.0), 1.0e-6);
+        }
+        dt = min(dt, endTime - t);
+        const scalar en = fieldAt(t);
+        ++k;
+        {
+            // Rates follow the field, and the field follows the pulse. With
+            // the field off there is no electron-impact chemistry at all --
+            // the heavy reactions carry the afterglow on their own.
             if (pulsed || heating)
             {
                 forAll(chem.tabulatedIds(), i)
                 {
-                    kTab[i] = tableAt(tableDir/("k_" + chem.tabulatedIds()[i]
-                                                + "_vs_reducedE"), en*1e-21);
+                    kTab[i] = (en > 0)
+                        ? tableAt(tableDir/("k_" + chem.tabulatedIds()[i]
+                                            + "_vs_reducedE"), en*1e-21)
+                        : 0.0;
                 }
             }
+
+            // Floor the state before integrating. Species pushed to denormal
+            // values (~1e-323) destabilise the stiff solver without carrying
+            // any physics: below one particle per cubic metre there is nothing
+            // there. Same floor the CFD source term uses.
+            forAll(n, si) if (n[si] < 1.0) n[si] = 0.0;
 
             chem.integrate(n, kTab, T, dt);
 
@@ -304,10 +422,10 @@ int main(int argc, char *argv[])
                 const scalar rho = nGas*Mair;
 
                 // Per electron per unit gas density, straight from the sweep.
-                const scalar Pel = tableAt(tableDir/"PelasticN_vs_reducedE", en*1e-21);
-                const scalar Pgs = tableAt(tableDir/"PgasN_vs_reducedE",     en*1e-21);
-                const scalar Pvb = tableAt(tableDir/"PvibN_vs_reducedE",     en*1e-21);
-                const scalar muN = tableAt(tableDir/"muN_vs_reducedE",       en*1e-21);
+                const scalar Pel = (en > 0) ? tableAt(tableDir/"PelasticN_vs_reducedE", en*1e-21) : 0.0;
+                const scalar Pgs = (en > 0) ? tableAt(tableDir/"PgasN_vs_reducedE",     en*1e-21) : 0.0;
+                const scalar Pvb = (en > 0) ? tableAt(tableDir/"PvibN_vs_reducedE",     en*1e-21) : 0.0;
+                const scalar muN = (en > 0) ? tableAt(tableDir/"muN_vs_reducedE",       en*1e-21) : 0.0;
 
                 const scalar EN_SI2 = en*1e-21;
                 const scalar Pdep = muN*EN_SI2*EN_SI2*ne*nGas*EVJ;   // W/m^3
@@ -323,7 +441,27 @@ int main(int argc, char *argv[])
                 // point of tracking it is that the energy is withheld from the
                 // gas, not that it comes back.
                 const scalar Pvib = Pvb*ne*nGas*EVJ;
+
+                // e_vib here is the NON-EQUILIBRIUM (excess) vibrational
+                // energy, so it relaxes towards zero rather than towards
+                // e_vib^eq(T). Tracking the excess is what lets the sink be a
+                // plain e/tau: with the TOTAL energy as the variable the
+                // equilibrium term is mandatory, and omitting it drives the
+                // reservoir negative as soon as the gas is warm.
+                const label iO = species.find("O");
+                const scalar nO = (iO >= 0) ? max(n[iO], scalar(0)) : 0.0;
+                const label iN2 = species.find("N2");
+                const label iO2 = species.find("O2");
+                const scalar ntot = max(sum(n), scalar(1));
+                const scalar xN2 = (iN2 >= 0) ? max(n[iN2], scalar(0))/ntot : 0.0;
+                const scalar xO2 = (iO2 >= 0) ? max(n[iO2], scalar(0))/ntot : 0.0;
+
+                const scalar tauVT = (tauVTfixed > 0)
+                    ? tauVTfixed
+                    : tauVT_N2(T, pres/101325.0, xN2, xO2, nO);
+
                 const scalar Qvt  = eVib/tauVT;
+                tauVTend = tauVT;
                 eVib += (Pvib - Qvt)*dt;
 
                 const scalar Qgas = Qprompt + Qheavy + Qvt;
@@ -339,21 +477,51 @@ int main(int argc, char *argv[])
            << ',' << Edep << ',' << Egas << ',' << Evib;
         forAll(n, s) os << "," << n[s];
         os << nl;
+
+        t += dt;
     }
+    Info<< "  steps taken: " << k << endl;
 
     if (heating)
     {
+        // A SEEDED ion is not free. Starting with n_e = n_i means starting
+        // with n_i x 15.6 eV of ionisation energy already in the box, put
+        // there by the initial condition rather than by the field. It comes
+        // back out through recombination and is indistinguishable, in the
+        // output, from gas heating that the discharge actually paid for.
+        //
+        // At a 3e18 seed that is 7.5 J/m^3 -- which was a hundred times the
+        // deposited energy in the first 100 Torr case run here, and produced a
+        // "gas heating fraction" of 10000%. The fraction is meaningless
+        // whenever the seed is comparable to the deposition, so say so rather
+        // than print it.
+        const scalar Eseed = ne0*15.6*EVJ;      // ~ionisation energy of the seed
+
         Info<< nl << "gas heating:" << nl
+            << "  seed energy    " << Eseed << " J/m^3"
+            << "   (ionisation energy of the initial n_e, NOT deposited)" << nl
             << "  deposited      " << Edep << " J/m^3" << nl
             << "  to the gas     " << Egas << " J/m^3"
             << "   (" << (Edep > 0 ? 100.0*Egas/Edep : 0.0) << " %)" << nl
             << "  to vibration   " << Evib << " J/m^3"
             << "   (" << (Edep > 0 ? 100.0*Evib/Edep : 0.0) << " %)" << nl
             << "  dT             " << T - Tgas << " K" << nl
+            << "  tau_VT(end)    " << tauVTend << " s" << nl
             << "  p/p0           " << T/Tgas
             << "   (isochoric: the density is frozen on this timescale, so the"
                " pressure rises in proportion to T -- this is what drives the"
                " blast wave)" << endl;
+
+        if (Eseed > 0.05*Edep)
+        {
+            WarningInFunction
+                << "the seed carries " << Eseed << " J/m^3 of ionisation"
+                << " energy against " << Edep << " J/m^3 deposited." << nl
+                << "    Recombination returns the seed energy to the gas, so"
+                << " the heating FRACTIONS above are not attributable to the"
+                << " discharge. Lower -ne0 until the seed is negligible, or"
+                << " read the absolute energies only." << endl;
+        }
     }
 
     Info<< "  charge residual of the RHS at t=end: "
