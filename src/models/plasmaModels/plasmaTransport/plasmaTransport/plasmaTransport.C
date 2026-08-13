@@ -1034,6 +1034,12 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         chemStiffLimit_ =
             cd.getOrDefault<scalar>("chemStiffnessLimit", 1.0);
 
+        // See plasmaTransport.H. Measured rather than assumed: in the 0-D
+        // sweep 0.5 let a single accepted step leave an afterglow 190x off,
+        // while 0.1 and below reproduced the stiff solver exactly.
+        chemChangeLimit_ =
+            cd.getOrDefault<scalar>("chemChangeLimit", 0.1);
+
         // How often the chemistry diagnostics are printed, in timesteps.
         //
         // NOT once at start-up, which is what this used to do and which is the
@@ -1442,15 +1448,35 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             }
             chemStiffness_ = max(chemStiffness_, cellStiff);
 
+            // What the linearised step would actually DO to this cell. L*dt
+            // above is a diagonal estimate and misses the off-diagonal
+            // instability entirely -- see chemChangeLimit_ in the header. This
+            // predicts the step and measures it, which catches the mode the
+            // estimate cannot see.
+            scalar cellChange = 0;
+            for (label sp = 0; sp < nSp; ++sp)
+            {
+                const scalar n0s = chemN0_[sp][celli];
+                if (n0s <= chemChangeFloor_) continue;
+                const scalar nPred =
+                    (n0s + P[sp]*dtNow)/(1.0 + L[sp]*dtNow);
+                cellChange = max(cellChange, mag(nPred - n0s)/n0s);
+            }
+
             // ADAPTIVE: integrate this cell instead of linearising it, when
             // the linearisation cannot be expected to hold. The result is
             // returned to the SAME P/L form, so the equation assembly does not
             // know or care which path a cell took -- and a stiff cell keeps
             // the implicit sink, hence positivity, rather than reverting to a
             // bare explicit source.
-            if (chemistrySolver_ == csAdaptive && cellStiff > chemStiffLimit_)
+            const bool tooStiff  = (cellStiff  > chemStiffLimit_);
+            const bool tooBigStep = (cellChange > chemChangeLimit_);
+
+            if (chemistrySolver_ == csAdaptive && (tooStiff || tooBigStep))
             {
                 ++chemNstiff_;
+                if (tooStiff)   ++chemNstiffByL_;
+                if (tooBigStep) ++chemNstiffByChange_;
 
                 scalarField n0(nSp), nEnd(nSp);
                 for (label sp = 0; sp < nSp; ++sp)
@@ -1596,6 +1622,10 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             reduce(chemActiveCount_, sumOp<label>());
             reduce(chemStiffness_, maxOp<scalar>());
             reduce(chemNstiff_, sumOp<label>());
+            // Cumulative like chemNstiff_ itself, and reduced the same way, so
+            // the three numbers in the report are directly comparable.
+            reduce(chemNstiffByL_, sumOp<label>());
+            reduce(chemNstiffByChange_, sumOp<label>());
             reduce(chemODEFailures_, sumOp<label>());
             if (chemODEFailures_ > 0)
             {
@@ -1609,9 +1639,20 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             }
             if (chemistrySolver_ == csAdaptive)
             {
+                // Split by CRITERION, because the two catch different things
+                // and the difference is the diagnostic. Cells caught only by
+                // the change test are ones L*dt called safe and the linearised
+                // step would have mangled -- the off-diagonal mode. If that
+                // count is ever large, the timestep is past the linearisation's
+                // limit for this mechanism, whatever L*dt says.
                 Info<< "plasmaChemistry: adaptive, " << chemNstiff_ << " of "
-                    << chemActiveCount_ << " cells integrated (L*dt > "
-                    << chemStiffLimit_ << "), the rest linearised" << endl;
+                    << chemActiveCount_ << " cells integrated, the rest"
+                    << " linearised" << nl
+                    << "    by L*dt > " << chemStiffLimit_ << ": "
+                    << chemNstiffByL_
+                    << ",  by step change > " << chemChangeLimit_ << ": "
+                    << chemNstiffByChange_
+                    << "  (overlap counted in both)" << endl;
             }
             Info<< "plasmaChemistry: " << (chemistrySolver_ == csAdaptive
                                            ? "adaptive" : "implicitRate")

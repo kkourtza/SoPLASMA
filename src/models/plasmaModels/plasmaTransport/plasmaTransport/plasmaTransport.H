@@ -245,6 +245,30 @@ protected:
     //- L*dt above which a cell is integrated rather than linearised
     scalar chemStiffLimit_ = 1.0;
 
+    //- Relative change of a significant species that one LINEARISED step is
+    //  allowed to make before the cell is integrated instead.
+    //
+    //  L*dt alone is not sufficient, and this is the lesson from the 0-D
+    //  solver comparison (docs/validation-solvers.md in SoEEDF). L*dt tests
+    //  the DIAGONAL -- the species' own loss. The instability of the
+    //  linearised step lives OFF the diagonal: a pair such as attachment and
+    //  detachment each see the other at the old iterate, so the pair can grow
+    //  without bound while every individual L*dt stays comfortably below the
+    //  limit. Screened on L*dt alone a 0-D afterglow reached 1e85 m^-3 with
+    //  every step reported safe.
+    //
+    //  So the linearised outcome is PREDICTED and checked, not merely
+    //  estimated. Costs one extra pass over the species in a cell that was
+    //  already having P and L evaluated.
+    scalar chemChangeLimit_ = 0.1;
+
+    //- Density below which a relative change is meaningless [m^-3]
+    scalar chemChangeFloor_ = 1.0e6;
+
+    //- Cells sent to the stiff path by each criterion, for reporting
+    label chemNstiffByL_ = 0;
+    label chemNstiffByChange_ = 0;
+
     //- Cells taking each path, for reporting
     label chemNstiff_ = 0;
     label chemODEFailures_ = 0;
