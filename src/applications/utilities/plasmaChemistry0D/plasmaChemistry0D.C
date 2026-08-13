@@ -33,58 +33,18 @@ Usage
 #include "TransportCoefficients.H"
 #include "DynamicList.H"
 #include "wallLoss.H"
+#include "vibRelax.H"
 #include <cstdlib>
 #include <cmath>
 
 using namespace Foam;
 
 
-// ---------------------------------------------------------------------------
-// Vibrational-translational relaxation time of N2(v) in air [s].
-//
-// Landau-Teller relaxation needs a timescale, and a single constant is wrong by
-// DECADES in a discharge: V-T relaxation of N2 by atomic OXYGEN is ~1e3 times
-// faster than by N2 or O2, so tau collapses as the discharge dissociates O2.
-// That is the whole reason this is a function of composition and not a number.
-//
-// Millikan & White, J. Chem. Phys. 39 (1963) 3209, for the molecular partners:
-//
-//     p0 tau_{k,m} = exp[ a (T^-1/3 - b) - 18.42 ]      [atm s]
-//
-// with (a,b) = (220, 0.03) for N2-N2 and (162, 0.03) for N2-O2 [Shao et al.,
-// Appl. Energy Combust. Sci. 19 (2024) 100280, from Colgan & Levitt 1967].
-//
-// The N2-O channel is taken from POPOV's rate constant directly,
-//
-//     k = 4.5e-21 (T/300)^2.1  m^3/s     [Popov, J. Phys. D 44 (2011) 285201]
-//     tau_{N2,O} = 1/(k n_O)
-//
-// rather than from the fitted form 488.5/(p0 T^1.1) quoted alongside it in
-// Shao et al. eq. (7). Those two disagree by a factor of 101325 -- exactly Pa
-// per atm -- so that constant requires p0 in PASCALS while the surrounding text
-// says atm. Implemented as written with atm, V-T relaxation comes out 1e5 times
-// too slow and the reservoir never empties. Deriving from the rate constant
-// avoids the trap entirely, which is the general lesson: prefer the underlying
-// quantity to a fitted restatement of it.
-//
-// Mixing rule, Millikan-White extended to several partners:
-//     1/tau_k = SUM_m X_m / tau_{k,m}
-// Constant-volume heat capacity of air [J/kg/K], cubic in T over 300-3500 K.
-//
-// NOT the 300 K value. c_v rises from 723 to 996 J/kg/K between 300 and 2400 K
-// as the vibrational modes of N2 and O2 become active, and a discharge that
-// heats air to 2000 K spends most of its time in the range where the constant
-// is 30-40% wrong. Rusterholtz et al. (J. Phys. D 46 (2013) 464010) implicitly
-// use ~1038 J/kg/K when converting their measured 900 K rise into 140 uJ.
-//
-// Fitted here against Cantera's own NASA polynomials for 79/21 N2/O2, max
-// error 18 J/kg/K over the range. Composition dependence is neglected: a
-// discharge that dissociates half the O2 changes c_v by a few percent, which
-// is far below the uncertainty in the energy partitions feeding it.
-// SUPERSEDED by the mechanism's own NASA7 thermo -- see janafMixture below.
-// Kept only as the fallback for a .foam predating the `speciesThermo` block,
-// and it is AIR-SPECIFIC: on an argon, H2/O2 or CH4 mechanism it is simply
-// wrong, silently. That is the reason the mechanism now carries thermo.
+// Vibrational-translational relaxation and the mixture thermodynamics both
+// live in headers so they can be unit-tested without a reactor: see
+// vibRelax.H (tested by testVibRelax) and janafMixture below.
+using Foam::vibRelax::tauVT_N2;
+
 static Foam::scalar cvAirFallback(const Foam::scalar T)
 {
     const scalar t = min(max(T, scalar(200)), scalar(3500));
@@ -209,34 +169,6 @@ public:
 };
 
 
-static Foam::scalar tauVT_N2
-(
-    const Foam::scalar T,
-    const Foam::scalar p_atm,
-    const Foam::scalar xN2,
-    const Foam::scalar xO2,
-    const Foam::scalar nO           // atomic oxygen number density [m^-3]
-)
-{
-    const scalar Tm13 = Foam::pow(T, -1.0/3.0);
-    auto mw = [&](const scalar a, const scalar b)
-    {
-        return Foam::exp(a*(Tm13 - b) - 18.42)/max(p_atm, SMALL);   // [s]
-    };
-
-    scalar inv = 0.0;
-    if (xN2 > 0) inv += xN2/mw(220.0, 0.03);       // N2 - N2
-    if (xO2 > 0) inv += xO2/mw(162.0, 0.03);       // N2 - O2
-
-    // N2 - O, from the rate constant. Written as a frequency because that is
-    // what it is: k n_O, with no mole fraction needed.
-    if (nO > 0)
-    {
-        inv += 4.5e-21*Foam::pow(T/300.0, 2.1)*nO;
-    }
-
-    return (inv > 0) ? 1.0/inv : GREAT;
-}
 
 
 // Read an OpenFOAM ((x y) ...) table and interpolate linearly.
