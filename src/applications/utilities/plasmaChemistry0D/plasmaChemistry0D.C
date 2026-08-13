@@ -32,6 +32,7 @@ Usage
 #include "BoltzmannSolver.H"
 #include "TransportCoefficients.H"
 #include "DynamicList.H"
+#include "wallLoss.H"
 #include <cstdlib>
 #include <cmath>
 
@@ -311,6 +312,15 @@ int main(int argc, char *argv[])
     argList::addOption("profile", "file",
         "CSV of t_ns,EN_Td,ne_cm3 -- measured discharge history, which is how a"
         " 0-D reactor is compared with an experiment");
+    argList::addOption("wallLoss",
+        "none|ambipolar|effectiveDiffusion|QGM|hFactorLP|hFactorHPEN",
+        "charged-particle loss to the walls, for a BOUNDED discharge"
+        " (default none). 0-D ONLY: the coupled CFD resolves this transport"
+        " explicitly, so using both would count the same loss twice.");
+    argList::addOption("wallR", "m", "discharge radius for -wallLoss");
+    argList::addOption("wallL", "m", "discharge length for -wallLoss");
+    argList::addOption("wallMuiN", "1/(V m s)",
+        "reduced ion mobility for -wallLoss (default 5e21, ~O2+ in O2)");
     argList::addOption("chemistryBackend", "native|cantera",
         "who evaluates the heavy reactions. Same keyword as the CFD.");
     argList::addOption("chemistrySource", "ode|implicitRate|adaptive",
@@ -525,6 +535,33 @@ int main(int argc, char *argv[])
             << "Valid: ode | implicitRate | adaptive" << exit(FatalError), csODE);
     const scalar stiffTol = args.getOrDefault<scalar>("stiffTol", 1.0);
     const scalar changeTol = args.getOrDefault<scalar>("changeTol", 0.1);
+
+    // WALL LOSS. Default none, and that is not laziness: every case validated
+    // here is a nanosecond atmospheric discharge where the wall timescale is
+    // ~8.5 us against a 100 ns run, so switching a model on by default would
+    // move validated results by ~1% for no physical reason. See wallLoss.H.
+    const word wlName = args.getOrDefault<word>("wallLoss", "none");
+    const wallLoss::model wlModel = wallLoss::modelFromWord(wlName);
+    if (wlName != "none" && wlModel == wallLoss::wlNone)
+    {
+        FatalErrorInFunction
+            << "unknown -wallLoss " << wlName << nl
+            << "Valid: none | ambipolar | effectiveDiffusion | QGM |"
+            << " hFactorLP | hFactorHPEN" << exit(FatalError);
+    }
+    wallLoss::state wlState;
+    wlState.R = args.getOrDefault<scalar>("wallR", 0.01);
+    wlState.L = args.getOrDefault<scalar>("wallL", 0.1);
+    wlState.muiN = args.getOrDefault<scalar>("wallMuiN", 5.0e21);
+    if (wlModel != wallLoss::wlNone && !args.found("wallR"))
+    {
+        WarningInFunction
+            << "-wallLoss " << wlName << " with no -wallR/-wallL given;"
+            << " using R = " << wlState.R << " m, L = " << wlState.L
+            << " m." << nl
+            << "    The loss frequency scales as 1/Lambda^2, so the geometry"
+            << " is not a detail." << endl;
+    }
     // Densities below this are numerical dust: a trace species going from
     // 1e-6 to 1e-3 m^-3 is a 1000x relative change and no physics at all.
     const scalar nFloorRel = 1.0e6;
@@ -867,6 +904,7 @@ int main(int argc, char *argv[])
     scalar tNextOut = 0.0;                    // next sample time, see below
     scalarField Pchem(chem.nSpecie(), 0.0), Lchem(chem.nSpecie(), 0.0);
     scalarField n0chem(chem.nSpecie(), 0.0);
+    scalar wallLossPeak = 0.0;
     label nWritten = 0;
     label k = 0;
     while (t < endTime)
@@ -1052,6 +1090,51 @@ int main(int argc, char *argv[])
                 }
             }
 
+            // WALL LOSS, applied to every CHARGED species at the same
+            // fractional rate.
+            //
+            // That uniformity is the point: a quasineutral plasma losing the
+            // same FRACTION of every charged species loses exactly zero net
+            // charge, so the charge residual stays machine-zero and the models
+            // cannot smuggle in a space-charge error. The alternative -- a
+            // per-species nu from each ion's own mobility -- is more faithful
+            // to a multi-ion plasma and does NOT conserve charge on its own,
+            // which is why Alves et al. cluster the ions into single + and -
+            // components (their eq (6)) before applying it.
+            //
+            // Exponential rather than n -= nu n dt, so a step longer than
+            // 1/nu decays instead of going negative.
+            if (wlModel != wallLoss::wlNone)
+            {
+                scalar nePlus = 0.0, neMinus = 0.0, neE = 0.0;
+                forAll(n, si)
+                {
+                    if (si == ie) { neE = max(n[si], scalar(0)); continue; }
+                    if (charge[si] > 0) nePlus  += max(n[si], scalar(0));
+                    if (charge[si] < 0) neMinus += max(n[si], scalar(0));
+                }
+                // T_e = (2/3)<eps>, their footnote to eq (2e). Taken from the
+                // same sweep the rates come from, so it is the temperature of
+                // the EEDF actually driving this chemistry.
+                const scalar meanE = (en > 0)
+                    ? tableAt(tableDir/"meanEnergy_vs_reducedE", en*1e-21)
+                    : 0.03;
+                wlState.Te = max(meanE*(2.0/3.0), scalar(0.02));
+                wlState.Tg = T;
+                wlState.N  = nGas;
+                wlState.alpha  = (neE > 0) ? neMinus/neE : 0.0;
+                wlState.nPlus  = nePlus;
+                wlState.nMinus = neMinus;
+
+                const scalar nuW = wallLoss::nuTransport(wlModel, wlState);
+                if (nuW > 0)
+                {
+                    const scalar f = Foam::exp(-nuW*dt);
+                    forAll(n, si) if (charge[si] != 0) n[si] *= f;
+                    wallLossPeak = max(wallLossPeak, nuW);
+                }
+            }
+
             if (heating)
             {
                 const scalar ne = (ie >= 0) ? max(n[ie], scalar(0)) : 0.0;
@@ -1214,6 +1297,16 @@ int main(int argc, char *argv[])
                 << " converge. Their normalisation is wrong, so every rate"
                 << " taken from them is scaled by an unknown factor." << endl;
         }
+    }
+
+    if (wlModel != wallLoss::wlNone)
+    {
+        Info<< "wall loss: " << wlName << ", R = " << wlState.R
+            << " m, L = " << wlState.L << " m, Lambda = "
+            << wallLoss::diffusionLength(wlState.R, wlState.L) << " m" << nl
+            << "    peak nu_transp = " << wallLossPeak << " 1/s"
+            << "  (tau = " << (wallLossPeak > 0 ? 1.0/wallLossPeak : 0.0)
+            << " s)" << endl;
     }
 
     if (heating)

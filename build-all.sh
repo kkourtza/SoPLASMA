@@ -18,6 +18,7 @@ for d in src/profilers src/constants src/numerics src/models/electromagnetics \
          src/bcs src/tools \
          src/applications/utilities/foamPlasmaCreateSpeciesFields \
          src/applications/utilities/plasmaChemistry0D \
+         src/applications/utilities/testWallLoss \
          src/applications/solvers/soPlasmaFoam \
          ThirdParty/libROUNDSchemes; do
   n=$(basename "$d")
