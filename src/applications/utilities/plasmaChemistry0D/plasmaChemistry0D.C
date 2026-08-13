@@ -33,6 +33,7 @@ Usage
 #include "TransportCoefficients.H"
 #include "DynamicList.H"
 #include <cstdlib>
+#include <cmath>
 
 using namespace Foam;
 
@@ -79,12 +80,132 @@ using namespace Foam;
 // error 18 J/kg/K over the range. Composition dependence is neglected: a
 // discharge that dissociates half the O2 changes c_v by a few percent, which
 // is far below the uncertainty in the energy partitions feeding it.
-static Foam::scalar cvAir(const Foam::scalar T)
+// SUPERSEDED by the mechanism's own NASA7 thermo -- see janafMixture below.
+// Kept only as the fallback for a .foam predating the `speciesThermo` block,
+// and it is AIR-SPECIFIC: on an argon, H2/O2 or CH4 mechanism it is simply
+// wrong, silently. That is the reason the mechanism now carries thermo.
+static Foam::scalar cvAirFallback(const Foam::scalar T)
 {
     const scalar t = min(max(T, scalar(200)), scalar(3500));
     return 6.165129e+02 + 3.212567e-01*t
          - 8.907555e-05*t*t + 8.870573e-09*t*t*t;
 }
+
+
+//- Mixture thermodynamics from the mechanism's NASA7 coefficients.
+//
+//  The heat capacity and the density both used to be hard-coded for air: a
+//  polynomial fit to 79/21 N2/O2, and a fixed mean molecular mass of
+//  28.96 g/mol. Both are exact here instead, and for ANY mechanism:
+//
+//      rho    = SUM_i n_i m_i                     (mass, so exactly conserved)
+//      c_v    = SUM_i Y_i (c_p,i(T) - R/W_i)
+//      c_p,i  = (R/W_i) (a0 + a1 T + a2 T^2 + a3 T^3 + a4 T^4)
+//
+//  Electrons are excluded: they are at T_e, not T_gas, so they have no place
+//  in a mixture heat capacity (and carry ~1e-5 of the mass regardless).
+class janafMixture
+{
+    static constexpr scalar RU_ = 8314.462618;   // J/(kmol K)
+
+    DynamicList<scalar> W_;                      // kg/kmol
+    DynamicList<scalar> Tlow_, Thigh_, Tcommon_;
+    DynamicList<FixedList<scalar, 7>> hi_, lo_;
+    DynamicList<label> idx_;                     // index into the state vector
+    bool ok_ = false;
+
+public:
+
+    //- Read the `speciesThermo` block, pairing it with the state vector.
+    //  Species present in the state but absent from the block are a hard
+    //  error rather than a silent omission: a missing N2 would quietly drop
+    //  three quarters of the heat capacity and the run would still finish.
+    janafMixture
+    (
+        const dictionary& mech,
+        const wordList& species,
+        const word& electron
+    )
+    {
+        if (!mech.found("speciesThermo")) return;
+        const dictionary& td = mech.subDict("speciesThermo");
+
+        forAll(species, s)
+        {
+            if (species[s] == electron) continue;
+            if (!td.found(species[s]))
+            {
+                FatalErrorInFunction
+                    << "species " << species[s] << " is integrated by the"
+                    << " reactor but has no entry in `speciesThermo`." << nl
+                    << "Recompile the mechanism with mechc." << exit(FatalError);
+            }
+            const dictionary& e = td.subDict(species[s]);
+            W_.append(e.get<scalar>("molWeight"));
+            Tlow_.append(e.get<scalar>("Tlow"));
+            Thigh_.append(e.get<scalar>("Thigh"));
+            Tcommon_.append(e.get<scalar>("Tcommon"));
+            hi_.append(e.get<FixedList<scalar, 7>>("highCpCoeffs"));
+            lo_.append(e.get<FixedList<scalar, 7>>("lowCpCoeffs"));
+            idx_.append(s);
+        }
+        ok_ = true;
+    }
+
+    bool valid() const { return ok_; }
+
+    //- Mass density [kg/m^3] from number densities [1/m^3].
+    scalar rho(const scalarField& n) const
+    {
+        scalar r = 0.0;
+        forAll(idx_, i)
+        {
+            r += max(n[idx_[i]], scalar(0))*W_[i]/6.02214076e26;
+        }
+        return r;
+    }
+
+    //- Mixture c_p [J/(kg K)]. The isobaric reactor heats against this rather
+    //  than c_v, because the work done expanding against the ambient pressure
+    //  comes out of the same deposited energy. For air the two differ by
+    //  gamma = 1.4, so choosing the wrong one is a 29% error in dT -- which is
+    //  larger than most of the physics being argued about.
+    scalar cp(const scalarField& n, const scalar T) const
+    {
+        scalar num = 0.0, den = 0.0;
+        forAll(idx_, i)
+        {
+            const scalar mi = max(n[idx_[i]], scalar(0))*W_[i];
+            if (mi <= 0.0) continue;
+            const scalar t = min(max(T, Tlow_[i]), Thigh_[i]);
+            const FixedList<scalar, 7>& a = (t < Tcommon_[i]) ? lo_[i] : hi_[i];
+            const scalar cpR = a[0] + t*(a[1] + t*(a[2] + t*(a[3] + t*a[4])));
+            num += mi*cpR*RU_/W_[i];
+            den += mi;
+        }
+        return (den > 0.0) ? num/den : 0.0;
+    }
+
+    //- Mixture c_v [J/(kg K)] at the current composition and temperature.
+    scalar cv(const scalarField& n, const scalar T) const
+    {
+        scalar num = 0.0, den = 0.0;
+        forAll(idx_, i)
+        {
+            const scalar mi = max(n[idx_[i]], scalar(0))*W_[i];   // ~mass
+            if (mi <= 0.0) continue;
+            // Clamped to the polynomial's own validity range. A NASA7 fit
+            // extrapolates catastrophically -- the quartic term dominates
+            // and c_p can go negative, which would drive T the wrong way.
+            const scalar t = min(max(T, Tlow_[i]), Thigh_[i]);
+            const FixedList<scalar, 7>& a = (t < Tcommon_[i]) ? lo_[i] : hi_[i];
+            const scalar cpR = a[0] + t*(a[1] + t*(a[2] + t*(a[3] + t*a[4])));
+            num += mi*(cpR - 1.0)*RU_/W_[i];      // c_v = c_p - R/W
+            den += mi;
+        }
+        return (den > 0.0) ? num/den : 0.0;
+    }
+};
 
 
 static Foam::scalar tauVT_N2
@@ -190,6 +311,25 @@ int main(int argc, char *argv[])
     argList::addOption("profile", "file",
         "CSV of t_ns,EN_Td,ne_cm3 -- measured discharge history, which is how a"
         " 0-D reactor is compared with an experiment");
+    argList::addOption("chemistryBackend", "native|cantera",
+        "who evaluates the heavy reactions. Same keyword as the CFD.");
+    argList::addOption("chemistrySource", "ode|implicitRate|adaptive",
+        "how the chemistry is advanced. Same keyword as the CFD (default ode).");
+    argList::addOption("nOuterCorrectors", "n",
+        "Picard iterations per implicitRate step. Mirrors the CFD keyword;"
+        " 1 is explicit in the production term and can diverge (default 4).");
+    argList::addOption("changeTol", "x",
+        "adaptive: relative change of any significant species allowed in one"
+        " implicitRate step before it is rejected for the stiff substep."
+        " Default 0.1: 0.5 was measured to be too loose, letting a single"
+        " accepted step leave an afterglow 190x off.");
+    argList::addOption("stiffTol", "x",
+        "adaptive threshold on max(L)*dt; above it the stiff substep is used"
+        " (default 1).");
+    argList::addBoolOption("constPressure",
+        "hold pressure instead of volume: the gas expands as it heats, so the"
+        " temperature rises against c_p rather than c_v. Right past the"
+        " acoustic time; wrong within a nanosecond pulse, which is isochoric.");
     argList::addOption("tauVT", "s",
         "vibrational-translational relaxation time (default 1e-5 s)");
     argList args(argc, argv, false, false, false);
@@ -317,6 +457,14 @@ int main(int argc, char *argv[])
     cfg.add("electronName", electron);
     cfg.add("backgroundDensity", nGas);
 
+    // MIRRORS THE CFD. plasmaTransport selects who evaluates the heavy
+    // reactions with exactly this keyword, and a 0-D tool that could not
+    // reproduce the production configuration would be a debugging tool you
+    // cannot debug with: a backend disagreement would only ever show up in
+    // the run that is hardest to interrogate.
+    const word backend = args.getOrDefault<word>("chemistryBackend", "native");
+    cfg.add("chemistryBackend", backend);
+
     plasmaChemistry chem(mechFile, species, scalarField(charge), cfg);
 
     // Electron-impact rate coefficients at this fixed E/N, from the same
@@ -363,11 +511,35 @@ int main(int argc, char *argv[])
     scalarField rateConv(chem.nTabulated(), 1.0);
     const bool dynamicEEDF = args.found("manifest");
     const scalar eedfTol = args.getOrDefault<scalar>("eedfTol", 0.05);
+    const bool isobaric = args.found("constPressure");
+
+    enum chemSourceType { csODE, csImplicitRate, csAdaptive };
+    const word csName =
+        args.getOrDefault<word>("chemistrySource", "ode");
+    const chemSourceType chemSource =
+        (csName == "ode")          ? csODE
+      : (csName == "implicitRate") ? csImplicitRate
+      : (csName == "adaptive")     ? csAdaptive
+      : (FatalErrorInFunction
+            << "unknown -chemistrySource " << csName << nl
+            << "Valid: ode | implicitRate | adaptive" << exit(FatalError), csODE);
+    const scalar stiffTol = args.getOrDefault<scalar>("stiffTol", 1.0);
+    const scalar changeTol = args.getOrDefault<scalar>("changeTol", 0.1);
+    // Densities below this are numerical dust: a trace species going from
+    // 1e-6 to 1e-3 m^-3 is a 1000x relative change and no physics at all.
+    const scalar nFloorRel = 1.0e6;
+    const label nOuterCorr =
+        max(label(1), args.getOrDefault<label>("nOuterCorrectors", 4));
+    label nODEsteps = 0, nRateSteps = 0, nRejected = 0;
     label nSolves = 0, nUnconverged = 0;
 
     // Transport and power channels from the most recent dynamic solve. Negative
     // means "no solve yet" -- the tables are used until the first one lands.
-    scalar muNdyn = -1.0, PelDyn = -1.0, PgsDyn = -1.0, PvbDyn = -1.0;
+    // Multiplicative corrections to the tabulated channels, from the most
+    // recent dynamic solve. 1 means "table as written" -- which is exactly
+    // right before the first solve, and for a run with no dynamic EEDF at all.
+    scalar muNcorr = 1.0, PelCorr = 1.0, PgsCorr = 1.0, PvbCorr = 1.0;
+    scalarField kCorr(chem.nTabulated(), 1.0);
 
     if (dynamicEEDF)
     {
@@ -451,10 +623,27 @@ int main(int argc, char *argv[])
         // vibrational shares, which depend on WHICH species the electrons hit,
         // would be taken from a state the gas left long ago. Refreshing the
         // rates but not the partition is not a consistent EEDF.
-        muNdyn = r.transport.muN;
-        PelDyn = r.transport.PelasticN;
-        PgsDyn = r.transport.PgasN;
-        PvbDyn = r.transport.PvibN;
+        // Stored as a RATIO to the table at the same E/N, not as an absolute
+        // value. Held absolute, the channel is frozen between solves while E/N
+        // keeps moving -- through the rising edge of a nanosecond pulse that is
+        // a 4.5% staircase error in the deposited energy, because the tables
+        // resolve E/N continuously and a piecewise-constant value does not.
+        //
+        // As a ratio it carries only what the table CANNOT know -- the change
+        // in composition and gas temperature -- while the sharp E/N dependence
+        // stays with the table where it is resolved properly. Both effects,
+        // neither approximated.
+        {
+            const scalar enSI = en_Td*1e-21;
+            const scalar mT = tableAt(tableDir/"muN_vs_reducedE", enSI);
+            const scalar eT = tableAt(tableDir/"PelasticN_vs_reducedE", enSI);
+            const scalar gT = tableAt(tableDir/"PgasN_vs_reducedE", enSI);
+            const scalar vT = tableAt(tableDir/"PvibN_vs_reducedE", enSI);
+            muNcorr = (mT > 0) ? r.transport.muN/mT : 1.0;
+            PelCorr = (eT > 0) ? r.transport.PelasticN/eT : 1.0;
+            PgsCorr = (gT > 0) ? r.transport.PgasN/gT : 1.0;
+            PvbCorr = (vT > 0) ? r.transport.PvibN/vT : 1.0;
+        }
 
         static bool dbg = Foam::getEnv("SOEEDF_DEBUG_EEDF").size();
         forAll(idToRate, i)
@@ -464,15 +653,21 @@ int main(int argc, char *argv[])
             {
                 const scalar kNew =
                     rateConv[i]*r.transport.rateCoeffs[idToRate[i]];
+                // Same ratio argument as the power channels above: the table
+                // keeps the E/N dependence, the solve supplies the composition
+                // and temperature correction.
+                const scalar kRaw = tableAt(
+                    tableDir/("k_" + chem.tabulatedIds()[i] + "_vs_reducedE"),
+                    en_Td*1e-21);
+                kCorr[i] = (kRaw > 0) ? kNew/kRaw : 1.0;
                 if (dbg && nSolves <= 3)
                 {
                     Info<< "  [eedf " << nSolves << "] EN=" << en_Td
                         << " T=" << Tg << "  " << chem.tabulatedIds()[i]
-                        << "  table=" << kTab[i] << "  solved=" << kNew
-                        << "  ratio=" << (kTab[i] > 0 ? kNew/kTab[i] : -1)
+                        << "  table=" << kRaw << "  solved=" << kNew
+                        << "  ratio=" << kCorr[i]
                         << endl;
                 }
-                kTab[i] = kNew;
             }
         }
     };
@@ -608,8 +803,20 @@ int main(int argc, char *argv[])
     // temperature of anything longer -- which matters most for repetitive
     // pulsing, where the error accumulates pulse on pulse.
 
-    const scalar Mair = 28.96e-3/6.02214076e23;   // kg per particle
     const scalar EVJ = 1.602176634e-19;
+
+    // Thermodynamics from the mechanism, not from a hard-coded air fit. See
+    // janafMixture. The fallback keeps older mechanisms running, but it is
+    // air-specific, so it says so rather than quietly producing a temperature.
+    const janafMixture thermo(mech, species, electron);
+    if (!thermo.valid() && heating)
+    {
+        WarningInFunction
+            << "this mechanism carries no `speciesThermo` block, so the gas" << nl
+            << "    heat capacity falls back to a polynomial fitted to AIR." << nl
+            << "    That is wrong for any other gas. Recompile with mechc to" << nl
+            << "    emit thermo from the mechanism's own NASA7 data." << endl;
+    }
 
     scalar T = Tgas;
     scalar eVib = 0.0;                        // J/m^3 in the reservoir
@@ -657,6 +864,10 @@ int main(int argc, char *argv[])
     }
 
     scalar t = 0.0, dt = min(dtFine, endTime/10.0);
+    scalar tNextOut = 0.0;                    // next sample time, see below
+    scalarField Pchem(chem.nSpecie(), 0.0), Lchem(chem.nSpecie(), 0.0);
+    scalarField n0chem(chem.nSpecie(), 0.0);
+    label nWritten = 0;
     label k = 0;
     while (t < endTime)
     {
@@ -676,13 +887,17 @@ int main(int argc, char *argv[])
             // Rates follow the field, and the field follows the pulse. With
             // the field off there is no electron-impact chemistry at all --
             // the heavy reactions carry the afterglow on their own.
-            if (pulsed || heating)
+            // Table x correction: E/N from the table, where it is resolved;
+            // composition and T_gas from the last Boltzmann solve. Refreshed
+            // whenever any of the three can have moved.
+            if (pulsed || heating || dynamicEEDF)
             {
                 forAll(chem.tabulatedIds(), i)
                 {
                     kTab[i] = (en > 0)
-                        ? tableAt(tableDir/("k_" + chem.tabulatedIds()[i]
-                                            + "_vs_reducedE"), en*1e-21)
+                        ? kCorr[i]*tableAt(
+                              tableDir/("k_" + chem.tabulatedIds()[i]
+                                        + "_vs_reducedE"), en*1e-21)
                         : 0.0;
                 }
             }
@@ -734,42 +949,160 @@ int main(int argc, char *argv[])
             // there. Same floor the CFD source term uses.
             forAll(n, si) if (n[si] < 1.0) n[si] = 0.0;
 
-            chem.integrate(n, kTab, T, dt);
+            // CHEMISTRY SOURCE, mirroring plasmaTransport's `chemistrySource`.
+            //
+            //   ode           stiff substep over dt (rodas23). Robust, and the
+            //                 default, because plasma chemistry is stiff.
+            //   implicitRate  one semi-implicit Euler step on the instantaneous
+            //                 linearisation dn/dt = P - L n, which is exactly
+            //                 what fvm::Sp(L, n) does in the CFD:
+            //                     n <- (n + P dt)/(1 + L dt)
+            //   adaptive      implicitRate while the linearisation resolves the
+            //                 step, the stiff substep when it does not.
+            //
+            // The adaptive CRITERION is an analogue, not the CFD's. There the
+            // test is the Picard change between outer correctors -- a quantity
+            // that does not exist without outer correctors. Here it is the
+            // stiffness the linearisation actually sees, max(L) dt: below the
+            // threshold one implicit step resolves the fastest loss, above it
+            // the step is being asked to leap over that timescale.
+            if (chemSource == csODE)
+            {
+                chem.integrate(n, kTab, T, dt);
+                ++nODEsteps;
+            }
+            else
+            {
+                chem.productionLoss(n, kTab, T, Pchem, Lchem);
+                scalar Ldtmax = 0.0;
+                forAll(Lchem, si) Ldtmax = max(Ldtmax, Lchem[si]*dt);
+
+                if (chemSource == csAdaptive && Ldtmax > stiffTol)
+                {
+                    chem.integrate(n, kTab, T, dt);
+                    ++nODEsteps;
+                }
+                else
+                {
+                    // PICARD-ITERATED, which is what makes it implicit.
+                    //
+                    // Only the LOSS is implicit in one pass; the production
+                    // term is evaluated at the old iterate, so a pair of
+                    // species that feed each other is coupled explicitly and
+                    // the step can diverge -- measured at 1e65 on an afterglow
+                    // before the outer loop was added. The CFD gets its outer
+                    // iterations from PIMPLE's correctors and warns when they
+                    // are set to 1; without them the scheme is merely first
+                    // order there and outright unstable here, where there is
+                    // no transport to damp it.
+                    //
+                    // Always integrated FROM the start-of-step state, never
+                    // from the partially-updated iterate, so repeating the
+                    // sweep is idempotent rather than cumulative. Same reason
+                    // the CFD keeps chemN0_.
+                    n0chem = n;
+                    for (label it = 0; it < nOuterCorr; ++it)
+                    {
+                        if (it > 0) chem.productionLoss(n, kTab, T, Pchem, Lchem);
+                        forAll(n, si)
+                        {
+                            n[si] = (n0chem[si] + Pchem[si]*dt)
+                                  / (1.0 + Lchem[si]*dt);
+                        }
+                    }
+
+                    // VERIFY THE STEP, do not merely predict it.
+                    //
+                    // max(L) dt screens the DIAGONAL only, and the instability
+                    // of this scheme lives off the diagonal: a pair of species
+                    // that feed each other -- attachment and detachment, here
+                    // -- each sees the other at the old iterate, and the pair
+                    // can grow without bound while every individual L dt stays
+                    // small. Screened on L alone, an afterglow reached 1e85 m^-3
+                    // with the criterion reporting the step as safe.
+                    //
+                    // So the cheap step is TAKEN and then checked, which costs
+                    // nothing extra when it succeeds and is exact when it does
+                    // not. A step that moves a significant species by more than
+                    // changeTol, or produces anything non-finite, is discarded
+                    // and redone with the stiff substep from the same state.
+                    bool bad = false;
+                    forAll(n, si)
+                    {
+                        if (!std::isfinite(n[si])) { bad = true; break; }
+                        const scalar ref = max(n0chem[si], nFloorRel);
+                        if (n0chem[si] > nFloorRel
+                         && mag(n[si] - n0chem[si]) > changeTol*ref)
+                        {
+                            bad = true; break;
+                        }
+                    }
+
+                    if (bad && chemSource == csAdaptive)
+                    {
+                        n = n0chem;
+                        chem.integrate(n, kTab, T, dt);
+                        ++nODEsteps;
+                        ++nRejected;
+                    }
+                    else
+                    {
+                        ++nRateSteps;
+                    }
+                }
+            }
 
             if (heating)
             {
                 const scalar ne = (ie >= 0) ? max(n[ie], scalar(0)) : 0.0;
-                const scalar rho = nGas*Mair;
+                // Exact: sum of n_i m_i over the mechanism's own species. Constant
+                // in an isochoric reactor by mass conservation, but computed
+                // each step so it stays right when that assumption is relaxed.
+                const scalar rho = thermo.valid() ? thermo.rho(n)
+                                                  : nGas*(28.96e-3/6.02214076e23);
+
+                // LIVE heavy-particle density, not the initial one. The power
+                // channels are tabulated per electron per unit GAS density, so
+                // the multiplier has to be the density now -- and dissociation
+                // raises it, by 7.5% over the Rusterholtz case as O2 -> 2O.
+                // Frozen, the field power and every loss channel are under-
+                // counted by that much at late time. In the isobaric reactor it
+                // moves far more, because the gas expands as it heats.
+                scalar nHeavy = 0.0;
+                forAll(n, si)
+                {
+                    if (si != ie) nHeavy += max(n[si], scalar(0));
+                }
+                if (nHeavy <= 0.0) nHeavy = nGas;
 
                 // Per electron per unit gas density. From the live EEDF when
                 // one is being solved, otherwise from the sweep. Mixing the two
                 // is what has to be avoided: the rates and the power channels
                 // are moments of the SAME f0, and taking them from different
                 // states breaks the energy budget they are supposed to close.
-                const bool live = (muNdyn >= 0.0);
-                const scalar Pel = (en <= 0) ? 0.0 : live ? PelDyn
-                    : tableAt(tableDir/"PelasticN_vs_reducedE", en*1e-21);
-                const scalar Pgs = (en <= 0) ? 0.0 : live ? PgsDyn
-                    : tableAt(tableDir/"PgasN_vs_reducedE",     en*1e-21);
-                const scalar Pvb = (en <= 0) ? 0.0 : live ? PvbDyn
-                    : tableAt(tableDir/"PvibN_vs_reducedE",     en*1e-21);
-                const scalar muN = (en <= 0) ? 0.0 : live ? muNdyn
-                    : tableAt(tableDir/"muN_vs_reducedE",       en*1e-21);
+                const scalar Pel = (en <= 0) ? 0.0 : PelCorr*
+                    tableAt(tableDir/"PelasticN_vs_reducedE", en*1e-21);
+                const scalar Pgs = (en <= 0) ? 0.0 : PgsCorr*
+                    tableAt(tableDir/"PgasN_vs_reducedE",     en*1e-21);
+                const scalar Pvb = (en <= 0) ? 0.0 : PvbCorr*
+                    tableAt(tableDir/"PvibN_vs_reducedE",     en*1e-21);
+                const scalar muN = (en <= 0) ? 0.0 : muNcorr*
+                    tableAt(tableDir/"muN_vs_reducedE",       en*1e-21);
 
                 const scalar EN_SI2 = en*1e-21;
-                const scalar Pdep = muN*EN_SI2*EN_SI2*ne*nGas*EVJ;   // W/m^3
+                const scalar Pdep = muN*EN_SI2*EN_SI2*ne*nHeavy*EVJ;   // W/m^3
 
                 // Prompt heat: elastic/rotational plus the gas share of the
                 // inelastic defect. The heavy reactions add fast gas heating
                 // on top, from their own enthalpies.
-                const scalar Qprompt = (Pel + Pgs)*ne*nGas*EVJ;
+                const scalar Qprompt = (Pel + Pgs)*ne*nHeavy*EVJ;
                 const scalar Qheavy  = chem.heavyHeatRelease(n, T)*EVJ;
 
                 // Vibrational reservoir. It FILLS during the pulse and empties
                 // on tau_VT, which is microseconds -- so on this timescale the
                 // point of tracking it is that the energy is withheld from the
                 // gas, not that it comes back.
-                const scalar Pvib = Pvb*ne*nGas*EVJ;
+                const scalar Pvib = Pvb*ne*nHeavy*EVJ;
 
                 // e_vib here is the NON-EQUILIBRIUM (excess) vibrational
                 // energy, so it relaxes towards zero rather than towards
@@ -793,8 +1126,38 @@ int main(int argc, char *argv[])
                 tauVTend = tauVT;
                 eVib += (Pvib - Qvt)*dt;
 
+                // ISOCHORIC heats against c_v, ISOBARIC against c_p. The gas
+                // cannot expand within a nanosecond pulse -- the acoustic time
+                // across a 450 um channel is ~0.3 us -- so c_v is right there,
+                // and it is what drives the pressure rise and hence the blast
+                // wave. Past the acoustic time the gas has expanded, the work
+                // has been done, and c_p is right. Neither is right for both,
+                // which is why this is a mode and not a default.
                 const scalar Qgas = Qprompt + Qheavy + Qvt;
-                T += Qgas*dt/(rho*cvAir(T));
+                const scalar cGas = thermo.valid()
+                    ? (isobaric ? thermo.cp(n, T) : thermo.cv(n, T))
+                    : cvAirFallback(T)*(isobaric ? 1.4 : 1.0);
+                T += Qgas*dt/(rho*cGas);
+
+                if (isobaric)
+                {
+                    // Hold p by letting the gas EXPAND: every density is scaled
+                    // so that n_heavy k T = p again. This absorbs both effects
+                    // at once -- thermal expansion, and the extra moles the
+                    // chemistry makes when it dissociates something.
+                    //
+                    // The electron partial pressure is neglected: at n_e/N ~
+                    // 1e-3 and T_e ~ 15 T_gas it is ~1% of the total, well
+                    // inside everything else here, and including it would mean
+                    // committing to a T_e the reactor does not track.
+                    scalar nh = 0.0;
+                    forAll(n, si) if (si != ie) nh += max(n[si], scalar(0));
+                    if (nh > 0.0)
+                    {
+                        const scalar f = (pres/(1.380649e-23*T))/nh;
+                        forAll(n, si) n[si] *= f;
+                    }
+                }
 
                 Edep += Pdep*dt;
                 Egas += Qgas*dt;
@@ -802,16 +1165,45 @@ int main(int argc, char *argv[])
             }
         }
 
-        os << t << ',' << en << ',' << T << ',' << eVib
-           << ',' << Edep << ',' << Egas << ',' << Evib;
-        forAll(n, s) os << "," << n[s];
-        os << nl;
+        // THROTTLED to ~nOut rows. -nOut used to set only the step size, so a
+        // profiled run -- which picks its own step from the profile -- wrote a
+        // row per step: 357,143 rows and 80 MB for a 100 ns case, from a flag
+        // that said 2000. Sampled on TIME rather than step count so the rows
+        // stay evenly spaced through the two-phase stepping, and the final
+        // state is always written whatever the sampling lands on.
+        if (t >= tNextOut || t + dt >= endTime)
+        {
+            os << t << ',' << en << ',' << T << ',' << eVib
+               << ',' << Edep << ',' << Egas << ',' << Evib;
+            forAll(n, s) os << "," << n[s];
+            os << nl;
+            ++nWritten;
+            tNextOut = t + endTime/scalar(max(nOut, label(1)));
+        }
 
         t += dt;
     }
-    Info<< "  steps taken: " << k << endl;
+    Info<< "  steps taken: " << k << ", rows written: " << nWritten << endl;
+    Info<< "  chemistry: " << csName << " (backend " << chem.backend() << ")"
+        << ", stiff substeps " << nODEsteps
+        << ", implicit-rate steps " << nRateSteps
+        << (nRejected > 0
+            ? " (" + Foam::name(nRejected) + " rejected -> stiff)" : "")
+        << endl;
 
-    if (dynamicEEDF)
+    // ALWAYS report which EEDF path ran. Omitting -manifest silently falls
+    // back to the frozen tables and the run still completes normally, so the
+    // only evidence was the absence of a line -- and absence is not something
+    // a reader notices. A whole validation run was lost to exactly this.
+    if (!dynamicEEDF)
+    {
+        Info<< "EEDF: FROZEN tables from " << tableDir << nl
+            << "      (no -manifest, so the Boltzmann equation is NOT re-solved."
+            << " Rates are" << nl
+            << "       taken at the composition and T_gas the sweep was"
+            << " generated at.)" << endl;
+    }
+    else
     {
         Info<< "dynamic EEDF: " << nSolves << " Boltzmann solves over the run, "
             << nUnconverged << " unconverged" << endl;
@@ -848,11 +1240,26 @@ int main(int argc, char *argv[])
             << "  to vibration   " << Evib << " J/m^3"
             << "   (" << (Edep > 0 ? 100.0*Evib/Edep : 0.0) << " %)" << nl
             << "  dT             " << T - Tgas << " K" << nl
-            << "  tau_VT(end)    " << tauVTend << " s" << nl
-            << "  p/p0           " << T/Tgas
-            << "   (isochoric: the density is frozen on this timescale, so the"
-               " pressure rises in proportion to T -- this is what drives the"
-               " blast wave)" << endl;
+            << "  tau_VT(end)    " << tauVTend << " s" << nl;
+
+        if (isobaric)
+        {
+            Info<< "  reactor        ISOBARIC (p held, gas expands, heats"
+                   " against c_p)" << nl
+                << "  V/V0           " << T/Tgas
+                << "   (thermal expansion; the extra moles from dissociation"
+                   " add to this)" << nl
+                << "  p/p0           1   (by construction -- so this mode"
+                   " produces NO blast wave)" << endl;
+        }
+        else
+        {
+            Info<< "  reactor        ISOCHORIC (V held, heats against c_v)" << nl
+                << "  p/p0           " << T/Tgas
+                << "   (the density is frozen on this timescale, so the"
+                   " pressure rises in proportion to T -- this is what drives"
+                   " the blast wave)" << endl;
+        }
 
         if (Eseed > 0.05*Edep)
         {
