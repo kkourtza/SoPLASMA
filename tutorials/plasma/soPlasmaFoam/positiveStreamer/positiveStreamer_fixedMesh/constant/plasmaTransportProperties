@@ -36,7 +36,28 @@ chemistry
     // max(L*dt) and the Picard change at start-up, and warns when the
     // linearisation is not resolving the chemistry. See
     // BoltzmannSolver docs/numerics-chemistry-coupling.md section 8.
-    chemistrySolver adaptive;
+    // Split from the old single `chemistrySolver` key: `reactions` is a
+    // PHYSICS choice (which reactions exist), `solver` a NUMERICS one
+    // (how they are integrated).
+    //
+    // THIS IS THE CONFIGURATION THE STREAMER VALIDATION WAS PRODUCED WITH.
+    // Reproduces validation/streamer/fig_streamer.csv to 5.2% mean deviation
+    // in peak electron density over 2.5-10 ns (the residual is a 1.3% E/N
+    // shift, from removing a duplicate gas density this case used to carry).
+    //
+    // Its limitation is real and worth knowing: `electronImpact` evaluates no
+    // heavy reactions, so IONS NEVER DECAY -- no recombination, no ion-ion
+    // neutralisation, no detachment. That is defensible over a 16 ns pulse and
+    // wrong for a long transient.
+    //
+    // `reactions all` + `solver adaptive` is the physically complete path and
+    // needs nOuterCorrectors > 1 (the solver enforces this). It is NOT yet
+    // validated against this case: with nOuterCorrectors 1 it overshot the
+    // saturated electron density before 1.5 ns and diverged, which is what the
+    // guard now catches. Do not switch this tutorial over until that
+    // comparison has been made.
+    reactions   electronImpact;
+    solver      explicitSource;
 
     // L*dt at which `adaptive` integrates a cell instead of linearising it.
     //
@@ -87,7 +108,7 @@ chemistry
     // on this mechanism -- rates to ~1e-15, Jacobian to ~1e-15 -- so `cantera`
     // is for reaction forms the native path cannot express, not for accuracy.
     //
-    // Either backend works with every chemistrySolver above, `adaptive`
+    // Either backend works with every `solver` above, `adaptive`
     // included: Cantera supplies its own analytic composition derivative, so
     // the stiff branch has an exact Jacobian rather than a borrowed one.
     chemistryBackend native;

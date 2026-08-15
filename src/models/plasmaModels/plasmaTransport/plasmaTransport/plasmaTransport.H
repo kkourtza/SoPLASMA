@@ -62,6 +62,13 @@ SourceFiles
 namespace Foam
 {
 
+// Forward declaration rather than an include: janafMixture lives in
+// libplasmaChemistry, and pulling it through this PUBLIC header would force
+// every consumer of plasmaTransport.H -- the boundary conditions, the tools,
+// the solver -- to carry that include path for a type none of them name.
+class janafMixture;
+class plasmaEnergy;
+
 // Forward declaration keeps plasmaReactionRates.H out of this public
 // header; the include lives in plasmaTransport.C. Including it here forces
 // the include path onto bcs, tools and the solver, all of which then fail
@@ -195,8 +202,39 @@ protected:
     //                streamer head can be stiff while the bulk is not, so
     //                switching globally would either pay the ODE cost
     //                everywhere or lose robustness where it is needed.
-    enum chemSolverType { csNone, csODE, csImplicitRate, csAdaptive };
-    chemSolverType chemistrySolver_ = csNone;
+    // TWO ORTHOGONAL AXES, deliberately on two keys.
+    //
+    // `chemistry/reactions` says WHICH reactions exist -- physics.
+    // `chemistry/solver`    says HOW they are integrated -- numerics.
+    //
+    // They used to share one key, `chemistrySolver`, whose value `none`
+    // actually meant "electron-impact reactions, integrated explicitly". A
+    // physics choice was therefore hidden inside something named after a
+    // solver, which is how the shipped tutorial came to stop reproducing the
+    // streamer validation without anything in the case saying so.
+
+    //- WHICH reactions are evaluated
+    //  rxAll             electron-impact + heavy (recombination, ion-ion
+    //                    neutralisation, detachment, quenching)
+    //  rxElectronImpact  electron-impact only. IONS NEVER DECAY: every loss
+    //                    channel for ions lives in the heavy set.
+    //  rxNone            no chemistry sources of any kind
+    enum chemReactionSet { rxAll, rxElectronImpact, rxNone };
+    chemReactionSet chemReactions_ = rxAll;
+
+    //- HOW those reactions are integrated. No bearing on which ones exist.
+    //  csAdaptive        per cell: implicitRate where valid, ode where stiff
+    //  csImplicitRate    linearised at the current iterate, loss via fvm::Sp
+    //  csODE             stiff substep integrated through the step
+    //  csExplicitSource  legacy in-equation explicit source
+    enum chemSolverType
+    {
+        csAdaptive,
+        csImplicitRate,
+        csODE,
+        csExplicitSource
+    };
+    chemSolverType chemistrySolver_ = csAdaptive;
 
     //- Cells below this electron density are skipped by the chemistry.
     //  Most of a streamer domain is undisturbed gas at the floor, where the
@@ -268,6 +306,74 @@ protected:
     //- Cells sent to the stiff path by each criterion, for reporting
     label chemNstiffByL_ = 0;
     label chemNstiffByChange_ = 0;
+
+    // ---- G2: gas energy ---------------------------------------------------
+    //
+    //  The gas temperature was a CONSTANT read from a dictionary. Every rate
+    //  that depends on it -- three-body recombination, V-T relaxation, the
+    //  EEDF's rotational and superelastic channels -- was therefore frozen at
+    //  a value the discharge immediately leaves behind. Solving it closes the
+    //  thermal-ionisation feedback: heating lowers the gas density, which
+    //  raises E/N at fixed E, which raises ionisation, which heats further.
+    //
+    //  Solved as a proper fvScalarMatrix rather than a per-cell update, so it
+    //  gets OpenFOAM's ddt schemes, its boundary conditions and its linear
+    //  solvers -- and so conduction is available the moment a gradient exists.
+    bool gasHeating_ = false;
+
+    //- Borrowed view of plasmaEnergy's temperature field. Not owned: the
+    //  energy model owns T_gas, and duplicating it here is how the two would
+    //  come to disagree.
+    const volScalarField* TgasField_ = nullptr;
+
+    //- Thermal conductivity of the gas [W/m/K]. Constant by default; the
+    //  mixture-averaged form needs Lennard-Jones data the mechanism does not
+    //  yet carry (deferred as G3t).
+    scalar kappaGas_ = 0.026;
+
+    //- Fixed V-T time [s] if positive; otherwise the composition-dependent
+    //  Millikan-White + Popov form of vibRelax.H.
+    scalar tauVTfixed_ = -1;
+
+    //- Diagnostics, peak-held between reports like the chemistry ones.
+    scalar TgasMax_ = 0, QgasMax_ = 0, eVibMax_ = 0;
+
+    //- Where the sweep lives, for the power channels.
+    fileName tableDir_;
+
+    //- Gas pressure [atm], for the Millikan-White relaxation times.
+    scalar pGasAtm_ = 1.0;
+
+    //- Mixture thermodynamics from the mechanism's NASA7 block. Shared with
+    //  the 0-D reactor so the two cannot disagree about a heat capacity.
+    autoPtr<janafMixture> thermo_;
+
+    //- Thermodynamics of the BACKGROUND gas, over the mechanism's reference
+    //  composition. A separate object because the background species have no
+    //  index in plasmaSpecies at all -- they are a reservoir, not transported
+    //  fields -- so they cannot be folded into the transported state vector.
+    //
+    //  rho*c_v is additive over disjoint subsets of the gas (it is
+    //  SUM_i n_i m_i c_v,i), so the two contributions simply add.
+    autoPtr<janafMixture> bgThermo_;
+    wordList bgNames_;
+    scalarField bgX_;
+
+        //- Solve the gas energy equation and the vibrational reservoir over dt.
+        void solveGasEnergy(const scalar dt);
+
+        //- Gas temperature in a cell: the solved field when gas heating is on,
+        //  the dictionary constant when it is not. One accessor so the two
+        //  cannot diverge, which they did while three call sites each read the
+        //  dictionary themselves.
+        inline scalar TgasCell(const label celli) const
+        {
+            return (gasHeating_ && TgasField_)
+                 ? (*TgasField_)[celli]
+                 : TgasConst_;
+        }
+
+    scalar TgasConst_ = 300.0;
 
     //- Cells taking each path, for reporting
     label chemNstiff_ = 0;

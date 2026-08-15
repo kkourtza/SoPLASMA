@@ -22,6 +22,11 @@
 
 // Remove these headers later
 #include "interpolationTable.H"
+#include "fvm.H"
+#include "fvc.H"
+#include "vibRelax.H"
+#include "janafMixture.H"
+#include "plasmaEnergy.H"
 #include "plasmaSimulationProfiler.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -255,7 +260,10 @@ plasmaTransport::plasmaTransport
 
 // * * * * * * * * * * * * * * * * Destructors * * * * * * * * * * * * * * * //
 
-plasmaTransport::~plasmaTransport() = default;
+// Defined here, where janafMixture is complete: an autoPtr to a
+// forward-declared type can only be destroyed where the type is known.
+plasmaTransport::~plasmaTransport()
+{}
 
 // * * * * * * * * * * * * * * Public Member Functions * * * * * * * * * * * //
 
@@ -272,6 +280,268 @@ void plasmaTransport::correctTransportModels()
 }
 
 // This is for the positive streamer case
+// * * * * * * * * * * * * * * * G2: gas energy * * * * * * * * * * * * * * //
+
+void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
+{
+    // `chem_` is deliberately NOT required. The prompt channels -- elastic,
+    // rotational and the gas share of the inelastic defect -- come from
+    // `rates_`, and only the heavy-reaction heat release needs the chemistry
+    // object. Requiring it here made `chemistrySolver none` a SILENT no-op:
+    // the run printed "gas heating ON, T solved" at start-up and then left
+    // T_gas at exactly 300 K for the whole simulation, with no warning.
+    if (!gasHeating_ || !rates_) return;
+
+    // The EQUATION belongs to plasmaEnergy, which owns T_gas. What belongs
+    // here is the SOURCE: only this class knows the reaction enthalpies, the
+    // EEDF power channels and the mechanism thermodynamics. Splitting it that
+    // way keeps the temperature in one place and the physics that heats it in
+    // another, which is the division the plasmaEnergy interface already
+    // assumed.
+    if (!mesh_.foundObject<plasmaEnergy>("plasmaEnergy")) return;
+    auto& energy =
+        const_cast<plasmaEnergy&>(mesh_.lookupObject<plasmaEnergy>("plasmaEnergy"));
+    if (!energy.solvesGasEnergy()) return;
+
+    // Bind the borrowed view once. Done here rather than in the constructor
+    // because plasmaEnergy is registered by the solver, which may construct it
+    // after this class.
+    if (!TgasField_)
+    {
+        TgasField_ = &energy.TgasField();
+
+        // CHECK ONCE, AND FAIL WITH THE EXACT TEXT TO PASTE. Without this the
+        // case dies mid-run on "Entry 'laplacian(kappa,T_gas)' not found",
+        // which is accurate and tells the user nothing about what to write.
+        //
+        // The names are DERIVED FROM THE FIELD rather than written out. An
+        // earlier version hard-coded `T`, plasmaEnergy calls its field
+        // `T_gas`, and the checks therefore passed while the run died anyway.
+        const word& Tn = TgasField_->name();
+
+        const dictionary& ls =
+            mesh_.schemes().subOrEmptyDict("laplacianSchemes");
+        if (!ls.found("default") && !ls.found("laplacian(kappa," + Tn + ")"))
+        {
+            FatalErrorInFunction
+                << "gas heating is on, but system/fvSchemes has no laplacian"
+                << " scheme for the conduction term." << nl
+                << "    Add to laplacianSchemes:" << nl << nl
+                << "        laplacian(kappa," << Tn
+                << ")  Gauss linear corrected;" << nl << nl
+                << "    (or set kappa 0 in the energy dictionary to drop"
+                << " conduction, which is exact for a 0-D comparison.)"
+                << exit(FatalError);
+        }
+
+        const dictionary& sd = mesh_.solution().subOrEmptyDict("solvers");
+        const word both = "\"(" + Tn + "|" + Tn + "Final)\"";
+        if ((!sd.found(Tn) || !sd.found(Tn + "Final")) && !sd.found(both))
+        {
+            FatalErrorInFunction
+                << "gas heating is on, but system/fvSolution has no linear"
+                << " solver for " << Tn << "." << nl
+                << "    Add to solvers:" << nl << nl
+                << "        " << both << nl
+                << "        {" << nl
+                << "            solver          PCG;" << nl
+                << "            preconditioner  DIC;" << nl
+                << "            tolerance       1e-12;" << nl
+                << "            relTol          0;" << nl
+                << "        }" << nl << nl
+                << "    A SYMMETRIC solver: the equation is ddt plus laplacian"
+                << " with no convection, so DILU and the other asymmetric"
+                << " preconditioners are rejected." << nl
+                << "    Both " << Tn << " and " << Tn << "Final are needed:"
+                << " it is solved on the final outer iteration."
+                << exit(FatalError);
+        }
+    }
+
+    const label nCells = mesh_.nCells();
+    const label eIdx = species_.electronSpeciesID();
+    const scalarField& ne =
+        species_.numberDensities()[eIdx].primitiveField();
+
+    static const scalar EVJ = 1.602176634e-19;
+
+    // Power channels from plasmaReactionRates, re-interpolated every step
+    // alongside k_j -- so a dynamic-EEDF rebuild reaches them too.
+    const scalarField& Pel = rates_->PelasticN().primitiveField();
+    const scalarField& Pgs = rates_->PgasN().primitiveField();
+    const scalarField& Pvb = rates_->PvibN().primitiveField();
+
+    volScalarField Qgas
+    (
+        IOobject
+        (
+            "Q_gas", mesh_.time().timeName(), mesh_,
+            IOobject::NO_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER
+        ),
+        mesh_, dimensionedScalar(dimensionSet(1, -1, -3, 0, 0), Zero)
+    );
+    volScalarField Pvib
+    (
+        IOobject
+        (
+            "P_vib", mesh_.time().timeName(), mesh_,
+            IOobject::NO_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER
+        ),
+        mesh_, dimensionedScalar(dimensionSet(1, -1, -3, 0, 0), Zero)
+    );
+    volScalarField rhoCv
+    (
+        IOobject
+        (
+            "rhoCv", mesh_.time().timeName(), mesh_,
+            IOobject::NO_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER
+        ),
+        mesh_, dimensionedScalar(dimensionSet(1, -1, -2, -1, 0), Zero)
+    );
+    volScalarField tauVT
+    (
+        IOobject
+        (
+            "tau_VT", mesh_.time().timeName(), mesh_,
+            IOobject::NO_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER
+        ),
+        mesh_, dimensionedScalar(dimTime, GREAT)
+    );
+
+    const volScalarField& T = energy.Tgas()();
+    scalarField n(species_.nSpecies(), Zero);
+
+    // THE BACKGROUND GAS CARRIES THE HEAT CAPACITY. In the CFD the bulk
+    // neutrals are a RESERVOIR, not transported fields, so rho and c_v summed
+    // over the transported species alone counted ~1e13 m^-3 of ions where
+    // 2.4e25 m^-3 of N2 and O2 sit: rho*c_v came out at 3.5e-10 instead of
+    // ~835 J/m^3/K, and half a nanosecond of a 62 Td field raised the gas by
+    // 541 K instead of 5e-7 K. The identical code is correct in the 0-D
+    // reactor, where every species IS in the state vector -- which is why the
+    // two must be compared rather than assumed equivalent.
+    const label iO  = species_.speciesNames().find("O");
+    const label iN2 = species_.speciesNames().find("N2");
+    const label iO2 = species_.speciesNames().find("O2");
+
+    // The same two species as they appear in the BACKGROUND composition, which
+    // is where they actually live whenever the case transports only charges.
+    const label bgIN2 = bgNames_.find("N2");
+    const label bgIO2 = bgNames_.find("O2");
+
+    for (label celli = 0; celli < nCells; ++celli)
+    {
+        const scalar nEl = max(ne[celli], scalar(0));
+
+        // LIVE heavy density: dissociation raises the particle count, and the
+        // tabulated powers are per unit gas density.
+        //
+        // THE BACKGROUND RESERVOIR BELONGS HERE TOO -- the same trap that made
+        // rho*c_v 1e9 too small, in the other factor of the same product. The
+        // sweep tabulates power per electron PER UNIT GAS DENSITY, so this must
+        // be the density of the whole gas. With `include charged` the only
+        // transported heavies are ions, ~7e19 m^-3 against 2.4e25 m^-3 of N2
+        // and O2 sitting in the reservoir, so the source came out ~3e5 times
+        // too small: a streamer head at 310 Td and n_e = 6e19 heated by 3e-6 K
+        // where the tables predict 0.5 K.
+        scalar nHeavy = 0.0;
+        forAll(n, sp)
+        {
+            n[sp] = species_.numberDensities()[sp].primitiveField()[celli];
+            if (sp != eIdx) nHeavy += max(n[sp], scalar(0));
+        }
+
+        // Whatever the reservoir still holds once the transported neutrals are
+        // subtracted, so a dissociated N2 is not counted both as a background
+        // molecule and as a transported atom. Identical construction to the
+        // rho*c_v term below, and for the identical reason.
+        scalar nBgLeft = species_.backgroundDensity().value();
+        for (const label sp : species_.neutralSpeciesIDs())
+        {
+            nBgLeft -= max(n[sp], scalar(0));
+        }
+        nBgLeft = max(nBgLeft, scalar(0));
+        nHeavy += nBgLeft;
+
+        // Prompt heat: elastic and rotational, plus the gas share of the
+        // inelastic defect. The heavy reactions add fast gas heating on top,
+        // from their own enthalpies -- the Popov two-step mechanism, which is
+        // where most of the heat in air comes from.
+        Qgas.primitiveFieldRef()[celli] =
+            (Pel[celli] + Pgs[celli])*nEl*nHeavy*EVJ
+          + (chem_ ? chem_->heavyHeatRelease(n, T[celli])*EVJ : 0.0);
+
+        Pvib.primitiveFieldRef()[celli] = Pvb[celli]*nEl*nHeavy*EVJ;
+
+        // Mole fractions for the V-T rate, over the FULL gas again. With
+        // `include charged` neither N2 nor O2 is transported, so taking these
+        // from the transported set alone handed vibRelax x_N2 = x_O2 = 0 --
+        // a V-T time for a gas made of nothing. The reservoir supplies them.
+        const scalar tot = max(nHeavy, scalar(1));
+        const scalar nO  = (iO  >= 0) ? max(n[iO],  scalar(0)) : 0.0;
+        const scalar nN2 = ((iN2 >= 0) ? max(n[iN2], scalar(0)) : 0.0)
+                         + (bgIN2 >= 0 ? bgX_[bgIN2]*nBgLeft : 0.0);
+        const scalar nO2 = ((iO2 >= 0) ? max(n[iO2], scalar(0)) : 0.0)
+                         + (bgIO2 >= 0 ? bgX_[bgIO2]*nBgLeft : 0.0);
+        const scalar xN2 = nN2/tot;
+        const scalar xO2 = nO2/tot;
+
+        tauVT.primitiveFieldRef()[celli] = (tauVTfixed_ > 0)
+            ? tauVTfixed_
+            : vibRelax::tauVT_N2(T[celli], pGasAtm_, xN2, xO2, nO);
+
+        // Heat capacity per unit VOLUME from the mechanism's own NASA7 data,
+        // over the FULL gas: transported species plus the background reservoir
+        // left after they are subtracted. `nBgLeft` is the one computed for
+        // nHeavy above -- the two must be the same gas, or the source and the
+        // heat capacity describe different mixtures.
+        scalar rc = thermo_.valid()
+            ? thermo_().rho(n)*thermo_().cv(n, T[celli])
+            : 0.0;
+
+        if (bgThermo_.valid() && bgThermo_().valid())
+        {
+            scalarField nBg(bgX_*nBgLeft);
+            rc += bgThermo_().rho(nBg)*bgThermo_().cv(nBg, T[celli]);
+        }
+
+        rhoCv.primitiveFieldRef()[celli] =
+            (rc > VSMALL) ? rc : 1.16*1005.0/1.4;
+    }
+
+    {
+        // One-off provenance line: which thermo the heat capacity came from,
+        // and what it evaluates to. rho*c_v being wrong is silent in every
+        // other diagnostic -- it shows up only as a temperature that is
+        // implausible if you happen to estimate the right answer first.
+        static bool reported = false;
+        if (!reported)
+        {
+            reported = true;
+            Info<< "  gas energy: rho*c_v = "
+                << gMin(rhoCv.primitiveField()) << " .. "
+                << gMax(rhoCv.primitiveField()) << " J/m^3/K"
+                << " (transported thermo "
+                << (thermo_.valid() && thermo_().valid() ? "on" : "off")
+                << ", background thermo "
+                << (bgThermo_.valid() && bgThermo_().valid() ? "on" : "off")
+                << ")" << endl;
+        }
+    }
+
+    Qgas.correctBoundaryConditions();
+    Pvib.correctBoundaryConditions();
+    rhoCv.correctBoundaryConditions();
+    tauVT.correctBoundaryConditions();
+
+    TgasMax_ = max(TgasMax_, gMax(T.primitiveField()));
+    QgasMax_ = max(QgasMax_, gMax(Qgas.primitiveField()));
+
+    energy.solveGasEnergy(Qgas, rhoCv, Pvib, tauVT, dt);
+
+    eVibMax_ = max(eVibMax_, gMax(energy.eVib().primitiveField()));
+}
+
+
 void plasmaTransport::solve(const bool finalIter)
 {
     // ── 0. Chemistry, first half-step ─────────────────────────────────────
@@ -653,6 +923,20 @@ S_iz_.correctBoundaryConditions();
     //         particleFlux_[i]
     //     );
     // }
+    // ── 6. Gas energy ─────────────────────────────────────────────────────
+    //
+    // On the FINAL outer iteration only. The energy equation is driven by the
+    // converged chemistry and field of this timestep, and advancing it once
+    // per outer iteration would apply the same heating several times -- the
+    // same mistake the chemistry source made before it was reformulated to
+    // integrate from the start-of-step state.
+    if (finalIter && gasHeating_)
+    {
+        plasmaSimulationProfiler::start("Plasma Transport", "gas energy");
+        solveGasEnergy(mesh_.time().deltaTValue());
+        plasmaSimulationProfiler::stop("Plasma Transport", "gas energy");
+    }
+
     plasmaSimulationProfiler::stop("Plasma Transport", "solveEquations");
 }
 
@@ -968,32 +1252,182 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // the robust one where it is not, so neither accuracy nor robustness is
     // traded for the other across a domain where the stiffness varies by
     // orders of magnitude.
-    const word cs = cd.getOrDefault<word>("chemistrySolver", "adaptive");
-    if (cs == "none")
-    {
-        chemistrySolver_ = csNone;
-    }
-    else if (cs == "ode")
-    {
-        chemistrySolver_ = csODE;
-    }
-    else if (cs == "implicitRate")
-    {
-        chemistrySolver_ = csImplicitRate;
-    }
-    else if (cs == "adaptive")
-    {
-        chemistrySolver_ = csAdaptive;
-    }
-    else
+    // ---- WHICH reactions (physics) and HOW they are integrated (numerics) --
+    //
+    // Two keys, because they are two decisions. The old single key
+    // `chemistrySolver` is rejected outright rather than mapped onto either
+    // axis: its value `none` meant "electron-impact reactions, integrated
+    // explicitly", so a case written against it is making BOTH choices at
+    // once and only the case author knows which half was intended.
+    if (cd.found("chemistrySolver"))
     {
         FatalErrorInFunction
-            << "Unknown chemistrySolver '" << cs << "'" << nl
-            << "Valid: none | ode | implicitRate | adaptive" << nl
+            << "`chemistrySolver` has been split into two keys, because it was"
+            << " deciding two" << nl
+            << "    different things: which reactions exist (physics) and how"
+            << " they are integrated" << nl
+            << "    (numerics)." << nl << nl
+            << "    chemistry" << nl
+            << "    {" << nl
+            << "        reactions   all;       // all | electronImpact | none"
+            << nl
+            << "        solver      adaptive;  // adaptive | implicitRate |"
+            << " ode | explicitSource" << nl
+            << "    }" << nl << nl
+            << "    Translating the old values:" << nl
+            << "        chemistrySolver none      ->  reactions electronImpact;"
+            << "  solver explicitSource;" << nl
+            << "        chemistrySolver adaptive  ->  reactions all;"
+            << "              solver adaptive;" << nl
+            << "        chemistrySolver ode       ->  reactions all;"
+            << "              solver ode;" << nl
+            << "        (no old equivalent)       ->  reactions none;"
+            << "             // no chemistry at all" << nl << nl
+            << "    `none` in particular did NOT mean no chemistry: it solved"
+            << " electron-impact" << nl
+            << "    reactions and skipped the heavy set, so ions never decayed."
+            << nl
             << exit(FatalError);
     }
 
-    if (chemistrySolver_ != csNone)
+    const word rxs = cd.getOrDefault<word>("reactions", "all");
+    if      (rxs == "all")            chemReactions_ = rxAll;
+    else if (rxs == "electronImpact") chemReactions_ = rxElectronImpact;
+    else if (rxs == "none")           chemReactions_ = rxNone;
+    else
+    {
+        FatalErrorInFunction
+            << "Unknown chemistry/reactions '" << rxs << "'" << nl
+            << "Valid: all | electronImpact | none" << nl
+            << exit(FatalError);
+    }
+
+    const word cs = cd.getOrDefault<word>("solver", "adaptive");
+    if      (cs == "adaptive")       chemistrySolver_ = csAdaptive;
+    else if (cs == "implicitRate")   chemistrySolver_ = csImplicitRate;
+    else if (cs == "ode")            chemistrySolver_ = csODE;
+    else if (cs == "explicitSource") chemistrySolver_ = csExplicitSource;
+    else
+    {
+        FatalErrorInFunction
+            << "Unknown chemistry/solver '" << cs << "'" << nl
+            << "Valid: adaptive | implicitRate | ode | explicitSource" << nl
+            << exit(FatalError);
+    }
+
+    // The legacy explicit path loops over the TABULATED reactions only, which
+    // are the electron-impact ones. It has no heavy branch at all, so pairing
+    // it with `all` would silently drop recombination -- the same class of
+    // silent omission this split exists to end.
+    if (chemistrySolver_ == csExplicitSource && chemReactions_ == rxAll)
+    {
+        FatalErrorInFunction
+            << "chemistry/solver `explicitSource` cannot integrate the heavy"
+            << " reactions." << nl << nl
+            << "    It applies tabulated electron-impact rates directly to the"
+            << " transport equations" << nl
+            << "    and has no heavy-reaction path, so `reactions all` would"
+            << " silently drop" << nl
+            << "    recombination, ion-ion neutralisation and detachment."
+            << nl << nl
+            << "    Use `reactions electronImpact` to keep the legacy"
+            << " behaviour, or pick a solver" << nl
+            << "    that handles the full set: adaptive | implicitRate | ode."
+            << nl
+            << exit(FatalError);
+    }
+
+    // `implicitRate` evaluates the rate at the current iterate, which only
+    // becomes the t^{n+1} rate the scheme asks for once Picard has converged.
+    // With one outer iteration there is no loop to converge: on the validated
+    // streamer it overshot the saturated electron density before 1.5 ns and
+    // then diverged. `adaptive` inherits the same linearisation.
+    if
+    (
+        (chemistrySolver_ == csImplicitRate || chemistrySolver_ == csAdaptive)
+     && chemReactions_ != rxNone
+     && mesh_.solution().subOrEmptyDict("PIMPLE")
+            .getOrDefault<label>("nOuterCorrectors", 1) < 2
+    )
+    {
+        FatalErrorInFunction
+            << "chemistry/solver `" << cs << "` needs nOuterCorrectors > 1."
+            << nl << nl
+            << "    It linearises the chemistry about the current iterate and"
+            << " reaches the order it" << nl
+            << "    claims only once the outer loop converges. With one outer"
+            << " iteration there is no" << nl
+            << "    loop to converge, and the source is evaluated at the"
+            << " old state." << nl << nl
+            << "    Either raise nOuterCorrectors in system/fvSolution, or"
+            << " choose a solver that" << nl
+            << "    does not linearise: `ode` integrates through the step,"
+            << " `explicitSource` is the" << nl
+            << "    legacy explicit source (with `reactions electronImpact`)."
+            << nl
+            << exit(FatalError);
+    }
+
+    // WHAT ORDER THIS COMBINATION CAN ACTUALLY REACH.
+    //
+    // Converging the outer loop is NECESSARY for second order but not
+    // SUFFICIENT: `ode` splits the chemistry off and takes a mean rate over
+    // the step, which is a Lie composition and first order by construction, so
+    // it stays first order however well the loop converges. Measured on the
+    // 40x40 benchmark (200 ps, dt 4:2:1, Richardson on n_e max and n_e sum):
+    //
+    //   lagged     + ode        p = 0.99
+    //   converged  + ode        p = 0.99   <- converging did NOT help
+    //   converged  + adaptive   p = 1.94
+    //
+    // Order is achieved, not selected, so the run says which it will get
+    // rather than leaving the user to infer it from two separate keys.
+    {
+        IOdictionary controls
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                mesh_.time().system(),
+                mesh_.time(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+        const word target = controls.subOrEmptyDict("outerCoupling")
+            .getOrDefault<word>("target", "converged");
+
+        const bool secondOrderCapable =
+            (chemistrySolver_ != csODE) && (chemReactions_ != rxNone);
+
+        if (target != "converged")
+        {
+            Info<< "plasmaTransport: temporal order 1 -- outerCoupling target"
+                << " is `" << target << "`, so the" << nl
+                << "    Poisson-species coupling is lagged. `ddtSchemes"
+                << " backward` does not repair that." << endl;
+        }
+        else if (!secondOrderCapable)
+        {
+            Info<< "plasmaTransport: temporal order 1 -- the outer loop is"
+                << " converged, but chemistry/solver" << nl
+                << "    `" << cs << "` splits the chemistry off with a mean"
+                << " rate over the step, which is" << nl
+                << "    first order by construction. Use `implicitRate` or"
+                << " `adaptive` for second order." << endl;
+        }
+        else
+        {
+            Info<< "plasmaTransport: temporal order 2 -- outer loop converged"
+                << " and chemistry/solver `" << cs << "`" << nl
+                << "    is second-order capable (measured p = 1.94)." << endl;
+        }
+    }
+
+    // The chemistry object is what integrates a reaction set. It is not needed
+    // when there are no reactions, nor for the legacy explicit path, which
+    // applies tabulated rates straight into the transport equations.
+    if (chemReactions_ != rxNone && chemistrySolver_ != csExplicitSource)
     {
         // Skipping quiescent cells is not an optimisation to add later: a
         // stiff ODE in every cell of a 1.1M-cell mesh, where all the chemistry
@@ -1056,6 +1490,17 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         ccfg.add("electronName", species_.speciesNames()[species_.electronSpeciesID()], true);
         ccfg.add("backgroundDensity", species_.backgroundDensity().value(), true);
 
+        // The reaction-set choice is applied where the mechanism is READ, so
+        // the ODE, the Jacobian, the heat release and every diagnostic all see
+        // the same set. Filtering later would leave each consumer to remember
+        // the same exclusion independently.
+        ccfg.add
+        (
+            "includeHeavyReactions",
+            bool(chemReactions_ == rxAll),
+            true
+        );
+
         scalarField q(species_.nSpecies());
         forAll(q, i) q[i] = species_.speciesChargeNumbers()[i];
 
@@ -1109,6 +1554,99 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         )
     );
 
+    // ---- G2: gas energy ---------------------------------------------------
+    tableDir_ = cd.get<fileName>("tableDir");
+    {
+        const dictionary& ed = species_.backgroundDict().subOrEmptyDict("energy");
+        TgasConst_ = ed.getOrDefault<scalar>("T", 300.0);
+        gasHeating_ = ed.getOrDefault<bool>("solve", false);   // existing key, see plasmaSpecies
+        kappaGas_ = ed.getOrDefault<scalar>("kappa", 0.026);
+        tauVTfixed_ = ed.getOrDefault<scalar>("tauVT", -1);
+        pGasAtm_ = ed.getOrDefault<scalar>("pressure", 101325.0)/101325.0;
+
+        if (gasHeating_)
+        {
+            // The FIELDS live in plasmaEnergy, which owns the temperature.
+            // Only the mechanism thermodynamics are built here, because only
+            // this class reads the mechanism.
+            IFstream mis(cd.get<fileName>("mechanism"));
+            dictionary mdict(mis);
+            thermo_.reset
+            (
+                new janafMixture
+                (
+                    mdict,
+                    species_.speciesNames(),
+                    species_.speciesNames()[species_.electronSpeciesID()]
+                )
+            );
+            // Background gas: whatever the mechanism's reference composition
+            // names. These species are NOT transported and have no index in
+            // plasmaSpecies, which is exactly why they need their own thermo
+            // object -- and why omitting them made rho*c_v 1e9 too small.
+            {
+                IFstream cis(cd.get<fileName>("mechanism"));
+                dictionary cdict(cis);
+                const dictionary comp = cdict.subOrEmptyDict("composition");
+
+                DynamicList<word> nm;
+                DynamicList<scalar> xs;
+                scalar xSum = 0;
+                for (const entry& e : comp)
+                {
+                    nm.append(e.keyword());
+                    xs.append(readScalar(e.stream()));
+                    xSum += xs.last();
+                }
+                if (xSum > VSMALL)
+                {
+                    forAll(xs, i) xs[i] /= xSum;
+                    bgNames_ = nm;
+                    bgX_ = scalarField(xs);
+                    bgThermo_.reset
+                    (
+                        new janafMixture(cdict, bgNames_, word::null)
+                    );
+                }
+            }
+
+            if (!thermo_().valid())
+            {
+                WarningInFunction
+                    << "gasHeating is on but the mechanism carries no"
+                    << " `speciesThermo` block, so the heat capacity falls"
+                    << " back to a constant for AIR." << nl
+                    << "    Recompile the mechanism with mechc." << endl;
+            }
+
+            Info<< "plasmaTransport: gas heating ON, T solved"
+                << " (kappa = " << kappaGas_ << " W/m/K, thermo "
+                << (thermo_().valid() ? "from mechanism" : "FALLBACK")
+                << ")" << endl;
+
+            // Say so when the heavy channel is absent. Without a chemistry
+            // object there is no Popov two-step fast heating -- most of the
+            // heat in air -- so the temperature is a LOWER BOUND. The prompt
+            // channels still run, which is why this is a note and not an
+            // error, but a temperature that omits the dominant term in air
+            // should say so where the user reads it.
+            if
+            (
+                chemReactions_ != rxAll
+            )
+            {
+                Info<< "    NOTE chemistry/reactions is `" << rxs << "`, so"
+                    << " heavy-reaction heat release is NOT included." << nl
+                    << "    Only the prompt electron channels (elastic,"
+                    << " rotational, inelastic gas share) heat the gas," << nl
+                    << "    so T_gas is a LOWER BOUND: in air the two-step"
+                    << " quenching of N2 electronic" << nl
+                    << "    states by O2 is typically the larger term."
+                    << endl;
+            }
+        }
+    }
+
     {
         IFstream is(cd.get<fileName>("mechanism"));
         dictionary mech(is);
@@ -1119,15 +1657,27 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     }
 
     Info<< "plasmaTransport: sourceModel " << model
-        << ", " << rates_->size() << " electron-impact reactions" << nl
-        << "    NOTE this path evaluates ELECTRON-IMPACT reactions only."
-        << " Heavy chemistry (recombination," << nl
-        << "    quenching, detachment) lives in the Cantera mechanism and is"
-        << " NOT applied here, so ion and" << nl
-        << "    excited-state densities have no loss channel in this mode."
-        << " Adequate for a short pulse;" << nl
-        << "    not for long transients. Stage 2 hands the chemistry to Cantera."
-        << endl;
+        << ", " << rates_->size() << " electron-impact reactions" << endl;
+
+    // The caveat below is TRUE ONLY OF THE LEGACY PATH. It used to print
+    // unconditionally, which told a user running `adaptive` -- a mode that
+    // does evaluate the heavy set -- that their ions had no loss channel.
+    if (chemReactions_ == rxElectronImpact)
+    {
+        Info<< "    NOTE this path evaluates ELECTRON-IMPACT reactions only."
+            << " Heavy chemistry (recombination," << nl
+            << "    quenching, detachment) is NOT applied, so ion and"
+            << " excited-state densities have NO" << nl
+            << "    loss channel. Adequate for a short pulse; not for long"
+            << " transients." << endl;
+    }
+    else if (chemReactions_ == rxNone)
+    {
+        Info<< "    NOTE chemistry/reactions is `none`: NO chemistry source"
+            << " of any kind is applied." << nl
+            << "    Drift-diffusion and Poisson only. Nothing ionises."
+            << endl;
+    }
 }
 
 
@@ -1164,9 +1714,8 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
     scalarField n(nSp, Zero);
     scalarField ext(nSp, Zero);
 
-    const scalar Tgas =
-        species_.backgroundDict().subOrEmptyDict("energy")
-            .getOrDefault<scalar>("T", 300.0);
+    // Per CELL now, not a dictionary constant: this is the thermal-ionisation
+    // feedback. See TgasCell().
 
     label nActive = 0;
     forAll(neI, celli)
@@ -1192,7 +1741,7 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         if (!chemCellsReported_)
         {
             chemResidualMax_ =
-                max(chemResidualMax_, chem_->chargeResidual(n, kTab, Tgas));
+                max(chemResidualMax_, chem_->chargeResidual(n, kTab, TgasCell(celli)));
         }
 
         // Transport rate for this cell, from the previous outer iteration.
@@ -1202,7 +1751,7 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
             for (label s = 0; s < nSp; ++s) ext[s] = chemExt_[s][celli];
         }
 
-        chem_->integrate(n, kTab, Tgas, dt, haveExt ? &ext : nullptr);
+        chem_->integrate(n, kTab, TgasCell(celli), dt, haveExt ? &ext : nullptr);
 
         // The integrated change contains BOTH processes, so the transport part
         // is removed to leave the chemical source alone. Adding the whole
@@ -1385,6 +1934,15 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         return false;   // caller falls back to the legacy fits
     }
 
+    // `off` means OFF: no chemistry source of any kind reaches the species
+    // equations, leaving drift-diffusion and Poisson alone. Returning TRUE is
+    // the whole point -- false would send the caller into its legacy
+    // Townsend-fit branch and quietly reinstate ionisation.
+    if (chemReactions_ == rxNone)
+    {
+        return true;
+    }
+
     // With operator-split chemistry the sources are applied by
     // applyChemistry(), not here. Returning true keeps the caller from adding
     // its legacy fits on top; returning false would do exactly that.
@@ -1412,9 +1970,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             chemL_[s].setSize(mesh_.nCells(), Zero); chemL_[s] = Zero;
         }
 
-        const scalar Tgas =
-            species_.backgroundDict().subOrEmptyDict("energy")
-                .getOrDefault<scalar>("T", 300.0);
+
 
         scalarField n(nSp, Zero), kTab(max(nTab, 1), Zero);
         scalarField P(nSp, Zero), L(nSp, Zero);
@@ -1435,7 +1991,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 kTab[j] = rates_->k(j).primitiveField()[celli];
             }
 
-            chem_->productionLoss(n, kTab, Tgas, P, L);
+            chem_->productionLoss(n, kTab, TgasCell(celli), P, L);
 
             // Stiffness, as the solver actually experiences it: L*dt is the
             // number of loss timescales crossed in one step. Large is not
@@ -1484,7 +2040,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                     n0[sp] = chemN0_[sp][celli];
                 }
                 nEnd = n0;
-                chem_->integrate(nEnd, kTab, Tgas, dtNow);
+                chem_->integrate(nEnd, kTab, TgasCell(celli), dtNow);
 
                 // An ODE solver can fail on a step far longer than the
                 // chemistry it is integrating, and it does not always say so:
@@ -1870,11 +2426,15 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         // the heavy species exists. Passing -1 would keep the dictionary's,
         // which is the same thing today but stops being so the moment gas
         // heating is solved.
-        const scalar Tgas =
-            species_.backgroundDict().subOrEmptyDict("energy")
-                .getOrDefault<scalar>("T", -1);
-
-        rates_->refreshEEDF(comp, Tgas);
+        // One representative temperature for a global table rebuild. The MEAN
+        // over active cells, not the peak: a single hot cell should not set
+        // the EEDF the whole domain then uses.
+        scalar Tref = TgasConst_;
+        if (gasHeating_)
+        {
+            if (TgasField_) Tref = gAverage(TgasField_->primitiveField());
+        }
+        rates_->refreshEEDF(comp, Tref);
     }
 
     List<scalarField> src(species_.nSpecies(), scalarField(nCells, Zero));

@@ -242,7 +242,7 @@ mismatched pair is refused rather than silently used.
 The chemistry source is returned as production and a **loss coefficient**
 (`dn/dt = P − L·n`) so the sink is implicit via `fvm::Sp`: densities stay positive
 at any timestep, and the outer Picard iteration is a contraction on the loss term.
-`chemistrySolver adaptive` chooses **per cell** between linearising and stiff
+`solver adaptive` chooses **per cell** between linearising and stiff
 integration, because the stiffness is local — a streamer head is stiff while the
 bulk is not.
 
@@ -273,7 +273,7 @@ dictionary reference and the Cantera backend — is in
 
 ### Backward compatibility
 
-Existing cases are unaffected: `chemistrySolver none` is the previous behaviour
+Existing cases are unaffected: `reactions electronImpact` + `solver explicitSource` is the previous behaviour
 and remains available. The mechanism-driven path is opt-in per case.
 
 

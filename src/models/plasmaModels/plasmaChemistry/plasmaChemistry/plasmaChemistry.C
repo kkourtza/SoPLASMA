@@ -128,7 +128,17 @@ void Foam::plasmaChemistry::readMechanism
     }
 
     // ---- heavy reactions ---------------------------------------------------
-    if (mech.found("heavyReactions"))
+    //
+    // Skipped entirely for `reactions electronImpact`, which is what the
+    // streamer validation was produced with. Filtering HERE rather than at the
+    // source-term stage means every downstream consumer -- the ODE, the
+    // Jacobian, the heat release, the diagnostics -- sees one consistent
+    // reaction set, instead of each having to remember to exclude the same
+    // subset.
+    const bool withHeavy =
+        dict.getOrDefault<bool>("includeHeavyReactions", true);
+
+    if (mech.found("heavyReactions") && withHeavy)
     {
         const List<dictionary> heavy(mech.lookup("heavyReactions"));
         forAll(heavy, i)

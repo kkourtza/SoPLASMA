@@ -13,6 +13,7 @@ EXE_INC = \
     -I$(SoPLASMA_SRC)/bcs/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaSpecies/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaTransport/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaEnergy/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/genericPlasmaProperties/lnInclude \
     -I$(SoPLASMA_SRC)/numerics/lnInclude \
     -I$(SoPLASMA_SRC)/profilers/lnInclude \
@@ -33,6 +34,7 @@ EXE_LIBS = \
     -lplasmaBcs \
     -lplasmaSpecies \
     -lplasmaTransport \
+    -lplasmaEnergy \
     -lplasmaProperties \
     -lplasmaNumerics \
     -lplasmaProfilers \

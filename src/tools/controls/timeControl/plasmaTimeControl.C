@@ -43,7 +43,14 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     printVoltageRiseRate_(false),
     maxVoltageRiseRate_(GREAT),
     voltagePatchName_(""),
-    prevPatchVoltage_(0.0)
+    prevPatchVoltage_(0.0),
+    outerChaseConvergence_(true),
+    outerMaxCorrectors_(20),
+    outerTolerance_(1e-8),
+    outerOnNonConvergence_("reduceDeltaT"),
+    outerHitCap_(false),
+    outerItersUsed_(0),
+    outerReportCounter_(0)
 {
     read();
 
@@ -115,6 +122,20 @@ void plasmaTimeControl::read()
 
         maxChemistryCo_ = 
             dict_.lookupOrDefault<scalar>("maxChemistryCo", 1.0);
+
+        // Outer-coupling settings. Kept in step with configureOuterCoupling()
+        // so the reported cap is the cap PIMPLE was actually given.
+        {
+            const dictionary& oc = plasmaDict.subOrEmptyDict("outerCoupling");
+            outerChaseConvergence_ =
+                (oc.getOrDefault<word>("target", "converged") == "converged");
+            outerMaxCorrectors_ =
+                oc.getOrDefault<label>("maxCorrectors", 20);
+            outerTolerance_ =
+                oc.getOrDefault<scalar>("tolerance", 1e-8);
+            outerOnNonConvergence_ =
+                oc.getOrDefault<word>("onNonConvergence", "reduceDeltaT");
+        }
 
         // Voltage rise rate
         limitVoltageRiseRate_ =
@@ -286,6 +307,19 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         }
 
         prevPatchVoltage_ = currentVoltage;
+    }
+
+    // The outer loop failing to converge is a TIME-STEP verdict, so it is
+    // applied here with the others and the smallest limit still wins. A
+    // separate mechanism that set deltaT on its own could override the
+    // dielectric or Courant limits and trade an accuracy problem for a
+    // stability one.
+    if (outerHitCap_ && outerOnNonConvergence_ == "reduceDeltaT")
+    {
+        // Halve. The coupling residual is not a smooth function of deltaT the
+        // way a Courant number is -- there is no limit to solve for -- so this
+        // backs off and lets the next step report whether that was enough.
+        newDeltaT = min(newDeltaT, 0.5*currentDeltaT);
     }
 
     // Apply and clamp
@@ -490,6 +524,153 @@ void plasmaTimeControl::setInitialDeltaT(const plasmaTransport& transport)
         newDeltaT = min(newDeltaT, currentDeltaT * 1.2);
     }
     runTime_.setDeltaT(newDeltaT);   
+}
+
+void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
+{
+    // Read from the same file as the rest of the plasma controls, so a user
+    // does not have to know that this one happens to be implemented through
+    // PIMPLE.
+    IOdictionary controls
+    (
+        IOobject
+        (
+            "plasmaSimulationControls",
+            mesh.time().system(),
+            mesh.time(),
+            IOobject::READ_IF_PRESENT,
+            IOobject::NO_WRITE
+        )
+    );
+    const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
+
+    const word target = oc.getOrDefault<word>("target", "converged");
+    if (target != "converged" && target != "lagged")
+    {
+        FatalErrorInFunction
+            << "Unknown outerCoupling/target '" << target << "'" << nl
+            << "Valid: converged | lagged" << nl
+            << exit(FatalError);
+    }
+
+    dictionary& pimpleDict = mesh.solution().subDict("PIMPLE");
+
+    if (target == "lagged")
+    {
+        // A DELIBERATE first-order mode, and it says so. The cost of one
+        // corrector is not just a looser tolerance: the Poisson and species
+        // equations are lagged relative to each other and the scheme drops to
+        // first order in time whatever ddtSchemes says. Measured on the
+        // shipped benchmark: p = 0.87 at one corrector, p = 1.94 converged.
+        pimpleDict.set("nOuterCorrectors", 1);
+        Info<< "plasmaTimeControl: outerCoupling target `lagged`" << nl
+            << "    ONE outer corrector. The Poisson-species coupling is not"
+            << " converged, so the" << nl
+            << "    scheme is FIRST ORDER in time regardless of ddtSchemes."
+            << " Use for scoping runs." << endl;
+        return;
+    }
+
+    const label maxCorr = oc.getOrDefault<label>("maxCorrectors", 20);
+    const scalar tol = oc.getOrDefault<scalar>("tolerance", 1e-8);
+
+    if (maxCorr < 2)
+    {
+        FatalErrorInFunction
+            << "outerCoupling/maxCorrectors is " << maxCorr
+            << ", so the loop cannot iterate." << nl
+            << "    `target converged` needs room to converge; use"
+            << " `target lagged` if one corrector is what you want." << nl
+            << exit(FatalError);
+    }
+
+    // THE TOLERANCE MUST BE LOOSER THAN THE LINEAR SOLVER'S. Otherwise the
+    // outer criterion asks for something the inner solve never delivers, the
+    // loop runs to its cap on every step, and `nOuterCorrectors` silently
+    // becomes a fixed iteration count again. That is exactly the state the
+    // shipped streamer case was in: outer tolerance 1e-10 against a linear
+    // tolerance of 1e-10, 4 of 4 correctors used on all 3000 steps.
+    scalar worstInner = 0;
+    const dictionary& solvers = mesh.solution().subDict("solvers");
+    for (const entry& e : solvers)
+    {
+        if (!e.isDict()) continue;
+        worstInner =
+            max(worstInner, e.dict().getOrDefault<scalar>("tolerance", 0));
+    }
+
+    if (worstInner > 0 && tol <= 10*worstInner)
+    {
+        FatalErrorInFunction
+            << "outerCoupling/tolerance (" << tol << ") is not comfortably"
+            << " above the linear-solver" << nl
+            << "    tolerance (" << worstInner << ")." << nl << nl
+            << "    The outer loop measures how much the coupled solution"
+            << " still moves between" << nl
+            << "    correctors. It cannot resolve a change smaller than the"
+            << " inner solves' own" << nl
+            << "    convergence, so the criterion would never be met and the"
+            << " loop would run to" << nl
+            << "    maxCorrectors every step -- a fixed iteration count"
+            << " wearing the name of a" << nl
+            << "    convergence test." << nl << nl
+            << "    Use at least 10x the linear-solver tolerance, i.e. >= "
+            << 10*worstInner << "." << nl
+            << exit(FatalError);
+    }
+
+    pimpleDict.set("nOuterCorrectors", maxCorr);
+
+    // Applied to ePotential and to every transported species, which together
+    // ARE the coupling: the lag is between the field and the densities.
+    dictionary rc;
+    for (const word& f : wordList({"ePotential", "\"n_.*\""}))
+    {
+        dictionary fd;
+        fd.set("tolerance", tol);
+        fd.set("relTol", scalar(0));
+        rc.set(f, fd);
+    }
+    pimpleDict.set("residualControl", rc);
+
+    Info<< "plasmaTimeControl: outerCoupling target `converged`" << nl
+        << "    residual " << tol << ", up to " << maxCorr
+        << " correctors (a CAP -- the loop exits when converged)" << endl;
+}
+
+
+void plasmaTimeControl::noteOuterLoop(const label used)
+{
+    outerItersUsed_ = max(outerItersUsed_, used);
+
+    // Converged == exited before the cap. That is OpenFOAM's own
+    // residualControl verdict; re-deriving it here from residuals would risk a
+    // second criterion that disagrees with the one steering the loop.
+    const bool hitCap = outerChaseConvergence_ && (used >= outerMaxCorrectors_);
+    outerHitCap_ = hitCap;
+
+    if (hitCap)
+    {
+        if (outerOnNonConvergence_ == "fatal")
+        {
+            FatalErrorInFunction
+                << "The outer coupling did not converge in "
+                << outerMaxCorrectors_ << " correctors." << nl
+                << "    The Poisson-species coupling is unconverged, so this"
+                << " step is first order at" << nl
+                << "    best. Raise maxCorrectors, loosen tolerance, or reduce"
+                << " deltaT." << nl
+                << exit(FatalError);
+        }
+
+        // `reduceDeltaT` is handled in adjustDeltaT(), where every other
+        // time-step criterion lives, so the smallest of them wins rather than
+        // this one overriding the Courant or dielectric limits.
+        WarningInFunction
+            << "outer coupling hit the " << outerMaxCorrectors_
+            << "-corrector cap without converging; this step is not"
+            << " second order." << endl;
+    }
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

@@ -133,6 +133,44 @@ private:
             //- Previous timestep voltage on the applied patch [V]
             scalar prevPatchVoltage_;
 
+        // Outer (PIMPLE) coupling convergence
+        //
+        // The Poisson and species equations are lagged relative to each other
+        // within a timestep. Converging that loop is what makes the scheme
+        // second order -- with a single corrector it is FIRST order whatever
+        // `ddtSchemes` says, because no amount of ddt accuracy repairs a lag.
+        // Order is therefore not something a case selects; it is what the case
+        // ACHIEVES, and the run has to say which it got.
+
+            //- Chase the coupling to `tolerance` (true), or accept a single
+            //  lagged corrector (false)
+            bool outerChaseConvergence_;
+
+            //- Cap on outer correctors. A cap, not a target: the loop exits as
+            //  soon as residualControl is satisfied.
+            label outerMaxCorrectors_;
+
+            //- Coupling residual target. MUST exceed the linear-solver
+            //  tolerance, or the criterion can never be met and the loop
+            //  silently runs to the cap on every step.
+            scalar outerTolerance_;
+
+            //- warn | reduceDeltaT | fatal
+            word outerOnNonConvergence_;
+
+            //- Set when the last step exhausted the cap without converging;
+            //  read by adjustDeltaT() so the response is a time-step decision
+            //  alongside the Courant and dielectric criteria, not a separate
+            //  mechanism.
+            bool outerHitCap_;
+
+            //- Correctors actually used on the last step, peak-held between
+            //  reports
+            label outerItersUsed_;
+
+            //- Steps since the last outer-coupling report
+            label outerReportCounter_;
+
         // Private Member Functions
 
             //- Read controls from dictionary
@@ -159,6 +197,24 @@ public:
 
         //- Set the first time step of the simulation
         void setInitialDeltaT(const plasmaTransport& transport);
+
+        //- Translate the `outerCoupling` block into PIMPLE's own
+        //  nOuterCorrectors and residualControl.
+        //
+        //  STATIC, and called BEFORE pimpleControl is constructed, because
+        //  that is when PIMPLE reads its dictionary. Driving OpenFOAM's loop
+        //  rather than replacing it keeps `finalIter()` exact -- and the
+        //  chemistry trailing half-step and the gas-energy solve are both
+        //  gated on it, so a hand-rolled loop that got it subtly wrong would
+        //  advance the chemistry by the wrong multiple of dt.
+        static void configureOuterCoupling(fvMesh& mesh);
+
+        //- Record what the outer loop did on this step.
+        //  `used` is the number of correctors executed. Convergence is
+        //  inferred from the loop exiting BEFORE the cap, which is exactly
+        //  OpenFOAM's own residualControl decision rather than a second,
+        //  possibly disagreeing, criterion of ours.
+        void noteOuterLoop(const label used);
 
     // Accessors (Getters)
 

@@ -12,6 +12,7 @@ for d in src/profilers src/constants src/numerics src/models/electromagnetics \
          src/models/plasmaModels/plasmaSpecies \
          src/models/plasmaModels/photoionization \
          src/models/plasmaModels/plasmaBoltzmann \
+         src/models/plasmaModels/plasmaEnergy \
          src/models/plasmaModels/plasmaChemistry \
          src/models/plasmaModels/plasmaReactionRates \
          src/models/plasmaModels/plasmaTransport \

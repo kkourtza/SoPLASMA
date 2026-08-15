@@ -147,6 +147,57 @@ void Foam::plasmaReactionRates::checkHash(const fileName& tablePath) const
 }
 
 
+void Foam::plasmaReactionRates::buildPowerChannels(const fileName& tableDir)
+{
+    // eV m^3/s: the sweep tabulates power per electron per unit gas density,
+    // so a cell's power density is P * n_e * N_heavy * e.
+    const dimensionSet pDims(0, 3, -1, 0, 0, 0, 0);
+
+    const List<Tuple2<word, word>> chans
+    ({
+        {"PelasticN", "PelasticN"},
+        {"PgasN",     "PgasN"},
+        {"PvibN",     "PvibN"}
+    });
+
+    // All three or none: a partial set would let gas heating run with a
+    // channel silently zero, which is worse than not running at all.
+    forAll(chans, i)
+    {
+        if (!isFile(tableDir/(chans[i].first() + "_vs_" + tableKey_)))
+        {
+            hasPower_ = false;
+            return;
+        }
+    }
+
+    auto mk = [&](const word& nm, autoPtr<plasmaRateTable>& t,
+                  autoPtr<volScalarField>& f)
+    {
+        const fileName path = tableDir/(nm + "_vs_" + tableKey_);
+        checkHash(path);
+        t.reset(new plasmaRateTable(path, bounds_));
+        f.reset
+        (
+            new volScalarField
+            (
+                IOobject
+                (
+                    nm, mesh_.time().timeName(), mesh_,
+                    IOobject::NO_READ, IOobject::NO_WRITE
+                ),
+                mesh_, dimensionedScalar(pDims, Zero)
+            )
+        );
+    };
+
+    mk("PelasticN", pElasticT_, pElasticN_);
+    mk("PgasN",     pGasT_,     pGasN_);
+    mk("PvibN",     pVibT_,     pVibN_);
+    hasPower_ = true;
+}
+
+
 void Foam::plasmaReactionRates::buildEvaluators(const fileName& tableDir)
 {
     rate_.setSize(reactions_.size());
@@ -363,6 +414,7 @@ Foam::plasmaReactionRates::plasmaReactionRates
     );
 
     buildEvaluators(tableDir);
+    buildPowerChannels(tableDir);
     readRefreshControl(refreshDict);
     // The first correct() happens here, when the lookup field is still
     // zero-initialised. Suppress the range report for it -- reporting on a
@@ -475,6 +527,13 @@ void Foam::plasmaReactionRates::correct()
 
     const scalarField& lut =
         mesh_.lookupObject<volScalarField>(lookupVariable_).primitiveField();
+
+    if (hasPower_)
+    {
+        pElasticT_().value(lut, pElasticN_().primitiveFieldRef());
+        pGasT_().value(lut, pGasN_().primitiveFieldRef());
+        pVibT_().value(lut, pVibN_().primitiveFieldRef());
+    }
 
     forAll(reactions_, i)
     {

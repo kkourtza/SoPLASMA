@@ -28,7 +28,7 @@ stiff integrators, is separable: `ODESystem` is a bare abstract class with no th
 
 * The source is `dn_s/dt = P_s − L_s·n_s`, loss implicit via `fvm::Sp` — positivity at any timestep,
   and the outer Picard iteration is a contraction on the loss term.
-* `chemistrySolver adaptive` chooses **per cell** between linearising and stiff integration on the
+* `solver adaptive` chooses **per cell** between linearising and stiff integration on the
   local `L·dt`, because the stiffness is local: a streamer head is stiff while the bulk is not.
 * Temporal order measured by Richardson extrapolation: **p = 1.68**, charge conserved to 2e-16.
 
@@ -49,7 +49,7 @@ backends on any mechanism.
 
 * **Cantera is optional.** Without `CANTERA_DIR` everything builds; selecting `chemistryBackend
   cantera` then fails with a message naming the variable. Cantera 3.x and 4.x both supported.
-* **Existing cases are unaffected**: `chemistrySolver none` is the legacy path and remains available.
+* **Existing cases are unaffected**: `reactions electronImpact` + `solver explicitSource` is the legacy path and remains available under those names.
 * Requires the SoEEDF library (formerly BoltzmannSolver) for the EEDF sweep, located via
   `BOLTZMANN_DIR`.
 

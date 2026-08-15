@@ -58,6 +58,7 @@ Author
 #include "plasmaSpecies.H"
 #include "plasmaBoltzmann.H"
 #include "plasmaTransport.H"
+#include "plasmaEnergy.H"
 #include "driftDiffusion.H"
 #include "plasmaSimulationDiagnostics.H"
 #include "plasmaSimulationProfiler.H"
@@ -151,6 +152,40 @@ int main(int argc, char *argv[])
     //- Create the plasmaSpecies model
     plasmaSpecies species(gasMesh(), em());
 
+    // Gas energy. Constructed BEFORE plasmaTransport and registered on the
+    // mesh, so the transport model can find it by lookup: plasmaEnergy owns
+    // T_gas and the energy equation, plasmaTransport supplies the heat source.
+    //
+    // ONLY WHEN THE CASE ASKS FOR IT, on design grounds: constructing it
+    // builds a per-species energy model for every species, and a feature that
+    // is switched off should cost nothing, construction included.
+    //
+    // Not for the reason first written here. A segfault at the first timestep
+    // was blamed on unconditional construction; the actual cause was an ABI
+    // mismatch -- plasmaTransport.H gained members, and libplasmaTools, which
+    // takes a const plasmaTransport&, was still compiled against the old
+    // layout after a partial rebuild. Changing a public header's member layout
+    // invalidates every library that links it, not only the one that defines
+    // it.
+    autoPtr<plasmaEnergy> energy;
+    {
+        const dictionary& bg = species.backgroundDict();
+        if (bg.subOrEmptyDict("energy").getOrDefault<bool>("solve", false))
+        {
+            energy.reset(new plasmaEnergy(species, gasMesh(), em().E()));
+        }
+    }
+
+    //- Translate the `outerCoupling` block into PIMPLE's nOuterCorrectors and
+    //  residualControl.
+    //
+    //  BEFORE plasmaTransport, not merely before pimpleControl: the chemistry
+    //  reads nOuterCorrectors at construction to check that `implicitRate` and
+    //  `adaptive` have an outer loop to converge. Configuring afterwards would
+    //  make that check fire on the case's raw value while the run went on to
+    //  use the overridden one -- a guard reading a number nothing used.
+    plasmaTimeControl::configureOuterCoupling(gasMesh());
+
     //- Create the plasmaTransport model
     plasmaTransport transport(gasMesh(), species);
 
@@ -179,11 +214,18 @@ int main(int argc, char *argv[])
 
         timeControl.adjustDeltaT(transport);
 
+        // Correctors executed this step. The loop exiting before the cap is
+        // OpenFOAM's own residualControl verdict that the Poisson-species
+        // coupling has converged -- which is what makes the step second order.
+        label nOuter = 0;
+
         // Semi-implicit Poisson branch
         if (em->PoissonScheme() == "semiImplicit")
         {
             while (pimple.loop())
             {
+                ++nOuter;
+
                 // Solve electromagnetics
                 em->solve
                 (
@@ -208,6 +250,8 @@ int main(int argc, char *argv[])
         {
             while (pimple.loop())
             {
+                ++nOuter;
+
                 plasmaSimulationProfiler::start("Electromagnetics");
                 em->solve();
                 plasmaSimulationProfiler::stop("Electromagnetics");
@@ -230,7 +274,11 @@ int main(int argc, char *argv[])
 
             }
         }
-        
+
+        // AFTER the loop, BEFORE the next adjustDeltaT: a step that exhausted
+        // the cap is not second order, and the response is a smaller step.
+        timeControl.noteOuterLoop(nOuter);
+
         diagnostics.report();
 
         runTime.write();

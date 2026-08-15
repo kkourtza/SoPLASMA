@@ -78,13 +78,14 @@ localFieldEnergyModel::localFieldEnergyModel
     const dictionary& TDict = dict.subDict("temperature");
     const word type = TDict.get<word>("type");
 
+    // plasmaPropertyEvaluator::New dropped the species/index arguments; this
+    // call still passed them, which is one of five ways this library had
+    // drifted from the tree it lives in.
     evaluator_ = plasmaPropertyEvaluator::New
     (
         type,
         TDict,
         mesh,
-        species,
-        specieIndex,
         "Temperature",
         dimensionSet(0, 0, 0, 1, 0, 0, 0)
     );

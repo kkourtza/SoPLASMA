@@ -12,6 +12,7 @@ EXE_INC = \
     -I$(SoPLASMA_SRC)/models/plasmaModels/photoionization/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/genericPlasmaProperties/lnInclude \
     -I$(SoPLASMA_SRC)/numerics/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaEnergy/lnInclude \
     -I$(SoPLASMA_SRC)/profilers/lnInclude
 
 LIB_LIBS = \
@@ -28,5 +29,6 @@ LIB_LIBS = \
     -lphotoionization \
     -lplasmaProperties \
     -lplasmaNumerics \
+    -lplasmaEnergy \
     -lplasmaProfilers
     

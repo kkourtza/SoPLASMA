@@ -93,7 +93,27 @@ private:
     //- Per-species energy models
     PtrList<plasmaEnergyModel> energyModels_;
 
-    //- A gas temperature field for shared across the 
+    //- Non-equilibrium vibrational energy density [J/m^3].
+    //
+    //  Carried separately from the gas temperature because it does not reach
+    //  the gas within a nanosecond pulse: tau_VT is microseconds. Folding it
+    //  into T would deliver the energy far too early and roughly double the
+    //  prompt temperature rise, which is exactly the error the fast/slow
+    //  heating split exists to avoid.
+    autoPtr<volScalarField> eVibPtr_;
+
+    //- Thermal conductivity of the gas [W/m/K]. Constant for now; the
+    //  mixture-averaged form needs Lennard-Jones data the mechanism does not
+    //  yet carry.
+    scalar kappaGas_ = 0.026;
+
+    //- Fixed V-T time [s] if positive, else the composition-dependent
+    //  Millikan-White + Popov form.
+    scalar tauVTfixed_ = -1;
+
+    //- Gas pressure [atm], for those relaxation times.
+    scalar pGasAtm_ = 1.0;
+
 
     //- Disallow copying
     plasmaEnergy(const plasmaEnergy&) = delete;
@@ -124,6 +144,41 @@ public:
 
         //- Correct all models
         void correct();
+
+        //- Solve the background gas energy equation over dt.
+        //
+        //  Q_gas and rho*c_v are supplied by the caller because they belong to
+        //  the chemistry, not to the energy model: only plasmaTransport knows
+        //  the reaction enthalpies, the EEDF power channels and the mechanism
+        //  thermodynamics. This class owns the TEMPERATURE and the equation;
+        //  it does not own the physics that heats it.
+        //
+        //  Pvib is the power into the vibrational reservoir, drained here on
+        //  tauVT and returned to the gas -- so the reservoir and the
+        //  temperature stay on one timeline.
+        void solveGasEnergy
+        (
+            const volScalarField& Qgas,
+            const volScalarField& rhoCv,
+            const volScalarField& Pvib,
+            const volScalarField& tauVT,
+            const scalar dt
+        );
+
+        //- The gas temperature FIELD, by reference.
+        //
+        //  Tgas() returns a tmp, and taking the address of a tmp is a dangling
+        //  pointer waiting to happen -- it is only safe today because the
+        //  solved path happens to return a non-owning tmp. A consumer that
+        //  wants to hold on to the field should hold this instead.
+        //  Valid only when solvesGasEnergy() is true.
+        const volScalarField& TgasField() const { return *TgasFieldPtr_; }
+
+        //- The vibrational reservoir [J/m^3].
+        const volScalarField& eVib() const { return eVibPtr_(); }
+
+        //- Is the gas energy equation being solved?
+        bool solvesGasEnergy() const noexcept { return solveGasEnergy_; }
 
         // //- Return total total Joule heating [W/m^3]
         // tmp<volScalarField> totalJouleHeating() const;

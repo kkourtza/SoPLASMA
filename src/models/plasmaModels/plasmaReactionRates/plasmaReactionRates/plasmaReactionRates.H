@@ -198,6 +198,29 @@ private:
         PtrList<volScalarField> alphaN_;
         PtrList<plasmaRateTable> alpha_;
 
+        //- ELECTRON POWER CHANNELS, per electron per unit gas density
+        //  [eV m^3/s]. From the same sweep as k_j, so the heating and the
+        //  chemistry are moments of ONE EEDF rather than two.
+        //
+        //    PelasticN  elastic and rotational transfer to translation
+        //    PgasN      the gas share of the inelastic energy defect
+        //    PvibN      into the vibrational reservoir
+        //
+        //  Held here rather than read where they are used, for the same reason
+        //  k_j is: they are re-interpolated by correct() every step. The first
+        //  implementation read them into FUNCTION-STATIC interpolationTables
+        //  at the point of use, which is stale by construction -- the dynamic
+        //  EEDF rebuilds the table FILES during the run and a static would
+        //  keep serving the originals, silently, forever. It would also have
+        //  been shared across mesh regions.
+        //
+        //  Optional: a mechanism compiled before the power columns existed has
+        //  no such tables, and gas heating is then unavailable rather than
+        //  wrong. hasPower() reports which.
+        bool hasPower_ = false;
+        autoPtr<plasmaRateTable> pElasticT_, pGasT_, pVibT_;
+        autoPtr<volScalarField> pElasticN_, pGasN_, pVibN_;
+
         //- Field the tables are keyed on. "reducedE" today; switching to the
         //  mean electron energy is a change of this word plus the table set,
         //  because genMechTables writes both keys from the same sweep.
@@ -298,6 +321,9 @@ private:
         //- Build one evaluator per reaction from its k_<id>_vs_<key> table
         void buildEvaluators(const fileName& tableDir);
 
+        //- Build the electron power channels, if the sweep wrote them.
+        void buildPowerChannels(const fileName& tableDir);
+
         //- Compare the hash in a table header against the mechanism's, and
         //  FatalError if they differ -- a stale pair is not recoverable at
         //  runtime and must not be silently used.
@@ -370,6 +396,16 @@ public:
 
         //- Rate coefficient field for reaction i [m^3/s], UNWEIGHTED
         const volScalarField& k(const label i) const { return k_[i]; }
+
+        //- Are the electron power channels available? False for a mechanism
+        //  compiled before genMechTables emitted them.
+        bool hasPower() const noexcept { return hasPower_; }
+
+        //- Electron power channels [eV m^3/s], per electron per unit gas
+        //  density. Multiply by n_e and the LIVE heavy density.
+        const volScalarField& PelasticN() const { return pElasticN_(); }
+        const volScalarField& PgasN() const     { return pGasN_(); }
+        const volScalarField& PvibN() const     { return pVibN_(); }
 
         //- Whether reaction i has a Townsend coefficient (ionising/attaching)
         bool hasTownsend(const label i) const { return alpha_.set(i); }
