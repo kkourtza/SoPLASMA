@@ -2221,16 +2221,24 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 const scalar Lmax = advisoryLpeak_[sp];
                 const scalar tau = (Lmax > VSMALL) ? 1.0/Lmax : GREAT;
 
+                // Per-species D from the mechanism where mechc supplied it,
+                // scaled to the gas temperature; the single reference value is
+                // only the fallback for older mechanisms.
                 scalar D = Dref;
-                if (mesh_.foundObject<volScalarField>
-                        ("D_" + species_.speciesNames()[sp]))
+                bool haveOwnD = false;
+                const word& sn = species_.speciesNames()[sp];
+                if (species_.mechanismDiffusivity().found(sn))
                 {
-                    D = gMax
-                    (
-                        mesh_.lookupObject<volScalarField>
-                            ("D_" + species_.speciesNames()[sp])
-                            .primitiveField()
-                    );
+                    const scalar Tnow =
+                        TgasField_ ? gAverage(TgasField_->primitiveField())
+                                   : TgasConst_;
+                    D = species_.mechanismDiffusivity()[sn]
+                      * Foam::pow
+                        (
+                            Tnow/species_.diffusivityTref(),
+                            species_.diffusivityExponent()
+                        );
+                    haveOwnD = true;
                 }
 
                 const scalar Ldiff =
@@ -2258,16 +2266,18 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 snprintf
                 (
                     row, sizeof(row),
-                    "    %-12s %-15s %10.3g   %10.3g   %8.3g   %s",
+                    "    %-12s %-15s %10.3g   %10.3g%s %8.3g   %s",
                     species_.speciesNames()[sp].c_str(),
-                    tmName.c_str(), tau, Ldiff, ratio, verdict.c_str()
+                    tmName.c_str(), tau, Ldiff,
+                    haveOwnD ? "  " : " *", ratio, verdict.c_str()
                 );
                 Info<< row << nl;
             }
 
             Info<< "  " << string(78, '-').c_str() << nl
                 << "  smallest cell " << hCell << " m; reference D = "
-                << Dref << " m^2/s (override: chemistry/advisoryDiffusivity)"
+                << Dref << " m^2/s used only where the mechanism"
+                << " carries no D (override: chemistry/advisoryDiffusivity)"
                 << nl
                 << "  Convection is not assessed: this solver carries no"
                 << " momentum equation." << endl;

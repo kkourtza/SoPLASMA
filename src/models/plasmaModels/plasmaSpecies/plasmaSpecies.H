@@ -143,6 +143,22 @@ protected:
             word ionTransport_ = "immobile";
             word ionFluxScheme_ = "standard";
 
+            //- Default transport for derived NEUTRAL species. Same vocabulary
+            //  as ionTransport deliberately: `immobile` and `diffusion` mean
+            //  the same thing whichever class of species they are applied to,
+            //  and a second set of words for the same concepts would be one
+            //  more thing to look up.
+            word neutralTransport_ = "immobile";
+
+            //- D0 [m^2/s] per neutral species at Tref, pref, from the
+            //  mechanism's `speciesDiffusivity` block
+            HashTable<scalar> mechDiff_;
+
+            //- Reference state and exponent for the above
+            scalar diffTref_ = 300.0;
+            scalar diffPref_ = 1.0e5;
+            scalar diffExponent_ = 1.5;
+
             //- Total neutral number density field [1/m3] 
             //- Sum of nBackground_ + all active neutrals
             volScalarField totalNeutralDensity_;
@@ -221,9 +237,27 @@ public:
             HashTable<scalar>* chargeOut = nullptr,
             HashTable<scalar>* massOut = nullptr,
             word* ionTrOut = nullptr,
-            word* fluxOut = nullptr
+            word* fluxOut = nullptr,
+            word* neutralTrOut = nullptr,
+            HashTable<scalar>* diffOut = nullptr,
+            scalar* diffTrefOut = nullptr,
+            scalar* diffPrefOut = nullptr,
+            scalar* diffExpOut = nullptr
         );
 
+
+        //- D0 [m^2/s] per neutral species at the mechanism's reference state.
+        //  Empty for mechanisms compiled before mechc emitted it.
+        inline const HashTable<scalar>& mechanismDiffusivity() const
+        {
+            return mechDiff_;
+        }
+
+        //- Reference temperature for mechanismDiffusivity()
+        inline scalar diffusivityTref() const { return diffTref_; }
+
+        //- Temperature exponent for mechanismDiffusivity()
+        inline scalar diffusivityExponent() const { return diffExponent_; }
 
     //- Runtime type information
     TypeName("plasmaSpecies");

@@ -32,7 +32,10 @@ void Foam::plasmaSpecies::readMechanismSpecies()
 {
     fromMechanism_ = true;
     speciesNames_ = speciesFromMechanism(*this, &mechCharge_, &mechMass_,
-                                        &ionTransport_, &ionFluxScheme_);
+                                        &ionTransport_, &ionFluxScheme_,
+                                        &neutralTransport_, &mechDiff_,
+                                        &diffTref_, &diffPref_,
+                                        &diffExponent_);
 }
 
 
@@ -42,7 +45,12 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
     HashTable<scalar>* chargeOut,
     HashTable<scalar>* massOut,
     word* ionTrOut,
-    word* fluxOut
+    word* fluxOut,
+    word* neutralTrOut,
+    HashTable<scalar>* diffOut,
+    scalar* diffTrefOut,
+    scalar* diffPrefOut,
+    scalar* diffExpOut
 )
 {
     // Static, and taking only the dictionary, because two callers need it: this
@@ -85,7 +93,11 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
         mechMass_.insert(e.keyword(), readScalar(e.stream()));
     }
 
-    // Which species to transport.
+    // Which species are SOLVED -- carried as fields and evolved by the
+    // chemistry. NOT which are transported: that is `transportModel` per
+    // species, with `ionTransport` and `neutralTransport` as bulk defaults.
+    // The two questions are separate, and a species can perfectly well be in
+    // the chemistry while sitting still.
     //
     //   charged             electron + ions. The minimum for a self-consistent
     //                       discharge: these carry the space charge that drives
@@ -94,8 +106,18 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
     //
     //   chargedAndExcited   the above plus excited states and radicals. Needed
     //                       once excited-state chemistry matters -- stepwise
-    //                       ionisation, quenching, associative processes. Costs
-    //                       one transport equation each.
+    //                       ionisation, quenching, associative processes.
+    //
+    //                       A species left OUT is not merely untransported, it
+    //                       has DENSITY ZERO: every reaction consuming it is
+    //                       dead. With `charged`, the N2(A3,B3,C3,a1) + O2
+    //                       quenching that carries fast gas heating in air
+    //                       cannot fire at all, however complete the mechanism.
+    //
+    //                       The cost is one field each plus their chemistry;
+    //                       neutrals default to `immobile`, so it is a diagonal
+    //                       solve rather than a transport equation unless
+    //                       `neutralTransport diffusion` asks for more.
     //
     //   all                 everything the mechanism names, background gas
     //                       included. Rarely wanted: the background is held
@@ -119,6 +141,48 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
             << "Unknown `ionTransport` '" << ionTr << "' in mechanismSpecies"
             << nl << "Valid: immobile | driftDiffusion" << nl
             << exit(FatalIOError);
+    }
+
+    // Default transport for derived NEUTRAL species, in the SAME vocabulary as
+    // ionTransport. `immobile` is right for anything whose chemical lifetime is
+    // short enough that it is quenched before it moves -- which is every N2
+    // electronic state at atmospheric pressure -- and `diffusion` for radicals
+    // and metastables that live long enough to spread. The start-up transport
+    // advisory reports the diffusion length against the cell size per species,
+    // so the choice can be checked rather than assumed.
+    const word neutralTr = md.getOrDefault<word>("neutralTransport", "immobile");
+    if (neutralTr != "immobile" && neutralTr != "diffusion")
+    {
+        FatalIOErrorInFunction(speciesDict)
+            << "Unknown `neutralTransport` '" << neutralTr
+            << "' in mechanismSpecies" << nl
+            << "Valid: immobile | diffusion" << nl
+            << "    (`driftDiffusion` is not offered: a neutral has no drift.)"
+            << nl << exit(FatalIOError);
+    }
+    if (neutralTrOut) *neutralTrOut = neutralTr;
+
+    // Neutral diffusivities, written by mechc from Lennard-Jones data. Absent
+    // in mechanisms compiled before that existed, which is not an error unless
+    // a case actually asks for `neutralTransport diffusion`.
+    {
+        const dictionary& dd = mech.subOrEmptyDict("speciesDiffusivity");
+        if (diffTrefOut) *diffTrefOut = dd.getOrDefault<scalar>("Tref", 300.0);
+        if (diffPrefOut) *diffPrefOut = dd.getOrDefault<scalar>("pref", 1.0e5);
+        if (diffExpOut)  *diffExpOut = dd.getOrDefault<scalar>("exponent", 1.5);
+        if (diffOut)
+        {
+            for (const entry& e : dd)
+            {
+                if (!e.isDict()
+                 && e.keyword() != "Tref"
+                 && e.keyword() != "pref"
+                 && e.keyword() != "exponent")
+                {
+                    diffOut->insert(e.keyword(), readScalar(e.stream()));
+                }
+            }
+        }
     }
 
     const word select = md.getOrDefault<word>("include", "charged");
@@ -417,6 +481,73 @@ plasmaSpecies::plasmaSpecies
         // decides it. Handling only the driftDiffusion branch left the default
         // (`immobile`) case with no transportModel at all, which fails at
         // construction -- the switch has to answer for both of its values.
+        // Derived NEUTRALS take neutralTransport. Done before the ion branch
+        // so that `ionTransport driftDiffusion` cannot reach a neutral, which
+        // has no mobility to drift with.
+        const bool isNeutral =
+            mag(mechCharge_.lookup(sName, 0.0)) <= SMALL
+         && sName != speciesNames_[0];
+
+        if (fromMechanism_
+         && !mergedDict.found("transportModel")
+         && isNeutral
+         && neutralTransport_ == "diffusion")
+        {
+            if (!mechDiff_.found(sName))
+            {
+                FatalErrorInFunction
+                    << "`neutralTransport diffusion` needs a diffusivity for '"
+                    << sName << "', and the mechanism does not carry one."
+                    << nl << nl
+                    << "    mechc writes `speciesDiffusivity` from"
+                    << " Lennard-Jones data; a mechanism compiled" << nl
+                    << "    before that existed has no such block."
+                    << " Recompile it, or give the species its own" << nl
+                    << "    `transportModel diffusion` with an explicit"
+                    << " `diffusivity` sub-dictionary." << nl
+                    << exit(FatalError);
+            }
+
+            // D(T) = D0 (T/Tref)^e, written in the powerLaw evaluator's form,
+            // amplitude*var^exponent, so amplitude absorbs Tref^-e.
+            const scalar D0 = mechDiff_[sName];
+
+            // T_gas exists as a FIELD only when the energy equation is solved.
+            // With heating off there is nothing for a powerLaw to look up, and
+            // asking for one dies at construction on a missing registry entry
+            // -- so the temperature dependence is folded into a constant at the
+            // dictionary temperature instead. Same D either way; the difference
+            // is only whether it can follow a temperature that moves.
+            const dictionary bgD = subDict("backgroundGas");
+            const dictionary eD = bgD.subOrEmptyDict("energy");
+            const bool solvesT = eD.getOrDefault<bool>("solve", false);
+            const scalar Tfix = eD.getOrDefault<scalar>("T", 300.0);
+
+            dictionary dif;
+            if (solvesT)
+            {
+                dif.add("type", word("powerLaw"));
+                dif.add("amplitude", D0/Foam::pow(diffTref_, diffExponent_));
+                dif.add("exponent", diffExponent_);
+                dif.add("lookupVariable", word("T_gas"));
+            }
+            else
+            {
+                dif.add("type", word("constant"));
+                dif.add
+                (
+                    "value",
+                    D0*Foam::pow(Tfix/diffTref_, diffExponent_)
+                );
+            }
+
+            dictionary dc;
+            dc.add("diffusivity", dif);
+
+            mergedDict.add("transportModel", word("diffusion"));
+            mergedDict.add("diffusionCoeffs", dc);
+        }
+
         if (fromMechanism_
          && !mergedDict.found("transportModel")
          && sName != speciesNames_[0]
