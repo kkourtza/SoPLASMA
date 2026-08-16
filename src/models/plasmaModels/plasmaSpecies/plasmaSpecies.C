@@ -35,7 +35,7 @@ void Foam::plasmaSpecies::readMechanismSpecies()
                                         &ionTransport_, &ionFluxScheme_,
                                         &neutralTransport_, &mechDiff_,
                                         &diffTref_, &diffPref_,
-                                        &diffExponent_);
+                                        &mechDiffExp_);
 }
 
 
@@ -50,7 +50,7 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
     HashTable<scalar>* diffOut,
     scalar* diffTrefOut,
     scalar* diffPrefOut,
-    scalar* diffExpOut
+    HashTable<scalar>* diffExpOut
 )
 {
     // Static, and taking only the dictionary, because two callers need it: this
@@ -169,18 +169,22 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
         const dictionary& dd = mech.subOrEmptyDict("speciesDiffusivity");
         if (diffTrefOut) *diffTrefOut = dd.getOrDefault<scalar>("Tref", 300.0);
         if (diffPrefOut) *diffPrefOut = dd.getOrDefault<scalar>("pref", 1.0e5);
-        if (diffExpOut)  *diffExpOut = dd.getOrDefault<scalar>("exponent", 1.5);
-        if (diffOut)
+
+        // One sub-dictionary per species, each with its OWN exponent: the
+        // Chapman-Enskog temperature dependence is T^1.5/Omega_D(T*), and
+        // Omega_D differs between species, so a single shared exponent would
+        // be wrong for all but one of them.
+        for (const entry& e : dd)
         {
-            for (const entry& e : dd)
+            if (!e.isDict()) continue;
+            const dictionary& sd = e.dict();
+            if (diffOut) diffOut->insert(e.keyword(), sd.get<scalar>("D0"));
+            if (diffExpOut)
             {
-                if (!e.isDict()
-                 && e.keyword() != "Tref"
-                 && e.keyword() != "pref"
-                 && e.keyword() != "exponent")
-                {
-                    diffOut->insert(e.keyword(), readScalar(e.stream()));
-                }
+                diffExpOut->insert
+                (
+                    e.keyword(), sd.getOrDefault<scalar>("exponent", 1.68)
+                );
             }
         }
     }
@@ -511,6 +515,7 @@ plasmaSpecies::plasmaSpecies
             // D(T) = D0 (T/Tref)^e, written in the powerLaw evaluator's form,
             // amplitude*var^exponent, so amplitude absorbs Tref^-e.
             const scalar D0 = mechDiff_[sName];
+            const scalar expo = mechDiffExp_.lookup(sName, 1.68);
 
             // T_gas exists as a FIELD only when the energy equation is solved.
             // With heating off there is nothing for a powerLaw to look up, and
@@ -527,8 +532,8 @@ plasmaSpecies::plasmaSpecies
             if (solvesT)
             {
                 dif.add("type", word("powerLaw"));
-                dif.add("amplitude", D0/Foam::pow(diffTref_, diffExponent_));
-                dif.add("exponent", diffExponent_);
+                dif.add("amplitude", D0/Foam::pow(diffTref_, expo));
+                dif.add("exponent", expo);
                 dif.add("lookupVariable", word("T_gas"));
             }
             else
@@ -537,7 +542,7 @@ plasmaSpecies::plasmaSpecies
                 dif.add
                 (
                     "value",
-                    D0*Foam::pow(Tfix/diffTref_, diffExponent_)
+                    D0*Foam::pow(Tfix/diffTref_, expo)
                 );
             }
 

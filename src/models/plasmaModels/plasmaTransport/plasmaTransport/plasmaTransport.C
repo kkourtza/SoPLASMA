@@ -2236,7 +2236,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                       * Foam::pow
                         (
                             Tnow/species_.diffusivityTref(),
-                            species_.diffusivityExponent()
+                            species_.diffusivityExponent(sn)
                         );
                     haveOwnD = true;
                 }

@@ -154,10 +154,14 @@ protected:
             //  mechanism's `speciesDiffusivity` block
             HashTable<scalar> mechDiff_;
 
-            //- Reference state and exponent for the above
+            //- Temperature exponent per species, fitted by mechc. Per species
+            //  because Omega_D(T*) differs between them; a single shared value
+            //  would be right for at most one.
+            HashTable<scalar> mechDiffExp_;
+
+            //- Reference state for the above
             scalar diffTref_ = 300.0;
             scalar diffPref_ = 1.0e5;
-            scalar diffExponent_ = 1.5;
 
             //- Total neutral number density field [1/m3] 
             //- Sum of nBackground_ + all active neutrals
@@ -242,7 +246,7 @@ public:
             HashTable<scalar>* diffOut = nullptr,
             scalar* diffTrefOut = nullptr,
             scalar* diffPrefOut = nullptr,
-            scalar* diffExpOut = nullptr
+            HashTable<scalar>* diffExpOut = nullptr
         );
 
 
@@ -256,8 +260,11 @@ public:
         //- Reference temperature for mechanismDiffusivity()
         inline scalar diffusivityTref() const { return diffTref_; }
 
-        //- Temperature exponent for mechanismDiffusivity()
-        inline scalar diffusivityExponent() const { return diffExponent_; }
+        //- Temperature exponent per species for mechanismDiffusivity()
+        inline scalar diffusivityExponent(const word& s) const
+        {
+            return mechDiffExp_.lookup(s, 1.68);
+        }
 
     //- Runtime type information
     TypeName("plasmaSpecies");
