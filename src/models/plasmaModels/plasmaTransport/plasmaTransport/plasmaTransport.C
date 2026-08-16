@@ -1290,6 +1290,8 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
             << exit(FatalError);
     }
 
+    advisoryD_ = cd.getOrDefault<scalar>("advisoryDiffusivity", 2.0e-5);
+
     const word rxs = cd.getOrDefault<word>("reactions", "all");
     if      (rxs == "all")            chemReactions_ = rxAll;
     else if (rxs == "electronImpact") chemReactions_ = rxElectronImpact;
@@ -2156,10 +2158,120 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         chemNstiffPeak_    = max(chemNstiffPeak_, chemNstiff_);
         chemChargePeak_    = max(chemChargePeak_, chemSourceChargeAfter_);
 
+
         const label ti = mesh_.time().timeIndex();
         const bool due =
             !chemCellsReported_
          || (chemReportInterval_ > 0 && ti - chemLastReport_ >= chemReportInterval_);
+
+        // ---- transport-choice advisory, once ---------------------------
+        //
+        // Whether a species needs to be transported is a PHYSICAL question --
+        // how far it travels within its own chemical lifetime, against the
+        // scale it has to resolve -- and until now the user had to answer it
+        // from memory. The loss coefficients L are already assembled here, so
+        // the lifetime is free; report it beside the diffusion length and the
+        // cell size so the choice can be checked rather than assumed.
+        //
+        // Printed after the first chemistry evaluation rather than at start-up,
+        // because before it there is no L to report and a table of estimates
+        // would be worth less than no table.
+        // Peak-hold the loss coefficients on EVERY call, so that whenever the
+        // advisory prints it reports the shortest lifetime reached so far
+        // rather than the one that happened to hold on the sampled step.
+        if (advisoryLpeak_.size() != chemL_.size())
+        {
+            advisoryLpeak_.setSize(chemL_.size(), 0.0);
+        }
+        forAll(chemL_, sp)
+        {
+            if (!chemL_[sp].empty())
+            {
+                advisoryLpeak_[sp] = max(advisoryLpeak_[sp], gMax(chemL_[sp]));
+            }
+        }
+
+        // `due` is true on the very first call, because chemCellsReported_
+        // starts false -- so requiring it to be ALREADY set defers the advisory
+        // to the second report, i.e. a full chemReportInterval of steps in.
+        if (!transportAdvisoryDone_ && due && chemCellsReported_)
+        {
+            transportAdvisoryDone_ = true;
+
+            // Reference diffusivity for a neutral in air at 1 bar, 300 K.
+            // Species carrying their own diffusivity model use it instead.
+            const scalar Dref = advisoryD_;
+
+            const scalar hCell =
+                Foam::cbrt(gMin(mesh_.V().field()));
+
+            Info<< nl
+                << "  Transport advisory -- is each species' motion resolvable"
+                << " within its own lifetime?" << nl
+                << "  (diffusion length over the chemical lifetime, against the"
+                << " smallest cell)" << nl
+                << "  " << string(78, '-').c_str() << nl
+                << "    species      transport        tau_chem [s]"
+                << "   L_diff [m]    vs cell   verdict" << nl;
+
+            forAll(chemL_, sp)
+            {
+                if (chemL_[sp].empty()) continue;
+
+                const scalar Lmax = advisoryLpeak_[sp];
+                const scalar tau = (Lmax > VSMALL) ? 1.0/Lmax : GREAT;
+
+                scalar D = Dref;
+                if (mesh_.foundObject<volScalarField>
+                        ("D_" + species_.speciesNames()[sp]))
+                {
+                    D = gMax
+                    (
+                        mesh_.lookupObject<volScalarField>
+                            ("D_" + species_.speciesNames()[sp])
+                            .primitiveField()
+                    );
+                }
+
+                const scalar Ldiff =
+                    (tau < GREAT) ? Foam::sqrt(D*tau) : GREAT;
+                const scalar ratio = Ldiff/max(hCell, VSMALL);
+
+                const word tmName = transportModels_[sp].type();
+                const bool charged =
+                    mag(species_.speciesChargeNumber(sp)) > SMALL;
+
+                // Charged species are not advised on: they drift, and drift is
+                // not optional whatever the diffusion length says.
+                word verdict;
+                if (charged)              verdict = "charged: transport it";
+                else if (ratio < 0.1)     verdict = "local is fine";
+                else if (ratio < 1.0)     verdict = "local ok, marginal";
+                else                      verdict = "CONSIDER diffusion";
+
+                if (!charged && tmName == "diffusion" && ratio < 0.1)
+                {
+                    verdict = "diffusion not needed";
+                }
+
+                char row[256];
+                snprintf
+                (
+                    row, sizeof(row),
+                    "    %-12s %-15s %10.3g   %10.3g   %8.3g   %s",
+                    species_.speciesNames()[sp].c_str(),
+                    tmName.c_str(), tau, Ldiff, ratio, verdict.c_str()
+                );
+                Info<< row << nl;
+            }
+
+            Info<< "  " << string(78, '-').c_str() << nl
+                << "  smallest cell " << hCell << " m; reference D = "
+                << Dref << " m^2/s (override: chemistry/advisoryDiffusivity)"
+                << nl
+                << "  Convection is not assessed: this solver carries no"
+                << " momentum equation." << endl;
+        }
 
         if (due)
         {

@@ -267,6 +267,21 @@ protected:
     //- Active-cell count reported once rather than every step
     bool chemCellsReported_ = false;
 
+    //- The transport advisory is a one-shot report, deferred to the first
+    //  chemistry REPORT rather than the first chemistry evaluation. At t=0 the
+    //  densities sit at their floor and the chemistry is at its least active,
+    //  so lifetimes sampled there are not the ones that matter -- the same
+    //  reason chemReportInterval does not sample at start-up either.
+    bool transportAdvisoryDone_ = false;
+
+    //- Peak loss coefficient per species since the run began, so the advisory
+    //  reports the SHORTEST lifetime the species actually reached.
+    scalarField advisoryLpeak_;
+
+    //- Reference diffusivity for the advisory, m^2/s. A neutral in air at
+    //  1 bar, 300 K; species with their own diffusivity model use that instead.
+    scalar advisoryD_ = 2.0e-5;
+
     //- Worst relative charge residual seen in the first step
     scalar chemResidualMax_ = 0;
 
