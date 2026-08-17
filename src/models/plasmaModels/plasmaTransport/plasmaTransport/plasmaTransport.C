@@ -419,6 +419,9 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
     // 541 K instead of 5e-7 K. The identical code is correct in the 0-D
     // reactor, where every species IS in the state vector -- which is why the
     // two must be compared rather than assumed equivalent.
+    gasHeatPrompt_ = 0.0;
+    gasHeatHeavy_ = 0.0;
+
     const label iO  = species_.speciesNames().find("O");
     const label iN2 = species_.speciesNames().find("N2");
     const label iO2 = species_.speciesNames().find("O2");
@@ -466,9 +469,20 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
         // inelastic defect. The heavy reactions add fast gas heating on top,
         // from their own enthalpies -- the Popov two-step mechanism, which is
         // where most of the heat in air comes from.
-        Qgas.primitiveFieldRef()[celli] =
-            (Pel[celli] + Pgs[celli])*nEl*nHeavy*EVJ
-          + (chem_ ? chem_->heavyHeatRelease(n, T[celli])*EVJ : 0.0);
+        // Kept as two named contributions rather than one sum, because the
+        // question a heating case actually asks -- how much of the heat is the
+        // two-step (Popov) channel -- cannot be answered by differencing two
+        // RUNS: switching the heavy reactions on also changes the electron
+        // density, so the comparison moves three things at once. Splitting the
+        // source answers it at a single plasma state.
+        const scalar qPrompt = (Pel[celli] + Pgs[celli])*nEl*nHeavy*EVJ;
+        const scalar qHeavy =
+            chem_ ? chem_->heavyHeatRelease(n, T[celli])*EVJ : 0.0;
+
+        gasHeatPrompt_ += qPrompt*mesh_.V()[celli];
+        gasHeatHeavy_ += qHeavy*mesh_.V()[celli];
+
+        Qgas.primitiveFieldRef()[celli] = qPrompt + qHeavy;
 
         Pvib.primitiveFieldRef()[celli] = Pvb[celli]*nEl*nHeavy*EVJ;
 
@@ -525,6 +539,35 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
                 << ", background thermo "
                 << (bgThermo_.valid() && bgThermo_().valid() ? "on" : "off")
                 << ")" << endl;
+        }
+    }
+
+    // Volume-integrated power in each channel [W]. Reported on the chemistry
+    // cadence because the split MOVES: the two-step channel needs the excited
+    // states to build up, so a number from the first nanosecond is not the
+    // number at ten.
+    {
+        reduce(gasHeatPrompt_, sumOp<scalar>());
+        reduce(gasHeatHeavy_, sumOp<scalar>());
+        const scalar tot = gasHeatPrompt_ + gasHeatHeavy_;
+
+        const label ti = mesh_.time().timeIndex();
+        if (chemReportInterval_ > 0
+         && (ti - gasHeatLastReport_ >= chemReportInterval_
+          || gasHeatLastReport_ == 0))
+        {
+            gasHeatLastReport_ = ti;
+            Info<< "  gas heating: prompt " << gasHeatPrompt_
+                << " W, heavy " << gasHeatHeavy_ << " W";
+            if (mag(tot) > VSMALL)
+            {
+                Info<< "  (" << 100.0*gasHeatHeavy_/tot << "% heavy)";
+            }
+            if (!chem_)
+            {
+                Info<< "  [no heavy chemistry: see chemistry/reactions]";
+            }
+            Info<< endl;
         }
     }
 

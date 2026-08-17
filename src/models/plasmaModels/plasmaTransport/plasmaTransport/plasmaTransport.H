@@ -267,6 +267,13 @@ protected:
     //- Active-cell count reported once rather than every step
     bool chemCellsReported_ = false;
 
+    //- Volume-integrated gas-heating power [W] in each channel, this step.
+    //  Split rather than summed so the two-step (Popov) share can be read off
+    //  at one plasma state instead of inferred by differencing two runs.
+    mutable scalar gasHeatPrompt_ = 0.0;
+    mutable scalar gasHeatHeavy_ = 0.0;
+    mutable label gasHeatLastReport_ = 0;
+
     //- The transport advisory is a one-shot report, deferred to the first
     //  chemistry REPORT rather than the first chemistry evaluation. At t=0 the
     //  densities sit at their floor and the chemistry is at its least active,
