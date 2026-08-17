@@ -956,16 +956,33 @@ S_iz_.correctBoundaryConditions();
 
 
     // ── 5. Update fluxes for mobile species ───────────────────────────────
-    // for (const label i : species_.mobileSpeciesIDs())
-    // {
-    //     transportModels_[i].updateFluxes
-    //     (
-    //         *eqns[i],
-    //         convectiveFlux_[i],
-    //         diffusiveFlux_[i],
-    //         particleFlux_[i]
-    //     );
-    // }
+    //
+    // RE-ENABLED. While this was commented out, plasmaTransport's flux fields
+    // stayed at their constructed zero, and plasmaTimeControl reads them for
+    // the species Courant numbers -- so Co_conv and Co_diff reported exactly
+    // 0 on every step of every case, and `limitSpeciesCo` was a no-op that
+    // looked like a working limiter. Under explicit Poisson the dielectric
+    // relaxation limit is stricter and hid it; under `semiImplicit`, which
+    // exists to remove that limit, nothing was left to control the step and
+    // the streamer froze.
+    //
+    // Placed AFTER the solve, because fvMatrix::flux() is only defined once
+    // the matrix has been solved. An earlier variant called it before the
+    // solve to get old-n fluxes for Townsend ionisation; that one is a
+    // different question and stays disabled.
+    //
+    // Immobile species are absent from mobileSpeciesIDs, so their
+    // updateFluxes() -- which is a FatalError by design -- is not reached.
+    for (const label i : species_.mobileSpeciesIDs())
+    {
+        transportModels_[i].updateFluxes
+        (
+            *eqns[i],
+            convectiveFlux_[i],
+            diffusiveFlux_[i],
+            particleFlux_[i]
+        );
+    }
     // ── 6. Gas energy ─────────────────────────────────────────────────────
     //
     // On the FINAL outer iteration only. The energy equation is driven by the
