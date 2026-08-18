@@ -37,17 +37,27 @@ Foam::plasmaChemistryODE::plasmaChemistryODE
 
 void Foam::plasmaChemistryODE::derivatives
 (
-    const scalar,
+    const scalar x,
     const scalarField& y,
     scalarField& dydx
 ) const
 {
-    // The transport contribution enters as a constant rate, so the trajectory
-    // the chemistry follows is the one the cell actually takes rather than the
-    // one it would take if it were closed.
+    // The transport contribution enters as a rate LINEAR in x, so the
+    // trajectory the chemistry follows is the one the cell actually takes
+    // rather than the one it would take if it were closed. `x` was unnamed
+    // here while the term was constant.
     if (ext_)
     {
         dydx = *ext_;
+
+        // Linear across the substep, centred so the mean stays *ext_.
+        // A constant cross term caps the coupling at first order however
+        // well converged -- measured, see plasmaChemistryODE.H.
+        if (extSlope_ && extDt_ > 0)
+        {
+            const scalar w = x - 0.5*extDt_;
+            forAll(dydx, i) dydx[i] += (*extSlope_)[i]*w;
+        }
     }
     else
     {
@@ -136,11 +146,25 @@ void Foam::plasmaChemistryODE::jacobian
     scalarSquareMatrix& dfdy
 ) const
 {
+    // EXPLICIT TIME DEPENDENCE, and it must be reported here.
+    //
+    // With a linear cross term the right-hand side does depend on x, and
+    // rodas23 is a ROSENBROCK method: it uses df/dx directly. Leaving this
+    // zero while derivatives() varies with x costs ORDER, not merely
+    // accuracy -- which is the whole point of the change. d(T)/dx is the
+    // slope itself; the chemistry part still has none, since k is frozen
+    // over the substep and Tgas is constant.
+    //
+    // Everything below the slope term is the original reasoning:
     // d/dt has no explicit time dependence: k is frozen over the substep and
     // Tgas is constant, so df/dx is identically zero. Saying so is not an
     // approximation -- an implicit solver that assumed otherwise would be
     // integrating a term that does not exist.
     dfdx = Zero;
+    if (ext_ && extSlope_ && extDt_ > 0)
+    {
+        dfdx = *extSlope_;
+    }
     dfdy = Zero;
 
     // Under `chemistryBackend cantera` the heavy reactions are SKIPPED here

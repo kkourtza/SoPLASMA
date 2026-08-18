@@ -442,12 +442,14 @@ void Foam::plasmaChemistry::integrate
     const scalarField& kTab,
     const scalar Tgas,
     const scalar dt,
-    const scalarField* ext
+    const scalarField* ext,
+    const scalarField* extSlope
 ) const
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
     ode_->setExternal(ext);
+    ode_->setExternalSlope(extSlope, dt);
 
     scalar dtTry = dt;
     solver_->solve(0.0, dt, n, dtTry);
@@ -456,6 +458,7 @@ void Foam::plasmaChemistry::integrate
     // value for a species being consumed to near-exhaustion, and letting it
     // through turns the next step's rate law into nonsense.
     ode_->setExternal(nullptr);
+    ode_->setExternalSlope(nullptr, 0);
 
     forAll(n, i)
     {

@@ -97,13 +97,6 @@ private:
     //- Build rates_ from the `chemistry` sub-dictionary, if present
     void readChemistry(const dictionary& dict);
 
-    //- Integrate the chemistry over `dt` in every active cell.
-    //
-    //  Called twice per timestep with dt/2, either side of the transport
-    //  solve. Strang splitting is second order in time where applying the
-    //  chemistry once, before or after, is only first order -- and splitting
-    //  this way, by halving the CHEMISTRY substep rather than the transport
-    //  one, leaves the transport time discretisation untouched.
     //- Integrate the chemistry over `dt` from the start-of-step state and
     //  store the mean rate in chemRR_. Does NOT modify the species fields.
     //
@@ -121,12 +114,12 @@ private:
     //  for reporting; the source formulation no longer needs it, because
     //  recomputing the source each outer iteration is idempotent.
     //
-    //  solve() is called once per OUTER ITERATION, not once per timestep, and
-    //  Strang splitting has to bracket the timestep. plasmaTransport holds no
-    //  pimpleControl, so the count is tracked here against nOuterCorrectors
-    //  read from fvSolution -- with a flush on timestep change, so that a
-    //  PIMPLE that exits early on residual control cannot drop the trailing
-    //  half-step.
+    //  It mattered when the chemistry was an in-place update that had to
+    //  bracket the TIMESTEP rather than the outer iteration; that scheme is
+    //  gone -- see computeChemistrySources(). The counter is kept because
+    //  plasmaTransport holds no pimpleControl, and is still flushed on a
+    //  timestep change so a PIMPLE exiting early on residual control cannot
+    //  leave it stale.
     bool finalOuterIteration();
 
     //- Mechanism-driven species sources. Returns false when no mechanism is
@@ -188,8 +181,6 @@ protected:
     //  applying both would count the chemistry twice.
     autoPtr<plasmaChemistry> chem_;
 
-    //- none: sources go into the transport equations, as before.
-    //  ode:   Strang splitting with a stiff ODE substep.
     //  none          sources in the equations, electron-impact only (legacy)
     //  ode           whole mechanism, MEAN rate from a stiff ODE over the
     //                step. Lie composition: robust, first order.
@@ -223,18 +214,31 @@ protected:
     chemReactionSet chemReactions_ = rxAll;
 
     //- HOW those reactions are integrated. No bearing on which ones exist.
-    //  csAdaptive        per cell: implicitRate where valid, ode where stiff
+    //  csAdaptive        per cell: implicitRate where valid, ode where stiff,
+    //                    judged by two THRESHOLD tests (L*dt, predicted change)
+    //  csAdaptiveError   same switch, judged by an estimated LOCAL ERROR
+    //                    against a tolerance -- one step vs two half-steps
     //  csImplicitRate    linearised at the current iterate, loss via fvm::Sp
     //  csODE             stiff substep integrated through the step
     //  csExplicitSource  legacy in-equation explicit source
     enum chemSolverType
     {
         csAdaptive,
+        csAdaptiveError,
         csImplicitRate,
         csODE,
         csExplicitSource
     };
     chemSolverType chemistrySolver_ = csAdaptive;
+
+    //- Either per-cell switch. They differ only in HOW a cell is judged, so
+    //  everything else -- the P/L assembly, the outer-corrector requirement,
+    //  the Picard reporting, the order banner -- treats them identically.
+    inline bool isAdaptive() const
+    {
+        return chemistrySolver_ == csAdaptive
+            || chemistrySolver_ == csAdaptiveError;
+    }
 
     //- Cells below this electron density are skipped by the chemistry.
     //  Most of a streamer domain is undisturbed gas at the floor, where the
@@ -323,11 +327,118 @@ protected:
     scalar chemChangeLimit_ = 0.1;
 
     //- Density below which a relative change is meaningless [m^-3]
+    //
+    //  This is the knob that decides how much of the mesh the change test
+    //  claims. At 1e6 a trace species sitting at 1e7 and driven to 1e9 in one
+    //  step registers a relative change of 100 and flags its cell, even where
+    //  n_e is 1e20 and that species cannot affect anything. Measured on the
+    //  1.15M-cell streamer: the change test flagged 100% of cells from step 3
+    //  onward while `L*dt` flagged 5-7%, so `adaptive` was running the stiff
+    //  ODE path over the whole domain -- first order everywhere, which is what
+    //  the temporal-order sweep was seeing.
+    //
+    //  A floor is a blunt instrument: the right value depends on the case's own
+    //  densities, which is why the error-estimating variant exists. Exposed so
+    //  it can at least be set; the default is unchanged. Note the real fix for
+    //  the 100%-flagged problem is chemChangeScale_ below, not this.
     scalar chemChangeFloor_ = 1.0e6;
 
-    //- Cells sent to the stiff path by each criterion, for reporting
+    //- Fraction of the cell's DOMINANT density used as the absolute part of
+    //  the change test's scale: scale_s = n0_s + f*max_s(n0_s).
+    //
+    //  Without it the change test is purely relative, normalising every
+    //  species by its own density, so a trace species moving orders of
+    //  magnitude outranks a dominant species moving a few percent. That is
+    //  what made the test flag every cell of the streamer case.
+    //
+    //  f = 0 is the purely relative test, and is the DEFAULT: it is what every
+    //  existing case and every validated result was produced with, so the
+    //  default does not move under them.
+    //
+    //  MEASURED, on the 1.15M-cell streamer at Co 1.5 (2026-08-18):
+    //
+    //    f = 0     100% of cells flagged from step 3 on -- `adaptive` is the
+    //              first-order stiff path over the whole mesh
+    //    f = 1e-3  ~83% flagged, and only 0.03% at step 2
+    //
+    //  So 1e-3 is a strict improvement and the right value to reach for first,
+    //  but it does NOT fix the problem: it plateaus because in the quiescent
+    //  far field the cell's own dominant density is itself tiny (N2 and O2
+    //  ground states are the background, not transported), so the absolute
+    //  part of the scale shrinks with it. Any purely LOCAL normalisation hits
+    //  this -- whether a cell's chemistry matters is a question about its
+    //  contribution to the global solution. That is the argument for the
+    //  error-estimating variant rather than a tuned threshold.
+    scalar chemChangeScale_ = 0.0;
+
+    // ---- csAdaptiveError: the local-error switch --------------------------
+    //
+    //  The threshold tests above ask "is this cell stiff / does it move a lot".
+    //  Neither is the question that matters, which is "would linearising this
+    //  cell put an error into the solution worth paying an ODE solve to avoid".
+    //  This variant asks that directly: take the linearised step over dt, take
+    //  two linearised half-steps, and use the difference as a Richardson
+    //  estimate of the local error. Route to the stiff path only when that
+    //  estimate exceeds a tolerance.
+    //
+    //  The scale is the part that matters, and is where the threshold tests
+    //  fail. It carries a GLOBAL absolute part:
+    //
+    //      scale = absFrac * max_domain(n_e) + relTol * n_cell
+    //
+    //  so a cell can only claim the stiff path by making an error comparable to
+    //  a fraction of the discharge's own peak. A purely local scale cannot do
+    //  this: in the quiescent far field every local density is small, so any
+    //  relative measure saturates there -- which is exactly why
+    //  chemChangeScale_ plateaus at 83% of cells.
+
+    //- Which species the error norm is measured over
+    //    neElectron  the electron density alone (default)
+    //    neCharged   every charged species
+    //    neAll       every transported species
+    enum chemErrorNormType
+    {
+        neElectron,
+        neCharged,
+        neAll
+    };
+    chemErrorNormType chemErrorNorm_ = neElectron;
+
+    //- Relative tolerance, against the cell's own density
+    scalar chemErrorRelTol_ = 1.0e-2;
+
+    //- Absolute tolerance, as a fraction of the DOMAIN-maximum electron
+    //  density. Not a literal density: a fixed one would have to be re-chosen
+    //  per case, which is the trap chemChangeFloor_ documents.
+    scalar chemErrorAbsFrac_ = 1.0e-4;
+
+    //- max_domain(n_e) for this pass, one gMax per outer iteration
+    scalar chemErrorRefDensity_ = 0.0;
+
+    //- Cells sent to the stiff path by the error test, per pass and peak-held
+    label chemNstiffByError_ = 0;
+    label chemNstiffByErrorPeak_ = 0;
+
+    //- Cells sent to the stiff path by each criterion, for reporting.
+    //
+    //  Per PASS: computeChemistrySources() runs once per outer iteration, so
+    //  these are zeroed at the top of every pass and peak-held into the
+    //  companions below. They used to accumulate instead, which is what made
+    //  the report read "169443621 of 9171728 cells" -- a count summed over
+    //  every iteration of every step, against a denominator that the in-place
+    //  reduce() had already multiplied by the rank count.
     label chemNstiffByL_ = 0;
     label chemNstiffByChange_ = 0;
+
+    //- Peak of the three stiff-cell counts since the last report, so the
+    //  numbers printed together describe the SAME pass and stay comparable.
+    label chemNstiffByLPeak_ = 0;
+    label chemNstiffByChangePeak_ = 0;
+
+    //- Stiff integrations that returned non-finite values since the last
+    //  report. Summed rather than peak-held: for a failure count, "how many
+    //  happened" is the useful number, not "how many at once".
+    label chemODEFailuresSinceReport_ = 0;
 
     // ---- G2: gas energy ---------------------------------------------------
     //
@@ -431,6 +542,22 @@ protected:
     //  scheme degrades gracefully to the closed-cell (first-order) form.
     List<scalarField> chemExt_;
 
+    //- The previous step's chemExt_, and the slope derived from the pair.
+    //
+    //  A CONSTANT cross term caps the coupling at first order: measured
+    //  p = 0.988 for `solver ode` on the 40x40 study with the outer loop
+    //  converged to 1e-12 and chemExt_ at its fixed point. The transport rate
+    //  varies across the step, and integrating a nonlinear chemistry against
+    //  a constant stand-in perturbs the trajectory at O(dt) however exact
+    //  that constant is.
+    //
+    //  chemExtSlope_ = (chemExt_ - chemExtPrev_)/dt is lagged by one step and
+    //  therefore only O(dt) accurate -- which is enough, because it enters
+    //  the substep multiplied by (x - dt/2) ~ dt, leaving T correct to
+    //  O(dt^2). Zero on the first step, which is first order there alone.
+    List<scalarField> chemExtPrev_;
+    List<scalarField> chemExtSlope_;
+
     //- Instantaneous production and loss coefficient, for csImplicitRate
     List<scalarField> chemP_;
     List<scalarField> chemL_;
@@ -483,17 +610,13 @@ public:
         //- Correct all transport models
         void correctTransportModels();
 
-        //- Solve all species transport equations
         //- Advance the species over one timestep.
         //
         //  `finalIter` must be PIMPLE's finalIter() for this outer iteration.
-        //  solve() is called once per outer iteration, and Strang splitting
-        //  has to bracket the TIMESTEP: the leading half-step goes on the
-        //  first call of a timestep and the trailing one on the last, and
-        //  only the caller knows which that is. Counting iterations here
-        //  instead is wrong as soon as residual control lets PIMPLE exit
-        //  early. Defaults to true so a single-corrector caller is correct
-        //  without knowing any of this.
+        //  It no longer gates the chemistry: the source is recomputed from the
+        //  start-of-step state on every outer iteration and is idempotent, so
+        //  finalIter is used only for end-of-step reporting. Defaults to true
+        //  so a single-corrector caller is correct without knowing any of this.
         void solve(const bool finalIter = true);
 
         //- Update surface charge

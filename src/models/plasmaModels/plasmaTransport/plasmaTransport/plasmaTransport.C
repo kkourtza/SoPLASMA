@@ -587,14 +587,18 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
 
 void plasmaTransport::solve(const bool finalIter)
 {
-    // ── 0. Chemistry, first half-step ─────────────────────────────────────
+    // ── 0. Chemistry source for this outer iteration ──────────────────────
     //
-    // Strang splitting: C(dt/2) -> T(dt) -> C(dt/2). Second order in time,
-    // where applying the chemistry once either side of the transport is only
-    // first order. Rate coefficients are interpolated at the field as it
-    // stands, which is what "the field does not move while the chemistry
-    // integrates" means in practice.
-    // Chemistry as a SOURCE, not as a field update.
+    // LIE composition, not Strang: the chemistry is integrated over the WHOLE
+    // step and handed to the transport equations as a mean rate, which is
+    // first order in the splitting -- measured p = 0.99 with `solver ode`,
+    // in both lagged and converged coupling (validation/numerics/order_study.csv).
+    // `implicitRate` avoids the splitting altogether and reaches second order;
+    // `adaptive` chooses between them per cell.
+    //
+    // Rate coefficients are interpolated at the field as it stands, which is
+    // what "the field does not move while the chemistry integrates" means in
+    // practice. Chemistry as a SOURCE, not as a field update.
     //
     // The first implementation advanced the species fields directly, Strang
     // split around the transport solve. That is wrong in OpenFOAM and the
@@ -624,11 +628,29 @@ void plasmaTransport::solve(const bool finalIter)
             chemTimeIndex_ = mesh_.time().timeIndex();
             chemN0_.setSize(species_.nSpecies());
             chemExt_.setSize(species_.nSpecies());
+            chemExtPrev_.setSize(species_.nSpecies());
+            chemExtSlope_.setSize(species_.nSpecies());
             forAll(chemN0_, s)
             {
                 chemN0_[s] = species_.numberDensities()[s].primitiveField();
+                // Carry the PREVIOUS step's converged cross term over before
+                // clearing, so the slope has something to difference against.
+                // chemExt_ is zeroed per step, so this copy is the only place
+                // the old value survives.
+                chemExtPrev_[s].setSize(mesh_.nCells(), Zero);
+                if (chemExt_[s].size() == mesh_.nCells())
+                {
+                    chemExtPrev_[s] = chemExt_[s];
+                }
+                else
+                {
+                    chemExtPrev_[s] = Zero;
+                }
+
                 chemExt_[s].setSize(mesh_.nCells(), Zero);
                 chemExt_[s] = Zero;
+                chemExtSlope_[s].setSize(mesh_.nCells(), Zero);
+                chemExtSlope_[s] = Zero;
             }
         }
 
@@ -869,7 +891,7 @@ S_iz_.correctBoundaryConditions();
     // Reported whether it passes or fails: a check whose only evidence of
     // success is silence cannot be told from one that never ran.
     if (chem_ && finalIter
-     && (chemistrySolver_ == csImplicitRate || chemistrySolver_ == csAdaptive))
+     && (chemistrySolver_ == csImplicitRate || isAdaptive()))
     {
         chemPicardPeak_ = max(chemPicardPeak_, chemPicardChange_);
 
@@ -907,7 +929,7 @@ S_iz_.correctBoundaryConditions();
                     << " implicit. Raise nOuterCorrectors, or accept first"
                     << " order knowingly." << endl;
             }
-            else if (change > 1e-2 && chemistrySolver_ == csAdaptive)
+            else if (change > 1e-2 && isAdaptive())
             {
                 // In adaptive mode the stiff cells are already being
                 // integrated, so a residual change here means the LIMIT is set
@@ -938,17 +960,39 @@ S_iz_.correctBoundaryConditions();
         }
     }
 
-    // csODE only: implicitRate never fills chemRR_, and indexing it here
-    // segfaulted on the first timestep.
-    if (chem_ && chemistrySolver_ == csODE && !chemN0_.empty() && !chemRR_.empty())
+    // The cross term: total mean rate over the step MINUS the chemistry's own
+    // mean rate, i.e. what transport contributed.
+    //
+    // csODE fills chemRR_ directly. The adaptive variants do not -- they carry
+    // the chemistry as chemP_/chemL_ instead -- so their stiff cells used to
+    // receive NO cross term at all and were integrated as closed cells, which
+    // is strictly worse than `ode`. Both are handled here.
+    if (chem_ && !chemN0_.empty() && !chemExt_.empty())
     {
-        const scalar rdt = 1.0/mesh_.time().deltaTValue();
-        forAll(chemExt_, s)
+        const scalar dtNow = mesh_.time().deltaTValue();
+        const scalar rdt = 1.0/dtNow;
+        const bool haveRR = (chemistrySolver_ == csODE) && !chemRR_.empty();
+        const bool havePL = isAdaptive() && !chemP_.empty() && !chemL_.empty();
+
+        if (haveRR || havePL)
         {
-            const scalarField& nNow = species_.numberDensities()[s].primitiveField();
-            forAll(chemExt_[s], c)
+            forAll(chemExt_, s)
             {
-                chemExt_[s][c] = (nNow[c] - chemN0_[s][c])*rdt - chemRR_[s][c];
+                const scalarField& nNow =
+                    species_.numberDensities()[s].primitiveField();
+                forAll(chemExt_[s], c)
+                {
+                    const scalar chemRate = haveRR
+                      ? chemRR_[s][c]
+                      : chemP_[s][c] - chemL_[s][c]*nNow[c];
+
+                    chemExt_[s][c] = (nNow[c] - chemN0_[s][c])*rdt - chemRate;
+
+                    // Lagged one step, which is enough: it enters the substep
+                    // multiplied by (x - dt/2) ~ dt, so T is right to O(dt^2).
+                    chemExtSlope_[s][c] =
+                        (chemExt_[s][c] - chemExtPrev_[s][c])*rdt;
+                }
             }
         }
     }
@@ -1294,8 +1338,9 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     //   none  (default) electron-impact sources are added to the transport
     //         equations, as before. Existing cases are unaffected.
     //   ode   the WHOLE mechanism -- electron-impact and heavy -- is
-    //         integrated per cell by a stiff ODE solver, Strang-split around
-    //         the transport solve. This is the only mode in which ions have a
+    //         integrated per cell by a stiff ODE solver and delivered as a
+    //         mean rate over the step (Lie composition, first order; see
+    //         solve()). This is the only mode in which ions have a
     //         loss channel, because recombination lives in the heavy set.
     //
     // The two are mutually exclusive by construction: with `ode`,
@@ -1366,6 +1411,7 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
 
     const word cs = cd.getOrDefault<word>("solver", "adaptive");
     if      (cs == "adaptive")       chemistrySolver_ = csAdaptive;
+    else if (cs == "adaptiveError")  chemistrySolver_ = csAdaptiveError;
     else if (cs == "implicitRate")   chemistrySolver_ = csImplicitRate;
     else if (cs == "ode")            chemistrySolver_ = csODE;
     else if (cs == "explicitSource") chemistrySolver_ = csExplicitSource;
@@ -1373,7 +1419,8 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     {
         FatalErrorInFunction
             << "Unknown chemistry/solver '" << cs << "'" << nl
-            << "Valid: adaptive | implicitRate | ode | explicitSource" << nl
+            << "Valid: adaptive | adaptiveError | implicitRate | ode"
+            << " | explicitSource" << nl
             << exit(FatalError);
     }
 
@@ -1406,7 +1453,7 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // then diverged. `adaptive` inherits the same linearisation.
     if
     (
-        (chemistrySolver_ == csImplicitRate || chemistrySolver_ == csAdaptive)
+        (chemistrySolver_ == csImplicitRate || isAdaptive())
      && chemReactions_ != rxNone
      && mesh_.solution().subOrEmptyDict("PIMPLE")
             .getOrDefault<label>("nOuterCorrectors", 1) < 2
@@ -1478,6 +1525,23 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
                 << "    first order by construction. Use `implicitRate` or"
                 << " `adaptive` for second order." << endl;
         }
+        else if (isAdaptive())
+        {
+            // `adaptive` is a per-cell MIXTURE of a second-order path and a
+            // first-order one, so a flat "order 2" cannot be asserted here:
+            // at start-up nothing is known about how many cells will fall
+            // back. Measured p = 1.94 was obtained where the fallback was
+            // rare; it degrades toward 1 as cells are routed to the ODE path.
+            // The runtime report carries the fraction that actually occurred.
+            Info<< "plasmaTransport: temporal order 2 where the linearisation"
+                << " holds -- outer loop" << nl
+                << "    converged and chemistry/solver `adaptive` (measured"
+                << " p = 1.94 with the" << nl
+                << "    stiff fallback rare). Cells routed to the stiff ODE"
+                << " path are first order;" << nl
+                << "    the chemistry report gives the fraction per run."
+                << endl;
+        }
         else
         {
             Info<< "plasmaTransport: temporal order 2 -- outer loop converged"
@@ -1535,6 +1599,46 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         // while 0.1 and below reproduced the stiff solver exactly.
         chemChangeLimit_ =
             cd.getOrDefault<scalar>("chemChangeLimit", 0.1);
+
+        // Density below which the change test ignores a species. Kept at 1e6:
+        // it is a divide-by-zero guard, not the tuning knob.
+        chemChangeFloor_ =
+            cd.getOrDefault<scalar>("chemChangeFloor", 1.0e6);
+
+        // The absolute part of the change test's scale, as a fraction of the
+        // cell's dominant density. See the header for the measured numbers.
+        // Defaults to 0 -- the purely relative test -- so existing cases and
+        // validated results keep the behaviour they were produced with. 1e-3
+        // is the value to try first: strictly better, but only a partial fix.
+        chemChangeScale_ =
+            cd.getOrDefault<scalar>("chemChangeScale", 0.0);
+
+        // ---- csAdaptiveError: the local-error switch ----------------------
+        const word en = cd.getOrDefault<word>("chemErrorNorm", "electron");
+        if      (en == "electron") chemErrorNorm_ = neElectron;
+        else if (en == "charged")  chemErrorNorm_ = neCharged;
+        else if (en == "all")      chemErrorNorm_ = neAll;
+        else
+        {
+            FatalErrorInFunction
+                << "Unknown chemistry/chemErrorNorm '" << en << "'" << nl
+                << "Valid: electron | charged | all" << nl
+                << exit(FatalError);
+        }
+
+        chemErrorRelTol_ =
+            cd.getOrDefault<scalar>("chemErrorRelTol", 1.0e-2);
+        chemErrorAbsFrac_ =
+            cd.getOrDefault<scalar>("chemErrorAbsFrac", 1.0e-4);
+
+        if (chemErrorRelTol_ <= 0 || chemErrorAbsFrac_ < 0)
+        {
+            FatalErrorInFunction
+                << "chemErrorRelTol must be > 0 and chemErrorAbsFrac >= 0" << nl
+                << "    got " << chemErrorRelTol_ << " and "
+                << chemErrorAbsFrac_ << nl
+                << exit(FatalError);
+        }
 
         // How often the chemistry diagnostics are printed, in timesteps.
         //
@@ -1757,10 +1861,16 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
     if (!chem_ || dt <= 0) return;
 
     chemRR_.setSize(species_.nSpecies());
+    chemP_.setSize(species_.nSpecies());
+    chemL_.setSize(species_.nSpecies());
     forAll(chemRR_, s)
     {
         chemRR_[s].setSize(mesh_.nCells(), Zero);
         chemRR_[s] = Zero;
+        chemP_[s].setSize(mesh_.nCells(), Zero);
+        chemP_[s] = Zero;
+        chemL_[s].setSize(mesh_.nCells(), Zero);
+        chemL_[s] = Zero;
     }
 
 
@@ -1775,6 +1885,8 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
     scalarField kTab(max(nTab, 1), Zero);
     scalarField n(nSp, Zero);
     scalarField ext(nSp, Zero);
+    scalarField extS(nSp, Zero);
+    scalarField Pend(nSp, Zero), Lend(nSp, Zero);
 
     // Per CELL now, not a dictionary constant: this is the thermal-ionisation
     // feedback. See TgasCell().
@@ -1812,8 +1924,18 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         {
             for (label s = 0; s < nSp; ++s) ext[s] = chemExt_[s][celli];
         }
+        extS.setSize(nSp, Zero);
 
-        chem_->integrate(n, kTab, TgasCell(celli), dt, haveExt ? &ext : nullptr);
+        if (haveExt)
+        {
+            for (label si = 0; si < nSp; ++si) extS[si] = chemExtSlope_[si][celli];
+        }
+        chem_->integrate
+        (
+            n, kTab, TgasCell(celli), dt,
+            haveExt ? &ext : nullptr,
+            haveExt ? &extS : nullptr
+        );
 
         // The integrated change contains BOTH processes, so the transport part
         // is removed to leave the chemical source alone. Adding the whole
@@ -1823,6 +1945,27 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         {
             chemRR_[s][celli] =
                 (n[s] - chemN0_[s][celli])/dt - (haveExt ? ext[s] : 0.0);
+        }
+
+        // INSTANTANEOUS rate at the integrated end state, which is what BDF2
+        // asks for -- and the reason this path was first order without it.
+        //
+        // A step MEAN is a different quantity from f(t^{n+1}), and substituting
+        // one for the other is a Lie composition that caps the scheme at first
+        // order however accurately the mean is computed. Measured: improving
+        // the mean three ways -- tighter ODE tolerance, outer loop converged to
+        // 1e-12, a time-linear cross term -- each left p = 0.988 exactly. The
+        // mean was never the inaccurate part; it was the wrong object.
+        //
+        // The stiff integration still does the work: it locates n^{n+1}
+        // robustly where a linearised step would be unstable. Only the
+        // reconstruction changes -- P/L at that state, so the loss stays
+        // implicit and charge is exact by construction, no projection needed.
+        chem_->productionLoss(n, kTab, TgasCell(celli), Pend, Lend);
+        for (label s = 0; s < nSp; ++s)
+        {
+            chemP_[s][celli] = Pend[s];
+            chemL_[s][celli] = Lend[s];
         }
 
         // Project the source onto exact charge conservation.
@@ -2019,7 +2162,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
     //
     // The loss goes in through fvm::Sp so a fast sink cannot drive a density
     // negative and cannot break the Picard iteration.
-    if (chemistrySolver_ == csImplicitRate || chemistrySolver_ == csAdaptive)
+    if (chemistrySolver_ == csImplicitRate || isAdaptive())
     {
         const label nSp = species_.nSpecies();
         const label nTab = rates_->size();
@@ -2039,6 +2182,31 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         const scalar dtNow = mesh_.time().deltaTValue();
         const scalarField& neI =
             species_.numberDensity(species_.electronSpeciesID()).primitiveField();
+
+        // Per-PASS counters, zeroed here because mechanismSourceTerms() runs
+        // once per OUTER ITERATION and the loop below counts every active cell.
+        // Without the reset they accumulated over every iteration of every
+        // timestep -- the report read "72465615 of 1146466 cells" -- and the
+        // peak-hold further down, a max() over a monotonically growing counter,
+        // silently did nothing. chemStiffness_ is included: it is the max over
+        // the cells of THIS pass, not an all-time high-water mark.
+        chemNstiff_         = 0;
+        chemNstiffByL_      = 0;
+        chemNstiffByChange_ = 0;
+        chemNstiffByError_  = 0;
+        chemActiveCount_    = 0;
+        chemStiffness_      = 0;
+        chemODEFailures_    = 0;
+
+        // The GLOBAL scale the error test measures against: one collective per
+        // outer iteration, which is negligible beside the per-cell work and is
+        // what lets a cell ask "is my error significant to the DISCHARGE",
+        // rather than only "is it significant to me". Every purely local
+        // criterion fails on that distinction -- see chemChangeScale_.
+        if (chemistrySolver_ == csAdaptiveError)
+        {
+            chemErrorRefDensity_ = gMax(neI);
+        }
 
         forAll(neI, celli)
         {
@@ -2071,6 +2239,30 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             // instability entirely -- see chemChangeLimit_ in the header. This
             // predicts the step and measures it, which catches the mode the
             // estimate cannot see.
+            // Normalised against a MIXED scale, not against each species' own
+            // density. Purely relative change ranks by how much a species moves
+            // relative to itself, which makes a trace species at 1e7 driven to
+            // 1e9 (change 100) outrank a dominant species at 1e20 moving 5%
+            // (change 0.05) -- though only the second can affect the solution.
+            // Measured consequence: the test flagged 100% of cells from step 3
+            // of the streamer case, so `adaptive` ran the first-order stiff
+            // path over the whole mesh while reporting second order.
+            //
+            //   scale_s = n0_s + f * n_ref,   n_ref = max_s n0_s in this cell
+            //
+            // For a dominant species scale_s -> n0_s and the measure is the old
+            // relative change, so the species that matter are unaffected. A
+            // species f below the cell's dominant density can only flag the
+            // cell by moving an ABSOLUTE amount comparable to f*n_ref. This is
+            // the absolute/relative mixing every stiff ODE solver does, with
+            // the absolute part made local and physical rather than a global
+            // constant. f = 0 reproduces the previous behaviour exactly.
+            scalar nRef = 0;
+            for (label sp = 0; sp < nSp; ++sp)
+            {
+                nRef = max(nRef, chemN0_[sp][celli]);
+            }
+
             scalar cellChange = 0;
             for (label sp = 0; sp < nSp; ++sp)
             {
@@ -2078,7 +2270,9 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 if (n0s <= chemChangeFloor_) continue;
                 const scalar nPred =
                     (n0s + P[sp]*dtNow)/(1.0 + L[sp]*dtNow);
-                cellChange = max(cellChange, mag(nPred - n0s)/n0s);
+                const scalar scale = n0s + chemChangeScale_*nRef;
+                cellChange =
+                    max(cellChange, mag(nPred - n0s)/max(scale, VSMALL));
             }
 
             // ADAPTIVE: integrate this cell instead of linearising it, when
@@ -2090,11 +2284,90 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             const bool tooStiff  = (cellStiff  > chemStiffLimit_);
             const bool tooBigStep = (cellChange > chemChangeLimit_);
 
-            if (chemistrySolver_ == csAdaptive && (tooStiff || tooBigStep))
+            // ---- csAdaptiveError: estimated local error vs a tolerance -----
+            //
+            // Richardson on the linearised step: one step of dt against two of
+            // dt/2. The half-step pair needs P and L re-evaluated at the
+            // midpoint state, which is the cost of this test -- one extra
+            // productionLoss() per cell, O(n_reactions), against the
+            // O(n_species^3)-per-internal-step ODE solve it is deciding
+            // whether to avoid. Cheap by the standard that matters.
+            //
+            // The difference of the two estimates the error of the CHEAPER
+            // one, and the cell takes the stiff path only when that error is
+            // large against a scale carrying a global absolute part.
+            bool tooMuchError = false;
+            if (chemistrySolver_ == csAdaptiveError)
+            {
+                const scalar h = 0.5*dtNow;
+                scalarField nMid(nSp), Pm(nSp, Zero), Lm(nSp, Zero);
+
+                for (label sp = 0; sp < nSp; ++sp)
+                {
+                    const scalar n0s = chemN0_[sp][celli];
+                    nMid[sp] = (n0s + P[sp]*h)/(1.0 + L[sp]*h);
+                }
+                chem_->productionLoss(nMid, kTab, TgasCell(celli), Pm, Lm);
+
+                const scalar absPart = chemErrorAbsFrac_*chemErrorRefDensity_;
+                scalar errNorm = 0;
+
+                for (label sp = 0; sp < nSp; ++sp)
+                {
+                    // Only the species the norm is measured over.
+                    if (chemErrorNorm_ == neElectron
+                     && sp != species_.electronSpeciesID())
+                    {
+                        continue;
+                    }
+                    if (chemErrorNorm_ == neCharged
+                     && species_.speciesChargeNumbers()[sp] == 0)
+                    {
+                        continue;
+                    }
+
+                    const scalar n0s  = chemN0_[sp][celli];
+                    const scalar nOne = (n0s + P[sp]*dtNow)/(1.0 + L[sp]*dtNow);
+                    const scalar nTwo =
+                        (nMid[sp] + Pm[sp]*h)/(1.0 + Lm[sp]*h);
+
+                    const scalar scale =
+                        absPart + chemErrorRelTol_*mag(n0s);
+                    errNorm =
+                        max(errNorm, mag(nTwo - nOne)/max(scale, VSMALL));
+                }
+                tooMuchError = (errNorm > 1.0);
+            }
+
+            // `adaptiveError` keeps `L*dt` as a STABILITY FLOOR and adds the
+            // error test on top; it does NOT replace it.
+            //
+            // Replacing it was measured to fail. In the 0-D afterglow sweep
+            // (validation/chemistry/solver_comparison.csv) `L*dt > stiffTol` is
+            // exactly what keeps `adaptive` exact, and dropping it left the
+            // error test admitting steps 25-359% wrong. The cause is a known
+            // limitation of Richardson estimation on an UNSTABLE scheme: the
+            // full step and the two half-steps are dominated by the same
+            // spurious growth, so their difference stays small while both are
+            // badly wrong. The estimate measures self-consistency, not
+            // correctness. `L*dt` has no such blind spot -- it asks about the
+            // timescale rather than about two guesses agreeing.
+            //
+            // The CHANGE test is deliberately NOT carried over: its purely
+            // relative normalisation flags 100% of cells (see chemChangeScale_),
+            // which is the defect this variant exists to remove.
+            const bool sendToStiff =
+                (chemistrySolver_ == csAdaptive
+                    && (tooStiff || tooBigStep))
+             || (chemistrySolver_ == csAdaptiveError
+                    && (tooStiff || tooMuchError));
+
+            if (sendToStiff)
             {
                 ++chemNstiff_;
-                if (tooStiff)   ++chemNstiffByL_;
-                if (tooBigStep) ++chemNstiffByChange_;
+                if (tooStiff)     ++chemNstiffByL_;
+                if (tooBigStep)   ++chemNstiffByChange_;
+                if (tooMuchError) ++chemNstiffByError_;
 
                 scalarField n0(nSp), nEnd(nSp);
                 for (label sp = 0; sp < nSp; ++sp)
@@ -2102,7 +2375,28 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                     n0[sp] = chemN0_[sp][celli];
                 }
                 nEnd = n0;
-                chem_->integrate(nEnd, kTab, TgasCell(celli), dtNow);
+
+                // The cross term reaches these cells now. Without it they were
+                // integrated as CLOSED cells -- no drift in, no diffusion out
+                // -- which is strictly worse than `solver ode` and is where the
+                // streamer's 23-34% error came from.
+                scalarField extA(nSp, Zero), extAS(nSp, Zero);
+                const bool haveExtA =
+                    !chemExt_.empty() && chemExt_[0].size() == mesh_.nCells();
+                if (haveExtA)
+                {
+                    for (label si = 0; si < nSp; ++si)
+                    {
+                        extA[si]  = chemExt_[si][celli];
+                        extAS[si] = chemExtSlope_[si][celli];
+                    }
+                }
+                chem_->integrate
+                (
+                    nEnd, kTab, TgasCell(celli), dtNow,
+                    haveExtA ? &extA : nullptr,
+                    haveExtA ? &extAS : nullptr
+                );
 
                 // An ODE solver can fail on a step far longer than the
                 // chemistry it is integrating, and it does not always say so:
@@ -2130,56 +2424,17 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 else
 
                 {
-                // Mean rate over the step, then projected onto exact charge
-                // conservation -- the integrator does not preserve the linear
-                // invariant exactly in floating point.
-                scalarField rr(nSp);
-                scalar netQ = 0, traffic = 0;
-                for (label sp = 0; sp < nSp; ++sp)
-                {
-                    rr[sp] = (nEnd[sp] - n0[sp])/dtNow;
-                    const scalar q = species_.speciesChargeNumbers()[sp];
-                    netQ    += q*rr[sp];
-                    traffic += mag(q*rr[sp]);
-                }
-                if (traffic > VSMALL && mag(netQ)/traffic < 1e-3)
-                {
-                    for (label sp = 0; sp < nSp; ++sp)
-                    {
-                        const scalar q = species_.speciesChargeNumbers()[sp];
-                        if (mag(q) < SMALL) continue;
-                        rr[sp] -= (netQ/traffic)*mag(rr[sp])*sign(q);
-                    }
-                }
-
-                // Back into production / loss-coefficient form, so the sink
-                // stays implicit. Exact at the current state by construction.
-                for (label sp = 0; sp < nSp; ++sp)
-                {
-                    if (rr[sp] >= 0)
-                    {
-                        P[sp] = rr[sp];
-                        L[sp] = 0;
-                    }
-                    else if (n[sp] > 1.0)
-                    {
-                        // Loss coefficient, capped so that a species being
-                        // consumed to exhaustion cannot put an unbounded
-                        // entry on the matrix diagonal. L*dt = 1e3 already
-                        // removes all but 1e-3 of it in one step, so the cap
-                        // is physically indistinguishable from complete
-                        // consumption and numerically finite.
-                        P[sp] = 0;
-                        L[sp] = min(-rr[sp]/n[sp], 1.0e3/dtNow);
-                    }
-                    else
-                    {
-                        // Below one particle per cubic metre there is nothing
-                        // to lose.
-                        P[sp] = 0;
-                        L[sp] = 0;
-                    }
-                }
+                // INSTANTANEOUS rate at the integrated end state, not the
+                // step mean -- the same correction as the csODE path, and for
+                // the same reason: BDF2 asks for the right-hand side at
+                // t^{n+1}, and a mean is a different quantity. Measured on the
+                // 40x40 study, this moved `ode` from p = 0.988 to 1.935.
+                //
+                // The stiff integration still locates n^{n+1} where a
+                // linearised step would be unstable; only the reconstruction
+                // changes. Charge is exact by construction here, so the
+                // explicit projection the mean-rate form needed is gone.
+                chem_->productionLoss(nEnd, kTab, TgasCell(celli), P, L);
                 }
             }
 
@@ -2187,6 +2442,12 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             // is the instantaneous rate, so sum q_s (P_s - L_s n_s) is exactly
             // the right-hand-side residual -- zero for a balanced mechanism, no
             // integration involved to spoil it. Measured rather than assumed.
+            // Counted on EVERY pass, not only before the first report. Gating
+            // it behind chemCellsReported_ is what froze the denominator: it
+            // was accumulated once, never again, and never reset -- so every
+            // later report divided by a stale first-pass number.
+            ++chemActiveCount_;
+
             if (!chemCellsReported_)
             {
                 scalar netQ = 0, traffic = 0;
@@ -2202,7 +2463,6 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                     chemSourceChargeAfter_ =
                         max(chemSourceChargeAfter_, mag(netQ)/traffic);
                 }
-                ++chemActiveCount_;
             }
 
             for (label sp = 0; sp < nSp; ++sp)
@@ -2213,10 +2473,22 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         }
 
         // Peak-hold between reports, so a stiff step is not missed just
-        // because it fell between two samples.
+        // because it fell between two samples. Now that the counters above are
+        // per-pass, this does what its name says.
         chemStiffnessPeak_ = max(chemStiffnessPeak_, chemStiffness_);
         chemNstiffPeak_    = max(chemNstiffPeak_, chemNstiff_);
         chemChargePeak_    = max(chemChargePeak_, chemSourceChargeAfter_);
+
+        // Held with chemNstiff_ so the three counts printed together come from
+        // the same pass; reporting a peak total beside per-criterion counts
+        // from a different pass would let them disagree.
+        if (chemNstiff_ >= chemNstiffPeak_)
+        {
+            chemNstiffByLPeak_      = chemNstiffByL_;
+            chemNstiffByChangePeak_ = chemNstiffByChange_;
+            chemNstiffByErrorPeak_  = chemNstiffByError_;
+        }
+        chemODEFailuresSinceReport_ += chemODEFailures_;
 
 
         const label ti = mesh_.time().timeIndex();
@@ -2349,33 +2621,55 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             chemLastReport_ = ti;
 
             // Report the PEAK since the last report, not this step's value.
-            chemSourceChargeAfter_ = chemChargePeak_;
-            chemStiffness_ = chemStiffnessPeak_;
-            chemNstiff_ = chemNstiffPeak_;
+            //
+            // Reduced into LOCALS, never into the members: reduce() overwrites
+            // its argument on every rank, so reducing the accumulators in place
+            // left each rank holding the global sum and accumulating from that
+            // inflated base on the next pass. That is what multiplied the
+            // denominator by the rank count.
+            scalar rChemCharge = chemChargePeak_;
+            scalar rStiffness  = chemStiffnessPeak_;
+            label  rNstiff     = chemNstiffPeak_;
+            label  rActive     = chemActiveCount_;
+            label  rByL        = chemNstiffByLPeak_;
+            label  rByChange   = chemNstiffByChangePeak_;
+            label  rByError    = chemNstiffByErrorPeak_;
+            label  rFailures   = chemODEFailuresSinceReport_;
+
             chemStiffnessPeak_ = 0;
             chemNstiffPeak_ = 0;
             chemChargePeak_ = 0;
+            chemNstiffByLPeak_ = 0;
+            chemNstiffByChangePeak_ = 0;
+            chemNstiffByErrorPeak_ = 0;
+            chemODEFailuresSinceReport_ = 0;
 
-            reduce(chemSourceChargeAfter_, maxOp<scalar>());
-            reduce(chemActiveCount_, sumOp<label>());
-            reduce(chemStiffness_, maxOp<scalar>());
-            reduce(chemNstiff_, sumOp<label>());
-            // Cumulative like chemNstiff_ itself, and reduced the same way, so
-            // the three numbers in the report are directly comparable.
-            reduce(chemNstiffByL_, sumOp<label>());
-            reduce(chemNstiffByChange_, sumOp<label>());
-            reduce(chemODEFailures_, sumOp<label>());
-            if (chemODEFailures_ > 0)
+            reduce(rChemCharge, maxOp<scalar>());
+            reduce(rActive, sumOp<label>());
+            reduce(rStiffness, maxOp<scalar>());
+            reduce(rNstiff, sumOp<label>());
+            // Peak-held with rNstiff and reduced the same way, so the three
+            // numbers in the report describe one pass and stay comparable.
+            reduce(rByL, sumOp<label>());
+            reduce(rByChange, sumOp<label>());
+            reduce(rByError, sumOp<label>());
+            reduce(rFailures, sumOp<label>());
+
+            chemSourceChargeAfter_ = rChemCharge;
+            chemStiffness_ = rStiffness;
+            chemNstiff_ = rNstiff;
+
+            if (rFailures > 0)
             {
                 WarningInFunction
-                    << chemODEFailures_ << " cell(s) had the stiff integration"
+                    << rFailures << " cell(s) had the stiff integration"
                     << " return non-finite values and fell back to the"
                     << " linearised source." << nl
                     << "    deltaT is far longer than the chemistry in those"
                     << " cells. The fallback is stable but less accurate;"
                     << " reduce deltaT if they matter." << endl;
             }
-            if (chemistrySolver_ == csAdaptive)
+            if (isAdaptive())
             {
                 // Split by CRITERION, because the two catch different things
                 // and the difference is the diagnostic. Cells caught only by
@@ -2383,19 +2677,50 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 // step would have mangled -- the off-diagonal mode. If that
                 // count is ever large, the timestep is past the linearisation's
                 // limit for this mechanism, whatever L*dt says.
-                Info<< "plasmaChemistry: adaptive, " << chemNstiff_ << " of "
-                    << chemActiveCount_ << " cells integrated, the rest"
-                    << " linearised" << nl
-                    << "    by L*dt > " << chemStiffLimit_ << ": "
-                    << chemNstiffByL_
-                    << ",  by step change > " << chemChangeLimit_ << ": "
-                    << chemNstiffByChange_
-                    << "  (overlap counted in both)" << endl;
+                const word how = (chemistrySolver_ == csAdaptiveError)
+                               ? "adaptiveError" : "adaptive";
+
+                Info<< "plasmaChemistry: " << how << ", " << rNstiff << " of "
+                    << rActive << " cells integrated ("
+                    << 100.0*rNstiff/max(rActive, label(1))
+                    << "%), the rest linearised" << nl;
+
+                if (chemistrySolver_ == csAdaptiveError)
+                {
+                    Info<< "    by local error > 1  (relTol "
+                        << chemErrorRelTol_ << ", absFrac "
+                        << chemErrorAbsFrac_ << " of domain max n_e = "
+                        << chemErrorRefDensity_ << " m^-3): "
+                        << rByError << nl;
+                }
+                else
+                {
+                    Info<< "    by L*dt > " << chemStiffLimit_ << ": " << rByL
+                        << ",  by step change > " << chemChangeLimit_ << ": "
+                        << rByChange
+                        << "  (overlap counted in both)" << nl;
+                }
+                Info<< "    peak over the steps since the last report" << endl;
+
+                // The order claim printed at start-up only holds where the
+                // linearisation does. Say so with the measured number rather
+                // than leaving the banner to be read as unconditional.
+                if (rNstiff > 0)
+                {
+                    Info<< "    NOTE: those cells take the stiff ODE path,"
+                        << " which is FIRST order in the" << nl
+                        << "    splitting, so the effective temporal order is"
+                        << " between 1 and 2 here." << nl
+                        << "    Reduce deltaT, or use `implicitRate`, if they"
+                        << " cover the region of interest." << endl;
+                }
             }
-            Info<< "plasmaChemistry: " << (chemistrySolver_ == csAdaptive
-                                           ? "adaptive" : "implicitRate")
-                << ", " << chemActiveCount_
-                << " active cells, max(L*dt) = " << chemStiffness_ << nl
+            Info<< "plasmaChemistry: "
+                << (chemistrySolver_ == csAdaptiveError ? "adaptiveError"
+                  : isAdaptive()                       ? "adaptive"
+                  :                                      "implicitRate")
+                << ", " << rActive
+                << " active cells, max(L*dt) = " << rStiffness << nl
                 << "    charge residual of the SOURCE, worst cell: "
                 << chemSourceChargeAfter_
                 << " (exact by construction: no integration)" << endl;
@@ -2473,28 +2798,45 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         return true;
     }
 
-    // With the source formulation the chemistry is delivered HERE, as an
-    // explicit source per species, rather than by advancing the fields.
+    // With the source formulation the chemistry is delivered HERE. It used to
+    // be the step MEAN as a purely explicit source; it is now the instantaneous
+    // rate at the integrated end state in P/L form, which is the right-hand
+    // side BDF2 asks for and keeps the loss implicit. See
+    // computeChemistrySources() for the measurement behind the change.
     if (chemistrySolver_ == csODE)
     {
-        forAll(chemRR_, s)
+        forAll(chemP_, s)
         {
-            if (s >= eqns.size() || !eqns[s] || chemRR_[s].empty()) continue;
+            if (s >= eqns.size() || !eqns[s] || chemP_[s].empty()) continue;
 
-            volScalarField src
+            volScalarField Pf
             (
                 IOobject
                 (
-                    "chemRR_" + species_.speciesNames()[s],
+                    "chemP_" + species_.speciesNames()[s],
                     mesh_.time().timeName(), mesh_,
                     IOobject::NO_READ, IOobject::NO_WRITE
                 ),
                 mesh_,
                 dimensionedScalar(dimensionSet(0, -3, -1, 0, 0, 0, 0), Zero)
             );
-            src.primitiveFieldRef() = chemRR_[s];
+            Pf.primitiveFieldRef() = chemP_[s];
 
-            *eqns[s] -= src;
+            volScalarField Lf
+            (
+                IOobject
+                (
+                    "chemL_" + species_.speciesNames()[s],
+                    mesh_.time().timeName(), mesh_,
+                    IOobject::NO_READ, IOobject::NO_WRITE
+                ),
+                mesh_,
+                dimensionedScalar(dimensionSet(0, 0, -1, 0, 0, 0, 0), Zero)
+            );
+            Lf.primitiveFieldRef() = chemL_[s];
+
+            *eqns[s] -= Pf;
+            *eqns[s] += fvm::Sp(Lf, species_.numberDensity(s));
         }
         return true;
     }

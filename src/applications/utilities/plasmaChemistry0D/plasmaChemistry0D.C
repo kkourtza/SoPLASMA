@@ -142,8 +142,12 @@ int main(int argc, char *argv[])
         "reduced ion mobility for -wallLoss (default 5e21, ~O2+ in O2)");
     argList::addOption("chemistryBackend", "native|cantera",
         "who evaluates the heavy reactions. Same keyword as the CFD.");
-    argList::addOption("chemistrySource", "ode|implicitRate|adaptive",
-        "how the chemistry is advanced. Same keyword as the CFD (default ode).");
+    argList::addOption("chemistrySource",
+        "ode|implicitRate|adaptive|adaptiveError",
+        "how the chemistry is advanced. Same keyword as the CFD (default ode)."
+        " In 0-D there is no transport and therefore no operator splitting, so"
+        " `ode` here is the converged REFERENCE rather than a first-order"
+        " alternative as it is in the CFD.");
     argList::addOption("nOuterCorrectors", "n",
         "Picard iterations per implicitRate step. Mirrors the CFD keyword;"
         " 1 is explicit in the production term and can diverge (default 4).");
@@ -155,6 +159,15 @@ int main(int argc, char *argv[])
     argList::addOption("stiffTol", "x",
         "adaptive threshold on max(L)*dt; above it the stiff substep is used"
         " (default 1).");
+    argList::addOption("errRelTol", "x",
+        "adaptiveError: relative part of the local-error tolerance"
+        " (default 1e-2).");
+    argList::addOption("errAbsFrac", "x",
+        "adaptiveError: absolute part of the local-error tolerance, as a"
+        " fraction of the cell's electron density (default 1e-4). Together:"
+        " scale_s = errAbsFrac*n_e + errRelTol*n_s. Without the absolute part"
+        " a trace species moving orders of magnitude outranks a dominant"
+        " species moving a few percent.");
     argList::addBoolOption("constPressure",
         "hold pressure instead of volume: the gas expands as it heats, so the"
         " temperature rises against c_p rather than c_v. Right past the"
@@ -342,18 +355,35 @@ int main(int argc, char *argv[])
     const scalar eedfTol = args.getOrDefault<scalar>("eedfTol", 0.05);
     const bool isobaric = args.found("constPressure");
 
-    enum chemSourceType { csODE, csImplicitRate, csAdaptive };
+    enum chemSourceType { csODE, csImplicitRate, csAdaptive, csAdaptiveError };
     const word csName =
         args.getOrDefault<word>("chemistrySource", "ode");
     const chemSourceType chemSource =
-        (csName == "ode")          ? csODE
-      : (csName == "implicitRate") ? csImplicitRate
-      : (csName == "adaptive")     ? csAdaptive
+        (csName == "ode")           ? csODE
+      : (csName == "implicitRate")  ? csImplicitRate
+      : (csName == "adaptive")      ? csAdaptive
+      : (csName == "adaptiveError") ? csAdaptiveError
       : (FatalErrorInFunction
             << "unknown -chemistrySource " << csName << nl
-            << "Valid: ode | implicitRate | adaptive" << exit(FatalError), csODE);
+            << "Valid: ode | implicitRate | adaptive | adaptiveError"
+            << exit(FatalError), csODE);
     const scalar stiffTol = args.getOrDefault<scalar>("stiffTol", 1.0);
     const scalar changeTol = args.getOrDefault<scalar>("changeTol", 0.1);
+
+    // `adaptiveError`: the CFD's local-error switch (chemistry/chemErrorRelTol
+    // and chemErrorAbsFrac in plasmaTransport), brought here because 0-D is
+    // where it can be checked against TRUTH. There is no transport in 0-D and
+    // therefore no operator splitting, so `-chemistrySource ode` carries no
+    // splitting error and IS the converged reference -- something the CFD has
+    // no equivalent of, where every reference is itself an approximation.
+    //
+    // Same mixed scale as the CFD. There the absolute part is a fraction of the
+    // DOMAIN-maximum electron density; a 0-D cell is the whole domain, so it
+    // degenerates to a fraction of this cell's n_e. That is the same
+    // discrimination -- a trace species measured against the dominant one --
+    // rather than a different criterion.
+    const scalar errRelTol  = args.getOrDefault<scalar>("errRelTol", 1.0e-2);
+    const scalar errAbsFrac = args.getOrDefault<scalar>("errAbsFrac", 1.0e-4);
 
     // WALL LOSS. Default none, and that is not laziness: every case validated
     // here is a nanosecond atmospheric discharge where the wall timescale is
@@ -834,7 +864,16 @@ int main(int argc, char *argv[])
                 scalar Ldtmax = 0.0;
                 forAll(Lchem, si) Ldtmax = max(Ldtmax, Lchem[si]*dt);
 
-                if (chemSource == csAdaptive && Ldtmax > stiffTol)
+                // The L*dt screen is a STABILITY floor and applies to
+                // BOTH adaptive variants. `adaptiveError` adds its error
+                // test on top rather than replacing this: measured
+                // without it, the error estimate admitted steps 25-359%
+                // wrong, because Richardson compares two estimates that
+                // share the same instability and therefore agree while
+                // both are wrong.
+                if ((chemSource == csAdaptive
+                  || chemSource == csAdaptiveError)
+                 && Ldtmax > stiffTol)
                 {
                     chem.integrate(n, kTab, T, dt);
                     ++nODEsteps;
@@ -887,6 +926,10 @@ int main(int argc, char *argv[])
                     forAll(n, si)
                     {
                         if (!std::isfinite(n[si])) { bad = true; break; }
+                        // Relative-change test: csAdaptive only. Its
+                        // normalisation (each species against itself) is the
+                        // one csAdaptiveError replaces.
+                        if (chemSource != csAdaptive) continue;
                         const scalar ref = max(n0chem[si], nFloorRel);
                         if (n0chem[si] > nFloorRel
                          && mag(n[si] - n0chem[si]) > changeTol*ref)
@@ -895,7 +938,50 @@ int main(int argc, char *argv[])
                         }
                     }
 
-                    if (bad && chemSource == csAdaptive)
+                    // adaptiveError: replace the relative-change verdict with a
+                    // Richardson estimate of the LOCAL ERROR. `n` already holds
+                    // the full step from n0chem; redo the same Picard update as
+                    // two half-steps and compare. Non-finite still rejects
+                    // outright -- an error estimate on a NaN means nothing.
+                    if (chemSource == csAdaptiveError && !bad)
+                    {
+                        scalarField nHalf(n0chem);
+                        scalarField Ph(Pchem.size()), Lh(Lchem.size());
+
+                        for (label half = 0; half < 2; ++half)
+                        {
+                            const scalarField nStart(nHalf);
+                            for (label it = 0; it < nOuterCorr; ++it)
+                            {
+                                chem.productionLoss(nHalf, kTab, T, Ph, Lh);
+                                forAll(nHalf, si)
+                                {
+                                    nHalf[si] = (nStart[si] + Ph[si]*0.5*dt)
+                                              / (1.0 + Lh[si]*0.5*dt);
+                                }
+                            }
+                        }
+
+                        const scalar absPart =
+                            errAbsFrac*max(n0chem[ie], scalar(0));
+
+                        scalar errNorm = 0;
+                        forAll(n, si)
+                        {
+                            if (!std::isfinite(nHalf[si])) { errNorm = GREAT; break; }
+                            const scalar scale = absPart + errRelTol*n0chem[si];
+                            errNorm = max
+                            (
+                                errNorm,
+                                mag(nHalf[si] - n[si])/max(scale, VSMALL)
+                            );
+                        }
+                        bad = (errNorm > 1.0);
+                    }
+
+                    if (bad
+                     && (chemSource == csAdaptive
+                      || chemSource == csAdaptiveError))
                     {
                         n = n0chem;
                         chem.integrate(n, kTab, T, dt);

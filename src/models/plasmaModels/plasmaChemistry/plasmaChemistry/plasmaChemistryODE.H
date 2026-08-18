@@ -171,8 +171,32 @@ class plasmaChemistryODE
         //  iterating it to convergence in the outer loop, is what makes the
         //  coupling second order.
         //
+        //  MEASURED CORRECTION (2026-08-18). Holding it CONSTANT is not
+        //  enough: with the outer loop converged to 1e-12 and ext_ at its
+        //  fixed point, `solver ode` still measured p = 0.988 on the 40x40
+        //  study. The transport rate VARIES across the step, and integrating
+        //  a nonlinear f against a constant stand-in perturbs the trajectory
+        //  at O(dt) however exact that constant is. So the claim above --
+        //  that iterating a constant ext_ to convergence gives second order
+        //  -- is false, and the slope below is what repairs it.
+        //
         //  Null when not supplied, which is the closed-cell case.
         const scalarField* ext_ = nullptr;
+
+        //- Time derivative of that external rate [m^-3 s^-2], so the cross
+        //  term is LINEAR across the substep rather than constant:
+        //
+        //      T(x) = ext_ + extSlope_*(x - dt/2)
+        //
+        //  Centred on dt/2 so the step MEAN is exactly ext_ -- the quantity
+        //  that was already validated -- and only the variation is new. A
+        //  slope lagged by one timestep is O(dt) accurate, and it enters
+        //  multiplied by (x - dt/2) ~ dt, so T is O(dt^2) and the coupling
+        //  reaches second order without needing the slope to be exact.
+        const scalarField* extSlope_ = nullptr;
+
+        //- Substep length, needed to centre the slope. Set by integrate().
+        scalar extDt_ = 0;
 
         //- Reaction rates, sized once and reused: derivatives() is called
         //  several times per step by every ODE solver worth using.
@@ -202,6 +226,8 @@ public:
 
         //- Constant external (transport) rate for this cell; null to disable
         void setExternal(const scalarField* e) { ext_ = e; }
+        void setExternalSlope(const scalarField* s, const scalar dt)
+        { extSlope_ = s; extDt_ = dt; }
 
         //- Evaluate the heavy reactions here (true) or leave them to the
         //  Cantera backend (false). Affects derivatives() and

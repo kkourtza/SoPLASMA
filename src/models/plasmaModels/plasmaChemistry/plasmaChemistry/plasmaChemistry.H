@@ -182,15 +182,21 @@ public:
         //  `ext`, when given, is the constant TRANSPORT rate for this cell
         //  over the step. Supplying it makes the integrated trajectory the
         //  cell's actual one rather than a closed-cell one, which is what
-        //  raises the coupling from first to second order once it is iterated
-        //  to convergence in the outer loop.
+        //  makes the integrated trajectory the cell's actual one.
+        //
+        //  `extSlope` is d(ext)/dt. Supplying it makes the cross term LINEAR
+        //  across the substep instead of constant, which is what actually
+        //  reaches second order: a constant ext leaves the scheme at p = 0.99
+        //  even with the outer loop converged to 1e-12 (measured 2026-08-18,
+        //  40x40 study). Centred so the mean stays `ext`.
         void integrate
         (
             scalarField& n,
             const scalarField& kTab,
             const scalar Tgas,
             const scalar dt,
-            const scalarField* ext = nullptr
+            const scalarField* ext = nullptr,
+            const scalarField* extSlope = nullptr
         ) const;
 
         //- Right-hand side and Jacobian at a state, for verification.
