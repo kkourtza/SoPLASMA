@@ -45,6 +45,7 @@ Description
 
 SourceFiles
     plasmaDischargeCurrent.C
+    weightingField.C
 
 \*---------------------------------------------------------------------------*/
 
@@ -81,8 +82,16 @@ class plasmaDischargeCurrent
         word drivenPatch_;
         wordList groundedPatches_;
 
-        //- Geometric weighting field e_hat = E_L/V_a [1/m], computed once.
+        //- Geometric weighting field e_hat = E_L/V_a [1/m] on the GAS mesh,
+        //  computed once. The conduction term needs it only here, because the
+        //  charged species live only in the gas.
         autoPtr<volVectorField> eHat_;
+
+        //- The unit-voltage potential, per region. Kept because C_g integrates
+        //  over the dielectrics too, and because they are worth writing out
+        //  when a weighting field looks wrong.
+        autoPtr<volScalarField> psiHatGas_;
+        PtrList<volScalarField> psiHatDiel_;
 
         //- Gap capacitance INT eps |e_hat|^2 dV [F], a constant of the mesh.
         scalar Cg_ = 0;
@@ -104,12 +113,15 @@ class plasmaDischargeCurrent
 
         autoPtr<OFstream> os_;
 
-        //- 2*pi/theta on a wedge mesh, 1 otherwise. See the definition:
+        //- 2*pi/theta on a wedge mesh, 1 otherwise. Per MESH, because
+        //  nothing guarantees a dielectric region was built with the same
+        //  wedge angle as the gas.
+        //
         //  mesh.V() on a wedge holds only the slice volumes, so every
         //  EXTENSIVE quantity -- charge, capacitance, current -- must be
         //  scaled to the full revolution. A 5 degree wedge would otherwise
         //  understate the current by 72x.
-        scalar wedgeRevolutionFactor() const;
+        static scalar wedgeRevolutionFactor(const fvMesh& m);
 
         //- Cached value of the above.
         scalar revolutionFactor_ = 1.0;

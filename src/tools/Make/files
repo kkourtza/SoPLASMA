@@ -1,5 +1,7 @@
 controls/timeControl/plasmaTimeControl.C
 
 diagnostics/plasmaSimulationDiagnostics/plasmaSimulationDiagnostics.C
+diagnostics/plasmaDischargeCurrent/plasmaDischargeCurrent.C
+diagnostics/plasmaDischargeCurrent/weightingField.C
 
 LIB = $(FOAM_USER_LIBBIN)/libplasmaTools
