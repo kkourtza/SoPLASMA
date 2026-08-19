@@ -322,6 +322,15 @@ int main(int argc, char *argv[])
             continue;                       // solve this step again, smaller
         }
 
+        // Accepting a step the outer loop never converged: either the retries
+        // are spent or deltaT is on its floor, so the solver has no lever
+        // left. Keep the best iterate, but say so -- and stop the run if this
+        // stops being an isolated event.
+        if (timeControl.outerHitCap())
+        {
+            timeControl.noteDegradedStep();
+        }
+
         stepDone = true;
         }   // end retry loop
 

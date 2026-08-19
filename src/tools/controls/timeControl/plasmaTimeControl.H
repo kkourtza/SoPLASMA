@@ -222,6 +222,70 @@ private:
             //  halved has no business immediately climbing again.
             bool noGrowthNextStep_ = false;
 
+            //- ABSOLUTE FLOOR on deltaT, and whether it was derived rather
+            //  than set by the user.
+            //
+            //  Without a floor the retry ladder descends forever. MEASURED on
+            //  a deliberately broken case (`maxCorrectors 3`, where nothing
+            //  can converge): deltaT fell 1.44e-12 -> 5.4e-14 -> 2.025e-15 in
+            //  three steps, because a step can lose 32x (five halvings) while
+            //  regrowth is capped at 1.2x per step. The run then never reaches
+            //  endTime -- for a user the worst failure mode there is: no
+            //  crash, no message, just a job that never finishes.
+            //
+            //  The default is derived from the requirement that the run be
+            //  able to FINISH: below (endTime - startTime)/minDeltaTMaxSteps_
+            //  it cannot, whatever the physics. That is a genuine impossibility
+            //  rather than a tuned magic number, which is why it is safe to
+            //  apply automatically.
+            //  TWO TERMS, because either alone is wrong:
+            //
+            //    tSpan/minDeltaTMaxSteps_   -- "this run can never finish"
+            //    deltaT0_/minDeltaTStepFactor_ -- "this is far below the
+            //                                  physical scale you started at"
+            //
+            //  The first scales with run LENGTH, which decouples from the
+            //  physical timescale: a 1 ms discharge would derive 1e-10 s while
+            //  its streamer still needs ~1e-12 s, so the floor would sit ABOVE
+            //  the step the Courant limiter legitimately demands and -- since
+            //  the floor is applied last and overrides the physical limiters
+            //  -- would silently clamp dt up to an unstable value. The second
+            //  term anchors to the scale the user themselves specified, so the
+            //  floor stays orders of magnitude below any real step size.
+            //  Taking the MINIMUM keeps the guard while removing that risk.
+            scalar minDeltaT_ = 0;
+            bool   minDeltaTAuto_ = true;
+            scalar minDeltaTMaxSteps_ = 1e7;
+            scalar minDeltaTStepFactor_ = 1e4;
+
+            //- The deltaT this run STARTED from, captured once. It must not be
+            //  re-sampled on a later read(): deltaT falls as the controller
+            //  works, so re-sampling would ratchet the floor down in step with
+            //  the very collapse it exists to stop.
+            scalar deltaT0_ = 0;
+
+            //- Steps accepted WITHOUT the outer loop converging, because the
+            //  dt lever was exhausted (at the floor, or out of retries).
+            //  Graceful degradation: the run completes and the user is told
+            //  exactly which steps are suspect, rather than the solver either
+            //  lying or deadlocking.
+            label degradedSteps_ = 0;
+            label degradedRun_ = 0;
+            label degradedConsecutive_ = 0;
+            label maxDegradedConsecutive_ = 10;
+
+            //- Times the floor actually clamped a requested reduction.
+            label floorHits_ = 0;
+
+            //- TREND detection, so a run ratcheting down is visible BEFORE it
+            //  becomes terminal. Absolute floors only fire at the very end of
+            //  a collapse; the ratio against the largest step the run has
+            //  sustained catches it while there is still something to do
+            //  about it.
+            scalar dtHighWater_ = 0;
+            scalar dtCollapseRatio_ = 100;
+            bool   collapseWarned_ = false;
+
             //- Set when the last step exhausted the cap without converging;
             //  read by adjustDeltaT() so the response is a time-step decision
             //  alongside the Courant and dielectric criteria, not a separate
@@ -300,6 +364,28 @@ public:
         //  solver is keyed on it, and oldTime() rotates on it, so holding it
         //  fixed is what makes a retry land on the same start state.
         void prepareRetry();
+
+        //- Is deltaT sitting on the floor, so that halving it again would
+        //  achieve nothing? Retrying costs a full solve, so there is no point
+        //  spending one on a step size the controller is not allowed to use.
+        bool atMinDeltaT() const;
+
+        //- Record that a step was accepted WITHOUT the outer loop converging.
+        //  Warns per occurrence and, if degradation becomes systemic rather
+        //  than isolated, stops the run with an actionable diagnostic.
+        void noteDegradedStep();
+
+        //- Did the last step exhaust the corrector cap without converging?
+        inline bool outerHitCap() const
+        {
+            return outerHitCap_;
+        }
+
+        //- Number of non-converged steps accepted over the whole run.
+        inline label degradedRun() const
+        {
+            return degradedRun_;
+        }
 
     // Accessors (Getters)
 

@@ -85,6 +85,111 @@ void plasmaTimeControl::read()
         maxDeltaT_ =
             dict_.lookupOrDefault<scalar>("maxDeltaT", GREAT);
 
+        // ABSOLUTE FLOOR. Derived from two independent impossibilities, the
+        // smaller winning -- see minDeltaT_ in the header for why one term
+        // alone is unsafe. Deriving it from what CANNOT be true, rather than
+        // guessing a working step size, is what makes it safe to apply
+        // without the user having chosen it.
+        minDeltaTMaxSteps_ =
+            dict_.lookupOrDefault<scalar>("minDeltaTMaxSteps", 1e7);
+
+        minDeltaTStepFactor_ =
+            dict_.lookupOrDefault<scalar>("minDeltaTStepFactor", 1e4);
+
+        maxDegradedConsecutive_ =
+            dict_.lookupOrDefault<label>("maxConsecutiveDegradedSteps", 10);
+
+        dtCollapseRatio_ =
+            dict_.lookupOrDefault<scalar>("deltaTCollapseRatio", 100);
+
+        minDeltaTAuto_ = !dict_.found("minDeltaT");
+
+        const scalar tSpan =
+            max(runTime_.endTime().value() - runTime_.startTime().value(),
+                SMALL);
+
+        // Captured ONCE -- see deltaT0_. On a restart this is the step the
+        // restart began from, which may already be reduced; that only lowers
+        // the floor, which is the safe direction.
+        if (deltaT0_ <= 0)
+        {
+            deltaT0_ = runTime_.deltaTValue();
+        }
+
+        const scalar floorFromSpan =
+            tSpan/max(minDeltaTMaxSteps_, scalar(1));
+
+        const scalar floorFromStep =
+            (deltaT0_ > 0)
+          ? deltaT0_/max(minDeltaTStepFactor_, scalar(1))
+          : GREAT;
+
+        const scalar derivedFloor = min(floorFromSpan, floorFromStep);
+
+        minDeltaT_ = minDeltaTAuto_
+            ? derivedFloor
+            : dict_.get<scalar>("minDeltaT");
+
+        // AUTO-CORRECT the unambiguous configuration mistakes. Each one has a
+        // single defensible repair, so repairing it beats refusing to run --
+        // but never silently.
+        if (minDeltaT_ <= 0)
+        {
+            WarningInFunction
+                << "plasmaTimeControl/minDeltaT = " << minDeltaT_
+                << " is not positive, so it cannot bound the retry ladder."
+                << nl << "    Using the derived floor "
+                << derivedFloor << " s instead." << endl;
+
+            minDeltaT_ = derivedFloor;
+            minDeltaTAuto_ = true;
+        }
+
+        if (minDeltaT_ > maxDeltaT_)
+        {
+            WarningInFunction
+                << "plasmaTimeControl/minDeltaT (" << minDeltaT_
+                << ") exceeds maxDeltaT (" << maxDeltaT_
+                << "), which leaves no admissible step size." << nl
+                << "    Lowering minDeltaT to maxDeltaT/1000 = "
+                << maxDeltaT_/1000 << " s." << endl;
+
+            minDeltaT_ = maxDeltaT_/1000;
+        }
+
+        if (adjustTimeStep_ && runTime_.deltaTValue() < minDeltaT_)
+        {
+            WarningInFunction
+                << "the initial deltaT (" << runTime_.deltaTValue()
+                << ") is already below minDeltaT (" << minDeltaT_ << ")."
+                << nl << "    Raising the initial step to the floor."
+                << endl;
+
+            runTime_.setDeltaT(minDeltaT_);
+        }
+
+        if (adjustTimeStep_)
+        {
+            Info<< "plasmaTimeControl: deltaT floor " << minDeltaT_ << " s";
+
+            if (minDeltaTAuto_)
+            {
+                Info<< " (derived, "
+                    << (floorFromStep < floorFromSpan
+                          ? "from the initial step"
+                          : "from endTime")
+                    << ")";
+            }
+            else
+            {
+                Info<< " (set by minDeltaT)";
+            }
+
+            Info<< nl
+                << "    below it the run stops with a diagnostic rather than"
+                << " descending forever" << endl;
+        }
+
         // Dielectric relaxation
         limitDielectricRelaxationRatio_ =
          dict_.lookupOrDefault<Switch>("limitDielectricRelaxationRatio", false);
@@ -418,7 +523,47 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
             dtFailCeiling_ *= retryCeilingRelax_;
         }
 
+        // (3) ABSOLUTE FLOOR, applied LAST so nothing can push below it. Note
+        // this deliberately overrides the physical limiters too: if the
+        // Courant or dielectric criterion genuinely wants a step this small
+        // the run is not viable anyway, and stopping with a diagnostic serves
+        // the user better than grinding towards a result that never arrives.
+        if (newDeltaT < minDeltaT_)
+        {
+            ++floorHits_;
+            newDeltaT = minDeltaT_;
+        }
+
         runTime_.setDeltaT(newDeltaT);
+
+        // (4) TREND. Warn once, while there is still time to act, when the
+        // step has collapsed far below the largest this run has sustained.
+        dtHighWater_ = max(dtHighWater_, newDeltaT);
+
+        if
+        (
+            !collapseWarned_
+         && dtCollapseRatio_ > 1
+         && dtHighWater_ > 0
+         && newDeltaT*dtCollapseRatio_ < dtHighWater_
+        )
+        {
+            collapseWarned_ = true;
+
+            WarningInFunction
+                << "deltaT has COLLAPSED by more than " << dtCollapseRatio_
+                << "x, from " << dtHighWater_ << " s to " << newDeltaT
+                << " s." << nl
+                << "    The run is losing ground faster than the 1.2x/step"
+                << " regrowth can recover it, and may not reach endTime." << nl
+                << "    The floor is " << minDeltaT_ << " s ("
+                << (minDeltaTAuto_ ? "derived" : "user-set") << ")." << nl
+                << "    Non-converged steps accepted so far: " << degradedRun_
+                << ", floor hits: " << floorHits_ << nl
+                << "    Watch the next few steps: if deltaT keeps falling,"
+                << " stop and see the guidance printed when the floor is"
+                << " reached." << endl;
+        }
     }
 
     // Report
@@ -545,6 +690,24 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         }
         Info<< nl;
     }
+
+    // TREND, per report interval. A run ratcheting down shows up here long
+    // before it hits the floor -- a cluster of degraded steps can lose ground
+    // far faster than 1.2x-per-step regrowth recovers it.
+    if (degradedSteps_ > 0 || floorHits_ > 0)
+    {
+        Info<< "  non-converged accepted:   " << degradedSteps_
+            << " this interval, " << degradedRun_ << " total";
+
+        if (floorHits_ > 0)
+        {
+            Info<< nl << "  deltaT floor:             hit " << floorHits_
+                << " times (minDeltaT " << minDeltaT_ << " s, "
+                << (minDeltaTAuto_ ? "derived" : "user-set") << ")";
+        }
+        Info<< nl;
+    }
+    degradedSteps_ = 0;
 
     Info<< "  " << std::string(52, '-').c_str() << nl << endl;
 }
@@ -754,9 +917,105 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
 }
 
 
+bool plasmaTimeControl::atMinDeltaT() const
+{
+    // A retry costs a full solve, so it is only worth spending one if the
+    // step can actually be made meaningfully smaller.
+    return runTime_.deltaTValue() <= minDeltaT_*(1 + SMALL);
+}
+
+
+void plasmaTimeControl::noteDegradedStep()
+{
+    ++degradedSteps_;
+    ++degradedRun_;
+    ++degradedConsecutive_;
+
+    WarningInFunction
+        << "step accepted WITHOUT the outer loop converging, at t = "
+        << runTime_.timeName() << ", deltaT = " << runTime_.deltaTValue()
+        << " s." << nl
+        << "    The time-step lever is exhausted ("
+        << (atMinDeltaT() ? "deltaT is at the floor" : "retries spent")
+        << "), so the best available iterate was kept." << nl
+        << "    This step is NOT converged to residualControl -- treat"
+        << " results from it as suspect. Consecutive: "
+        << degradedConsecutive_ << " of " << maxDegradedConsecutive_
+        << " allowed." << endl;
+
+    // Isolated degradation is a fair trade: the run finishes and the user
+    // knows which steps to distrust. SYSTEMATIC degradation is not -- it means
+    // the solver has driven deltaT to the floor and is still failing, so
+    // every subsequent result is meaningless and continuing only burns CPU.
+    if (degradedConsecutive_ >= maxDegradedConsecutive_)
+    {
+        FatalErrorInFunction
+            << nl
+            << "==============================================" << nl
+            << " The solver cannot converge this case." << nl
+            << "==============================================" << nl << nl
+            << degradedConsecutive_ << " consecutive time steps were accepted"
+            << " without the outer (PIMPLE) loop reaching its residual"
+            << " tolerance, with deltaT already at " << runTime_.deltaTValue()
+            << " s" << nl
+            << "(floor " << minDeltaT_ << " s, "
+            << (minDeltaTAuto_ ? "derived" : "set by you")
+            << "). Reducing the time step is the solver's last automatic"
+            << " lever and it is used up, so it is stopping rather than"
+            << " producing results that are not solutions." << nl << nl
+            << "State at the failure:" << nl
+            << "    time                    " << runTime_.timeName() << nl
+            << "    deltaT                  " << runTime_.deltaTValue()
+            << " s" << nl
+            << "    largest deltaT sustained " << dtHighWater_ << " s" << nl
+            << "    correctors on last step " << outerItersUsed_
+            << " (cap " << outerMaxCorrectors_ << ")" << nl
+            << "    retries spent this step " << outerRetries_
+            << " of " << outerMaxRetries_ << nl
+            << "    non-converged steps     " << degradedRun_
+            << " over the run" << nl
+            << "    floor hits              " << floorHits_ << nl << nl
+            << "What to check, in the order most likely to help:" << nl << nl
+            << "  1. MESH QUALITY. Run checkMesh. Non-orthogonality above ~70"
+            << " or high skewness makes the Poisson and drift-diffusion"
+            << " solves refuse to converge no matter how small the step is."
+            << " This is the most common cause and the solver cannot fix it."
+            << nl << nl
+            << "  2. BOUNDARY CONDITIONS. An over-specified or inconsistent"
+            << " set (for example a fixed potential facing a fixed charge"
+            << " flux) has no steady solution for the outer loop to find."
+            << nl << nl
+            << "  3. NEGATIVE OR RUNAWAY DENSITIES. Check the chemistry report"
+            << " above for negative-density clips and ODE failures. A species"
+            << " going negative makes rate coefficients meaningless and the"
+            << " coupling diverge." << nl << nl
+            << "  4. TIME-STEP CRITERIA. Lower maxSpeciesCo (try halving it)"
+            << " so the step is limited by physics before the coupling"
+            << " fails, rather than after." << nl << nl
+            << "  5. FIELD/CHARGE COUPLING. If this is a fast-ionisation"
+            << " transient, check maxDielectricRelaxationRatio -- the"
+            << " semi-implicit Poisson needs it near or below 1 when space"
+            << " charge is growing quickly." << nl << nl
+            << "  6. Only if the above are all sound: raise maxCorrectors, or"
+            << " loosen outerCoupling/residual. Note the outer loop here is"
+            << " bimodal -- it converges in a few correctors or not at all --"
+            << " so raising the cap rarely helps." << nl << nl
+            << "To let the run continue anyway and inspect the damage, set"
+            << " plasmaTimeControl/maxConsecutiveDegradedSteps to a larger"
+            << " value. The results from those steps are not converged."
+            << nl
+            << exit(FatalError);
+    }
+}
+
+
 bool plasmaTimeControl::stepRejected() const
 {
     if (outerOnNonConvergence_ != "retryStep" || !outerHitCap_) return false;
+
+    // Halving a step that is already on the floor buys nothing but a wasted
+    // solve; let the caller accept and degrade instead.
+    if (atMinDeltaT()) return false;
 
     // The counter belongs to a time index, so a new step resets it without the
     // solver having to remember to.
@@ -778,7 +1037,16 @@ void plasmaTimeControl::prepareRetry()
     ++outerRetries_;
 
     const scalar dtOld = runTime_.deltaTValue();
-    const scalar dtNew = 0.5*dtOld;
+
+    // Never descend through the floor: stepRejected() already refuses to
+    // retry AT it, and this keeps the last admissible rung on it rather than
+    // below it.
+    const scalar dtNew = max(0.5*dtOld, minDeltaT_);
+
+    if (dtNew > 0.5*dtOld)
+    {
+        ++floorHits_;
+    }
 
     // Remember the scale that failed, so the controller stops climbing back
     // into it every few steps, and forbid growth on the next step.
@@ -819,6 +1087,14 @@ void plasmaTimeControl::noteOuterLoop(const label used)
     // second criterion that disagrees with the one steering the loop.
     const bool hitCap = outerChaseConvergence_ && (used >= outerMaxCorrectors_);
     outerHitCap_ = hitCap;
+
+    // A converged step breaks the run of degraded ones. Only a CONSECUTIVE
+    // run is evidence that the case itself cannot be solved -- isolated
+    // failures around a fast transient are expected and recoverable.
+    if (!hitCap)
+    {
+        degradedConsecutive_ = 0;
+    }
 
     if (hitCap)
     {
