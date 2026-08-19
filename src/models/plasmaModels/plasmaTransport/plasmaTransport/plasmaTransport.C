@@ -280,6 +280,66 @@ void plasmaTransport::correctTransportModels()
 }
 
 // This is for the positive streamer case
+Foam::scalar Foam::plasmaTransport::maxChemStateRate() const
+{
+    if (chemP_.empty() || chemL_.empty()) return 0;
+
+    const PtrList<volScalarField>& nn = species_.numberDensities();
+
+    // Significance scale: the largest density anywhere, over every species.
+    // A change is judged against what the discharge actually contains, not
+    // against the species' own magnitude, which is what makes a trace species
+    // stop outranking a dominant one.
+    scalar nRef = 0;
+    forAll(nn, s)
+    {
+        nRef = max(nRef, gMax(nn[s].primitiveField()));
+    }
+
+    const scalar floor = max(chemCoScale_*nRef, VSMALL);
+
+    scalar rmax = 0;
+
+    forAll(chemP_, s)
+    {
+        if (s >= nn.size() || chemP_[s].empty() || chemL_[s].empty()) continue;
+
+        const scalarField& n = nn[s].primitiveField();
+
+        forAll(chemP_[s], c)
+        {
+            const scalar net   = mag(chemP_[s][c] - chemL_[s][c]*n[c]);
+            const scalar scale = max(mag(n[c]), floor);
+
+            rmax = max(rmax, net/scale);
+        }
+    }
+
+    reduce(rmax, maxOp<scalar>());
+
+    return rmax;
+}
+
+
+Foam::scalar Foam::plasmaTransport::maxChemLossRate() const
+{
+    // Empty under pure `ode`, which never assembles P/L -- see the header.
+    // Returning 0 lets the caller fall back rather than silently limiting on
+    // nothing.
+    scalar Lmax = 0;
+
+    forAll(chemL_, s)
+    {
+        if (!chemL_[s].empty())
+        {
+            Lmax = max(Lmax, gMax(chemL_[s]));
+        }
+    }
+
+    return Lmax;
+}
+
+
 // * * * * * * * * * * * * * * * G2: gas energy * * * * * * * * * * * * * * //
 
 void Foam::plasmaTransport::discardStep()
@@ -1677,6 +1737,9 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         chemChangeScale_ =
             cd.getOrDefault<scalar>("chemChangeScale", 0.0);
 
+        chemCoScale_ =
+            cd.getOrDefault<scalar>("chemCoScale", 1e-3);
+
         // ---- csAdaptiveError: the local-error switch ----------------------
         const word en = cd.getOrDefault<word>("chemErrorNorm", "electron");
         if      (en == "electron") chemErrorNorm_ = neElectron;
@@ -2620,6 +2683,13 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         }
         chemODEFailuresSinceReport_ += chemODEFailures_;
 
+        // Once per step, OUTSIDE the cell loop: the check reduces across ranks
+        // and would deadlock if called per cell, since ranks hold different
+        // cell counts. Warns at most once per run.
+        if (chem_)
+        {
+            chem_->reportRateGuard();
+        }
 
         const label ti = mesh_.time().timeIndex();
         const bool due =

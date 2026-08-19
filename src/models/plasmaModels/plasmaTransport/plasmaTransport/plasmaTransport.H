@@ -383,6 +383,15 @@ protected:
     //  error-estimating variant rather than a tuned threshold.
     scalar chemChangeScale_ = 0.0;
 
+        //- Significance floor for Co_chem, as a fraction of the largest
+        //  density anywhere: scale_s = max(n_s, chemCoScale_*max_all(n)).
+        //  Same idea as chemChangeScale_ and deliberately the same vocabulary,
+        //  but a separate knob because it steers the TIME STEP rather than the
+        //  per-cell solver choice. 1e-3 keeps five decades of dynamic range
+        //  below the peak, which covers the streamer channel and excludes the
+        //  quiescent far field. See maxChemStateRate().
+        scalar chemCoScale_ = 1e-3;
+
     // ---- csAdaptiveError: the local-error switch --------------------------
     //
     //  The threshold tests above ask "is this cell stiff / does it move a lot".
@@ -690,6 +699,59 @@ public:
         inline const surfaceScalarField& diffusiveFlux(const label i) const;
         inline PtrList<surfaceScalarField>& diffusiveFlux();
         inline const PtrList<surfaceScalarField>& diffusiveFlux() const;
+
+        //- Fastest FRACTIONAL RATE OF CHANGE OF THE STATE [1/s], over all
+        //  species and cells. The source for Co_chem.
+        //
+        //      scale_s = max( n_s , chemCoScale_ * max_over_all(n) )
+        //      rate    = max over (s, cells) of |P_s - L_s n_s| / scale_s
+        //
+        //  For electrons this reduces EXACTLY to |k_eff| = |S_ion - S_att|/n_e,
+        //  which is what the legacy air-fitted limiter measured -- so the
+        //  existing 0.9 calibration carries over rather than needing a fresh
+        //  sweep. It is the mechanism-derived generalisation of it: any gas,
+        //  any mechanism, no mu_ref and no constant eta.
+        //
+        //  Why the NET rate and not max_s(L_s), which was tried and reverted:
+        //  MEASURED 2026-08-20, limiting on L pinned Co_chem at its cap every
+        //  step, took the 0.5 ns bed from 52 to 113 steps and moved the answer
+        //  55%. The driver was the ELECTRON (tau_chem = 1.76e-12 s), because
+        //  P ~ L n -- quasi-equilibrium, where the channels are enormous and
+        //  the STATE barely moves. That is what the stiff integrator already
+        //  handles under its own error control, so limiting on it double-counts.
+        //  Co_chem must measure how far the state MOVES.
+        //
+        //  The scale floor does two jobs at once. It stops a trace species at
+        //  1e7 driven to 1e9 outranking a dominant species at 1e20 moving 5%
+        //  (the documented chemChangeScale trap), and it suppresses the
+        //  quiescent far field, where n is negligible but its fractional rate
+        //  need not be -- which is what made the old mag(k_eff) throttle the
+        //  step on benign attachment decay.
+        //
+        //  Returns 0 before the first chemistry evaluation and with
+        //  `reactions none`; the caller must cope with 0.
+        scalar maxChemStateRate() const;
+
+        //- Fastest chemical loss rate over all species and cells [1/s], or 0
+        //  when the chemistry path does not assemble P/L.
+        //
+        //  DIAGNOSTIC ONLY -- reported so stiffness stays visible, never used
+        //  to steer the step. See maxChemStateRate() for why.
+        //
+        //  This exists because k_eff() is a NET rate, (S_ion - S_att)/n_e:
+        //  where ionisation and attachment nearly cancel it approaches zero
+        //  while BOTH processes are fast, so a limiter reading it alone is
+        //  blind to exactly the regime it should constrain. The per-species
+        //  loss coefficient has no such cancellation.
+        //
+        //  chemL_ is sized in TWO places: the in-equation path guarded by
+        //  `csImplicitRate || isAdaptive()`, and computeChemistrySources(),
+        //  which is guarded only by `!chem_ || dt <= 0` and therefore runs for
+        //  every solver including pure `ode`. So this is normally live in all
+        //  chemistry modes. It still returns 0 before the first chemistry
+        //  evaluation, and with `reactions none`, so the caller must cope with
+        //  0 rather than assume a value.
+        scalar maxChemLossRate() const;
 
         inline const volScalarField& k_eff() const { return k_eff_; };
         const volScalarField& alpha() const noexcept { return alpha_; }

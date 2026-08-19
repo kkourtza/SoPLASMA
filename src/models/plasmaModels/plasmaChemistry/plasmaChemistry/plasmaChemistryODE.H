@@ -161,6 +161,39 @@ class plasmaChemistryODE
         //- Cantera production and loss, sized on first use
         mutable scalarField Pc_, Lc_;
 
+        //- NEGATIVE RATE COEFFICIENT guard.
+        //
+        //  Rate tables may be read with `outOfBounds extrapolate`, and linear
+        //  extrapolation past the top of a NON-MONOTONIC k(E/N) can cross
+        //  zero. A negative k is not merely inaccurate: q = k*PROD(n) then
+        //  goes negative, which turns a production term into a sink and, worse,
+        //  puts a NEGATIVE coefficient on the implicit diagonal via
+        //  `fvm::Sp(L, n)` -- anti-damping, the same destabilising shape as the
+        //  transport cross-term sink that had to be abandoned.
+        //
+        //  The code already defended the UNBOUNDED direction (the VSMALL ->
+        //  L ~ 1e300 -> SIGFPE story below) but not this one. Clamping to zero
+        //  is the conservative repair: the reaction simply stops rather than
+        //  running backwards. It is REPORTED once, naming the reaction, because
+        //  a table extrapolating negative is a mechanism defect to fix at
+        //  source, not something to silently absorb.
+        //
+        //  Below-range lookups are safe: the tables start at zero.
+        mutable label negativeRateCount_ = 0;
+        mutable label negativeRateFirst_ = -1;
+        mutable bool  negativeRateWarned_ = false;
+
+        //- The rate coefficient for one reaction, guarded against the above.
+        //  Single point of truth: derivatives(), jacobian() and
+        //  productionLoss() all evaluated k independently, so a clamp applied
+        //  to only some of them would leave the three disagreeing about the
+        //  same reaction.
+        inline scalar rateCoeff
+        (
+            const plasmaReactionSpec& rx,
+            const label r
+        ) const;
+
         //- Constant external rate added to every derivative [m^-3 s^-1].
         //
         //  The TRANSPORT contribution over the step, held fixed while the
@@ -392,6 +425,11 @@ public:
         //- Gas temperature used by the Arrhenius rates
         void setTgas(const scalar T) { Tgas_ = T; }
 
+        //- Warn ONCE if any rate coefficient came back negative. Collective:
+        //  call it on every rank. See negativeRateCount_ for why a negative k
+        //  matters rather than merely being inaccurate.
+        void reportNegativeRateGuard(const wordList& reactionNames) const;
+
         //- Constant external (transport) rate for this cell; null to disable
         void setExternal(const scalarField* e) { ext_ = e; }
         void setExternalSlope(const scalarField* s, const scalar dt)
@@ -487,6 +525,36 @@ public:
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 } // End namespace Foam
+
+
+// * * * * * * * * * * * * * * Inline Definitions  * * * * * * * * * * * * * //
+
+inline Foam::scalar Foam::plasmaChemistryODE::rateCoeff
+(
+    const plasmaReactionSpec& rx,
+    const label r
+) const
+{
+    const scalar k =
+        (rx.tabulated >= 0)
+      ? kTab_[rx.tabulated]
+      : rx.A*Foam::pow(Tgas_, rx.b)
+          *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+
+    // One predictable branch in a hot loop; see negativeRateCount_.
+    if (k < 0)
+    {
+        ++negativeRateCount_;
+        if (negativeRateFirst_ < 0)
+        {
+            negativeRateFirst_ = r;
+        }
+        return 0;
+    }
+
+    return k;
+}
+
 
 #endif
 

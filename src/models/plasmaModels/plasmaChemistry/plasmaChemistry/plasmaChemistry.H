@@ -162,6 +162,15 @@ public:
         //  integrate() expects their rate coefficients
         const wordList& tabulatedIds() const { return tabulatedIds_; }
 
+        //- Warn once if any rate coefficient evaluated negative and was
+        //  clamped. COLLECTIVE -- call once per step from outside the cell
+        //  loop, never from integrate(), which is per cell and would deadlock
+        //  when ranks hold different cell counts.
+        void reportRateGuard() const
+        {
+            ode_->reportNegativeRateGuard(tabulatedIds_);
+        }
+
         //- Which backend evaluates the heavy reactions
         const word& backend() const { return backend_; }
 

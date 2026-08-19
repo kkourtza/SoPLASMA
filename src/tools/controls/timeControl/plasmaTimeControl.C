@@ -440,9 +440,58 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     // Chemistry Limit
     if (limitChemistryCo_ || printChemistryCo_)
     {
-        const volScalarField& keff = transport.k_eff();
-        maxKeff = gMax(mag(keff)().primitiveField());
-        
+        // Co_chem bounds how far the chemistry moves the state in one step.
+        // It is NOT a stability limit: `implicitRate` is unconditionally
+        // stable and the ODE path substeps under its own error control. What
+        // it constrains is the SPLITTING error -- the field, and the rate
+        // coefficients read from it, are frozen while the chemistry
+        // integrates over dt. So it is a coupling constraint.
+        //
+        // Two measures, because neither alone is sufficient:
+        //
+        //  * k_eff is the NET electron rate (S_ion - S_att)/n_e. It goes to
+        //    zero where ionisation and attachment nearly cancel, even though
+        //    both processes are fast -- blind to the regime it should
+        //    constrain.
+        //  * chemL_ is the per-species loss coefficient the chemistry
+        //    actually assembles, with no such cancellation. It is live in all
+        //    chemistry modes (computeChemistrySources() sizes it for pure
+        //    `ode` too), but it is 0 before the first chemistry evaluation and
+        //    with `reactions none`.
+        //
+        // Taking the larger uses whichever is informative and degrades to
+        // k_eff alone whenever P/L has not been assembled yet.
+        //
+        // NOT mag(k_eff): a NEGATIVE net rate is attachment-dominated decay in
+        // the far field, which is benign and stable. Limiting dt on it
+        // throttled the step for no accuracy gain.
+        // Co_chem bounds how far the chemistry moves the STATE in one step.
+        // It is NOT a stability limit: `implicitRate` is unconditionally
+        // stable and the ODE path substeps under its own error control. What
+        // it constrains is the SPLITTING error -- the field, and the rate
+        // coefficients read from it, are frozen while the chemistry integrates
+        // over dt. So it is a coupling constraint.
+        //
+        // The source is the per-species fractional net rate of change (see
+        // plasmaTransport::maxChemStateRate), which is the mechanism-derived
+        // generalisation of the legacy air-fitted k_eff: for electrons the two
+        // are equal, so the 0.9 calibration carries over.
+        //
+        // k_eff remains the fallback for the legacy Townsend path, which
+        // assembles no P/L. Growth only, never mag(): a negative net rate is
+        // attachment-dominated decay, which is benign and stable.
+        const scalar stateRate = transport.maxChemStateRate();
+
+        if (stateRate > 0)
+        {
+            maxKeff = stateRate;
+        }
+        else
+        {
+            const volScalarField& keff = transport.k_eff();
+            maxKeff = max(gMax(keff.primitiveField()), scalar(0));
+        }
+
         if (limitChemistryCo_)
         {
             newDeltaT = min
@@ -646,6 +695,20 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
                 val, lim, maxChemistryCo_,
                 binding
             ).c_str() << nl;
+
+        // DIAGNOSTIC, not a limiter input. The fastest single loss channel is
+        // worth seeing -- it is what `chemStiffnessLimit` routes cells on --
+        // but it must not steer the step: P ~ L n means the channels can be
+        // enormous while the state barely moves, and limiting on it was
+        // measured to double the step count for nothing. See
+        // plasmaTransport::maxChemStateRate().
+        const scalar Lpk = transport.maxChemLossRate();
+        if (Lpk > 0)
+        {
+            Info<< "    (fastest loss channel:  " << Lpk
+                << " 1/s, tau = " << 1.0/Lpk
+                << " s -- diagnostic, does not limit dt)" << nl;
+        }
     }
 
     if (limitVoltageRiseRate_ || printVoltageRiseRate_)
@@ -780,8 +843,11 @@ void plasmaTimeControl::setInitialDeltaT(const plasmaTransport& transport)
     // Chemistry Courant Limit
     if (limitChemistryCo_)
     {
+        // Growth only, not mag() -- see adjustDeltaT(). chemL_ is necessarily
+        // empty here (the chemistry has not run yet), so this is the k_eff
+        // measure alone by construction.
         const volScalarField& keff = transport.k_eff();
-        const scalar maxKeff = gMax(mag(keff)().primitiveField());
+        const scalar maxKeff = max(gMax(keff.primitiveField()), scalar(0));
         newDeltaT = min
         (
             newDeltaT,

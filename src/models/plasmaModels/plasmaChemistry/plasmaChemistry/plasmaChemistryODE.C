@@ -77,11 +77,7 @@ void Foam::plasmaChemistryODE::derivatives
         // O2(b1) + O2 has Ta = -241 K -- and skipping the exponential for it
         // dropped a factor of 2.2 from that rate. Found by the Cantera
         // cross-check, which is the argument for having two backends at all.
-        scalar k =
-            (rx.tabulated >= 0)
-          ? kTab_[rx.tabulated]
-          : rx.A*Foam::pow(Tgas_, rx.b)
-              *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+        const scalar k = rateCoeff(rx, r);
 
         // Rate = k * PRODUCT(n_reactant), with repetition giving the order.
         // A negative density cannot occur physically but does occur
@@ -207,11 +203,7 @@ void Foam::plasmaChemistryODE::jacobian
         const plasmaReactionSpec& rx = reactions_[r];
         if (!heavy_ && rx.tabulated < 0) continue;
 
-        scalar k =
-            (rx.tabulated >= 0)
-          ? kTab_[rx.tabulated]
-          : rx.A*Foam::pow(Tgas_, rx.b)
-              *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+        const scalar k = rateCoeff(rx, r);
 
         scalar base = k*rx.fixedReactantDensity;
         if (rx.collider >= 0)
@@ -313,6 +305,53 @@ Foam::scalar Foam::plasmaChemistryODE::chargeResidual(const scalarField& y) cons
 // ************************************************************************* //
 
 
+void Foam::plasmaChemistryODE::reportNegativeRateGuard
+(
+    const wordList& tabulatedIds
+) const
+{
+    if (negativeRateWarned_) return;
+
+    // Collective: the offending cells may live on any rank.
+    label count = negativeRateCount_;
+    reduce(count, sumOp<label>());
+
+    if (count == 0) return;
+
+    negativeRateWarned_ = true;
+
+    // Lowest offending reaction index anywhere. -1 means "none on this rank"
+    // and must not win the minimum.
+    label first = (negativeRateFirst_ < 0) ? labelMax : negativeRateFirst_;
+    reduce(first, minOp<label>());
+
+    word what("reaction " + Foam::name(first));
+    if (first >= 0 && first < reactions_.size())
+    {
+        const label t = reactions_[first].tabulated;
+        what += (t >= 0 && t < tabulatedIds.size())
+              ? " (tabulated channel " + tabulatedIds[t] + ")"
+              : " (heavy/Arrhenius)";
+    }
+
+    WarningInFunction
+        << "a rate coefficient evaluated NEGATIVE and was clamped to zero."
+        << nl
+        << "    occurrences so far: " << count
+        << ", first at " << what << nl
+        << "    A negative k makes q = k*PROD(n) negative, which turns a"
+        << " production term into a sink and puts an ANTI-DAMPING coefficient"
+        << " on the implicit diagonal via fvm::Sp." << nl
+        << "    Most likely cause: a rate table read with `outOfBounds"
+        << " extrapolate`, linearly extrapolated past the top of a"
+        << " non-monotonic k(E/N) until it crosses zero." << nl
+        << "    Clamping keeps the run stable, but the MECHANISM is what needs"
+        << " fixing: extend the table's range, or switch that table to"
+        << " `outOfBounds clamp`." << nl
+        << "    This warning is printed once per run." << endl;
+}
+
+
 void Foam::plasmaChemistryODE::productionLoss
 (
     const scalarField& y,
@@ -328,11 +367,7 @@ void Foam::plasmaChemistryODE::productionLoss
         const plasmaReactionSpec& rx = reactions_[r];
         if (!heavy_ && rx.tabulated < 0) continue;
 
-        const scalar k =
-            (rx.tabulated >= 0)
-          ? kTab_[rx.tabulated]
-          : rx.A*Foam::pow(Tgas_, rx.b)
-              *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+        const scalar k = rateCoeff(rx, r);
 
         scalar q = k*rx.fixedReactantDensity;
         forAll(rx.reactants, i)
@@ -398,8 +433,7 @@ Foam::scalar Foam::plasmaChemistryODE::heavyHeatRelease
         // header for why mixing the two double-counts.
         if (rx.tabulated >= 0 || rx.deltaH == 0.0) continue;
 
-        const scalar k = rx.A*Foam::pow(Tgas_, rx.b)
-                       *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+        const scalar k = rateCoeff(rx, r);
 
         scalar q = k*rx.fixedReactantDensity;
         forAll(rx.reactants, i)
