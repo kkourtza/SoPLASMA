@@ -44,6 +44,7 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     maxVoltageRiseRate_(GREAT),
     voltagePatchName_(""),
     prevPatchVoltage_(0.0),
+    voltageSeeded_(false),
     outerChaseConvergence_(true),
     outerMaxCorrectors_(20),
     outerTolerance_(1e-8),
@@ -135,6 +136,47 @@ void plasmaTimeControl::read()
                 oc.getOrDefault<scalar>("tolerance", 1e-8);
             outerOnNonConvergence_ =
                 oc.getOrDefault<word>("onNonConvergence", "reduceDeltaT");
+            outerMaxRetries_ =
+                oc.getOrDefault<label>("maxRetries", 5);
+
+            // Rejection memory. `retryCeilingFactor 0` disables it and
+            // restores the plain 1.2x-per-step regrowth.
+            retryCeilingFactor_ =
+                oc.getOrDefault<scalar>("retryCeilingFactor", 0.9);
+            retryCeilingRelax_ =
+                oc.getOrDefault<scalar>("retryCeilingRelax", 1.05);
+
+            if (retryCeilingRelax_ < 1)
+            {
+                FatalErrorInFunction
+                    << "outerCoupling/retryCeilingRelax = "
+                    << retryCeilingRelax_ << " is below 1, so the ceiling"
+                    << " would shrink on every step and deltaT could never"
+                    << " recover." << exit(FatalError);
+            }
+
+            if
+            (
+                outerOnNonConvergence_ != "warn"
+             && outerOnNonConvergence_ != "reduceDeltaT"
+             && outerOnNonConvergence_ != "retryStep"
+             && outerOnNonConvergence_ != "fatal"
+            )
+            {
+                FatalErrorInFunction
+                    << "outerCoupling/onNonConvergence = `"
+                    << outerOnNonConvergence_ << "` is not recognised." << nl
+                    << "    Use warn | reduceDeltaT | retryStep | fatal."
+                    << exit(FatalError);
+            }
+
+            if (outerOnNonConvergence_ == "retryStep" && !adjustTimeStep_)
+            {
+                FatalErrorInFunction
+                    << "outerCoupling/onNonConvergence = `retryStep` needs"
+                    << " adjustTimeStep on: the retry works by shortening"
+                    << " deltaT." << exit(FatalError);
+            }
         }
 
         // Voltage rise rate
@@ -146,8 +188,23 @@ void plasmaTimeControl::read()
 
         if (limitVoltageRiseRate_ || printVoltageRiseRate_)
         {
+            // VOLTS PER STEP, despite the name -- the limiter solves for the
+            // deltaT that makes the applied voltage change by this much in one
+            // step, and the report prints it as `dV/step [V]`. It is NOT a
+            // rate in V/s. Kept under the old key so existing cases still
+            // read, but documented here because the name misleads.
+            //
+            // 100 V/step is a sane ceiling for a kV-scale pulse: fine enough
+            // that the rise is resolved, coarse enough never to bind while the
+            // Courant and dielectric limits are doing their job. It is a
+            // SAFETY NET, not the primary control.
             maxVoltageRiseRate_ =
-                dict_.lookupOrDefault<scalar>("maxVoltageRiseRate", 1e5);
+                dict_.lookupOrDefault<scalar>("maxVoltageRisePerStep", 100.0);
+            maxVoltageRiseRate_ =
+                dict_.lookupOrDefault<scalar>
+                (
+                    "maxVoltageRiseRate", maxVoltageRiseRate_
+                );
 
             voltagePatchName_ =
                 dict_.lookupOrDefault<word>("voltagePatchName", "");
@@ -295,6 +352,18 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     if (limitVoltageRiseRate_ || printVoltageRiseRate_)
     {
         const scalar currentVoltage = patchVoltageAvg(transport);
+
+        // FIRST STEP: there is no previous voltage to difference against, and
+        // seeding prevPatchVoltage_ with 0 makes dV the WHOLE applied voltage
+        // -- kilovolts in one step. The inferred rate is then enormous and the
+        // limiter pins deltaT at ~5e-15 s, which is a start-up artefact, not
+        // physics. So the first pass only records the voltage.
+        if (!voltageSeeded_)
+        {
+            voltageSeeded_ = true;
+            prevPatchVoltage_ = currentVoltage;
+        }
+
         const scalar dV = currentVoltage - prevPatchVoltage_;
         voltageRiseRate = dV / (runTime_.deltaT0Value() + VSMALL);
 
@@ -329,7 +398,24 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
 
         if (newDeltaT > currentDeltaT)
         {
-            newDeltaT = min(newDeltaT, currentDeltaT * 1.2);
+            // (2) A step that was just halved may not grow again immediately.
+            if (noGrowthNextStep_)
+            {
+                newDeltaT = currentDeltaT;
+            }
+            else
+            {
+                newDeltaT = min(newDeltaT, currentDeltaT * 1.2);
+            }
+        }
+        noGrowthNextStep_ = false;
+
+        // (1) Rejection memory: stay below the scale that is known to fail,
+        // and let that ceiling drift up only slowly. See dtFailCeiling_.
+        if (dtFailCeiling_ > 0)
+        {
+            newDeltaT = min(newDeltaT, dtFailCeiling_);
+            dtFailCeiling_ *= retryCeilingRelax_;
         }
 
         runTime_.setDeltaT(newDeltaT);
@@ -429,6 +515,35 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
                 dVPerStep, lim, maxVoltageRiseRate_,
                 binding, "abs max"
             ).c_str() << nl;
+    }
+
+    // OUTER-LOOP HALVING, reported beside the other constraints.
+    //
+    // Without this line the report is actively misleading: it shows every
+    // Courant number comfortably below its cap and gives no reason why deltaT
+    // is not larger. The reason is here -- the coupling did not converge, so
+    // adjustDeltaT() halved the step, and that limit wins over the Courant
+    // ones. Working this out from the outside took a long detour, from
+    // "Co_conv 1.43 [max 2.5]" to the conclusion that the controller was
+    // misbehaving, when it was doing exactly what it was told.
+    //
+    // The corrector count is printed too, because it says whether raising
+    // maxCorrectors would help: a loop that used every one of them and was
+    // still moving is slow, one that stalls is diverging, and the two want
+    // opposite responses.
+    if (outerHitCap_)
+    {
+        Info<< "  outer loop:               NOT converged in "
+            << outerItersUsed_ << " correctors (cap "
+            << outerMaxCorrectors_ << ")";
+
+        if (outerOnNonConvergence_ == "reduceDeltaT" && adjustTimeStep_)
+        {
+            Info<< "  <--  deltaT HALVED" << nl
+                << "                            step is not second order;"
+                << " raise outerCoupling/maxCorrectors if this persists";
+        }
+        Info<< nl;
     }
 
     Info<< "  " << std::string(52, '-').c_str() << nl << endl;
@@ -636,6 +751,62 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
     Info<< "plasmaTimeControl: outerCoupling target `converged`" << nl
         << "    residual " << tol << ", up to " << maxCorr
         << " correctors (a CAP -- the loop exits when converged)" << endl;
+}
+
+
+bool plasmaTimeControl::stepRejected() const
+{
+    if (outerOnNonConvergence_ != "retryStep" || !outerHitCap_) return false;
+
+    // The counter belongs to a time index, so a new step resets it without the
+    // solver having to remember to.
+    const label ti = runTime_.timeIndex();
+    if (ti != outerRetryTimeIndex_) return true;
+
+    return outerRetries_ < outerMaxRetries_;
+}
+
+
+void plasmaTimeControl::prepareRetry()
+{
+    const label ti = runTime_.timeIndex();
+    if (ti != outerRetryTimeIndex_)
+    {
+        outerRetryTimeIndex_ = ti;
+        outerRetries_ = 0;
+    }
+    ++outerRetries_;
+
+    const scalar dtOld = runTime_.deltaTValue();
+    const scalar dtNew = 0.5*dtOld;
+
+    // Remember the scale that failed, so the controller stops climbing back
+    // into it every few steps, and forbid growth on the next step.
+    if (retryCeilingFactor_ > 0)
+    {
+        const scalar ceiling = retryCeilingFactor_*dtOld;
+        dtFailCeiling_ = (dtFailCeiling_ > 0)
+                       ? min(dtFailCeiling_, ceiling)
+                       : ceiling;
+    }
+    noGrowthNextStep_ = true;
+
+    // Land the clock on the shortened step, measured from the CAPTURED start
+    // of this step rather than from anything reconstructed out of the current
+    // time and deltaT -- see tStepStart_. setTime keeps the INDEX, which is
+    // what every per-step cache and oldTime() rotation is keyed on.
+    runTime_.setDeltaT(dtNew);
+    runTime_.setTime(tStepStart_ + dtNew, ti);
+
+    Info<< "  outer loop did not converge -- DISCARDING this step and"
+        << " re-running it" << nl
+        << "    retry " << outerRetries_ << " of " << outerMaxRetries_
+        << ", deltaT " << dtOld << " -> " << dtNew
+        << ", t = " << runTime_.value() << endl;
+
+    // The step is being redone, so the verdict from the attempt just thrown
+    // away must not also shrink the NEXT step in adjustDeltaT().
+    outerHitCap_ = false;
 }
 
 

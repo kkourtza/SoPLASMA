@@ -148,6 +148,13 @@ public:
 
     // Member Functions
 
+        //- Cap on the transport cross term's sink coefficient, in units of
+        //  1/deltaT. See plasmaChemistryODE::extRef_ for what it trades.
+        void setCrossSinkLimit(const scalar c)
+        {
+            ode_->setCrossSinkLimit(c);
+        }
+
         label nSpecie() const { return species_.size(); }
         const wordList& species() const { return species_; }
 

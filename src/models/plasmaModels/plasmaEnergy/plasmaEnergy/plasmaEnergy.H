@@ -102,6 +102,30 @@ private:
     //  heating split exists to avoid.
     autoPtr<volScalarField> eVibPtr_;
 
+    //- Start-of-timestep vibrational energy, and the index it belongs to.
+    //
+    //  e_vib is the ONE piece of solution state in this solver that is not
+    //  recomputed from oldTime(): it carries no fvm::ddt, so it has no stored
+    //  old time level, and it used to be advanced in place with `+=`. That is
+    //  correct exactly once per timestep -- and it is called once, under
+    //  `finalIter`, so there was never a bug -- but it makes the field the
+    //  only thing here that is not IDEMPOTENT within a step.
+    //
+    //  Everything else in this solver can be re-run within a timestep and land
+    //  on the same answer: the species and T_gas are recomputed from
+    //  oldTime(), surfCharge resets from its own oldTime() before
+    //  accumulating, and the chemistry caches are keyed on timeIndex. Only
+    //  this one had to be advanced exactly once, by convention rather than by
+    //  construction.
+    //
+    //  Baselining it restores that property: the update becomes
+    //  ev = ev_start + (Pvib - Qvt) dt rather than ev += ..., which is
+    //  BIT-EXACT for a single call (Qvt is evaluated at the same start-of-step
+    //  state either way) and simply repeatable for any number of calls. That
+    //  is what lets a non-converged step be discarded and re-run.
+    mutable scalarField eVibStart_;
+    mutable label eVibTimeIndex_ = -1;
+
     //- Thermal conductivity of the gas [W/m/K]. Constant for now; the
     //  mixture-averaged form needs Lennard-Jones data the mechanism does not
     //  yet carry.
@@ -173,6 +197,18 @@ public:
         //  wants to hold on to the field should hold this instead.
         //  Valid only when solvesGasEnergy() is true.
         const volScalarField& TgasField() const { return *TgasFieldPtr_; }
+
+        //- Throw away the step just solved: T_gas back to its own oldTime().
+        //  e_vib needs nothing -- it integrates from eVibStart_, which is
+        //  keyed on the time index a retry holds fixed, so re-running simply
+        //  recomputes it with the shorter deltaT.
+        void discardStep()
+        {
+            if (!solveGasEnergy_ || !TgasFieldPtr_) return;
+            volScalarField& T = *TgasFieldPtr_;
+            T == T.oldTime();
+            T.correctBoundaryConditions();
+        }
 
         //- The vibrational reservoir [J/m^3].
         const volScalarField& eVib() const { return eVibPtr_(); }

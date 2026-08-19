@@ -14,6 +14,11 @@ set -e	# Exit on first error
 # Move to script directory (in case called from elsewhere)
 cd "${0%/*}" || exit 1
 
+# Never rebuild over a library a running solver has mapped: it can kill the run
+# mid-flight with SIGBUS, hours in, with no hint of the cause. Override with
+# FORCE=1. See check-no-running-solvers.sh.
+./check-no-running-solvers.sh || exit 1
+
 # Libraries
 echo "Building Libraries..."
 echo "-------------------------------------"

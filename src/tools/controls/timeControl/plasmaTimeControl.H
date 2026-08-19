@@ -155,8 +155,72 @@ private:
             //  silently runs to the cap on every step.
             scalar outerTolerance_;
 
-            //- warn | reduceDeltaT | fatal
+            //- Has prevPatchVoltage_ been given a real value yet? Until it
+            //  has, differencing against it would report the whole applied
+            //  voltage as a one-step rise. See the first-step guard.
+            bool voltageSeeded_;
+
+            //- warn | reduceDeltaT | retryStep | fatal
+            //
+            //  `reduceDeltaT` ACCEPTS the non-converged step and shrinks the
+            //  NEXT one, so an unconverged solution enters the history and
+            //  stays there. Measured on the streamer: 11% of steps at Co 1.5
+            //  and 16% at Co 2.5, against 0% for the Co 0.25 reference.
+            //
+            //  `retryStep` discards it instead -- the fields are reset to
+            //  oldTime(), deltaT is halved and the step is re-run, so no
+            //  unconverged state is ever kept. Measured correctors per step
+            //  are bimodal (converge within ~8, or not at all), so a retry
+            //  after a LOW cap is cheaper than accepting after a high one.
             word outerOnNonConvergence_;
+
+            //- Retries already spent on the current step, and the cap on them.
+            //  Halving 5 times is deltaT/32; past that the step is accepted
+            //  with a warning rather than the run deadlocking.
+            label outerRetries_ = 0;
+            label outerMaxRetries_ = 5;
+
+            //- Time index the retry counter belongs to, so it resets itself
+            //  when the step changes without needing a call from the solver.
+            label outerRetryTimeIndex_ = -1;
+
+            //- Time value at the END of the last ACCEPTED step, captured by
+            //  the solver before it advances the clock.
+            //
+            //  It must be captured, NOT inferred. The obvious
+            //  `value() - deltaT()` is wrong here: ++runTime advances using
+            //  the PREVIOUS step's deltaT, while adjustDeltaT() then installs
+            //  a new one, so the two differ by the ramp factor (1.2x) -- and
+            //  across repeated retries the error compounds, because value()
+            //  has already been corrected once. MEASURED: that arithmetic sent
+            //  the clock NEGATIVE on the third retry (t = -6e-14).
+            scalar tStepStart_ = 0;
+
+            //- REJECTION MEMORY: the smallest deltaT known to have failed to
+            //  converge, and the ceiling derived from it.
+            //
+            //  Without it the controller rediscovers the failure scale over
+            //  and over. MEASURED on the Co 1.5 streamer: steps failed at
+            //  ~1.0e-11, succeeded at ~5e-12, regrew at 1.2x/step back through
+            //  the failure scale in about four steps, and failed again -- a
+            //  stable sawtooth between 4.3e-12 and 8.5e-12 that spent one
+            //  discarded attempt every fourth step for no accuracy gain,
+            //  because the SUSTAINABLE step lies between the two.
+            //
+            //  So a failure is remembered: growth is capped just below it
+            //  (retryCeilingFactor_), and the ceiling is relaxed only slowly
+            //  (retryCeilingRelax_ per successful step) so the solver can
+            //  still follow the physics -- on a timescale far longer than the
+            //  failure cycle. Zero disables the memory.
+            scalar dtFailCeiling_ = 0;
+            scalar retryCeilingFactor_ = 0.9;
+            scalar retryCeilingRelax_ = 1.05;
+
+            //- Set for the step FOLLOWING a rejection, which may not grow at
+            //  all. Standard in Hairer-style step control, and on its own it
+            //  removes the tightest oscillation: a step that has just been
+            //  halved has no business immediately climbing again.
+            bool noGrowthNextStep_ = false;
 
             //- Set when the last step exhausted the cap without converging;
             //  read by adjustDeltaT() so the response is a time-step decision
@@ -215,6 +279,27 @@ public:
         //  OpenFOAM's own residualControl decision rather than a second,
         //  possibly disagreeing, criterion of ours.
         void noteOuterLoop(const label used);
+
+        //- Should the step just solved be DISCARDED and re-run smaller?
+        //
+        //  True only under `onNonConvergence retryStep`, when the loop hit its
+        //  cap and retries remain. The caller must then reset the solution to
+        //  oldTime() and call prepareRetry() before solving again.
+        bool stepRejected() const;
+
+        //- Record the time the step is starting FROM. Call it in the solver
+        //  loop BEFORE ++runTime, which is the only place the value is
+        //  unambiguous. See tStepStart_ for why it cannot be inferred later.
+        void noteStepStart() { tStepStart_ = runTime_.value(); }
+
+        //- Halve deltaT and move the clock back onto the shortened step.
+        //
+        //  The time VALUE has already advanced by the old deltaT, so it is
+        //  corrected here rather than rewound: t_prev + deltaT_new. The time
+        //  INDEX is deliberately left alone -- every per-step cache in the
+        //  solver is keyed on it, and oldTime() rotates on it, so holding it
+        //  fixed is what makes a retry land on the same start state.
+        void prepareRetry();
 
     // Accessors (Getters)
 

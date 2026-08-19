@@ -235,11 +235,25 @@ void Foam::plasmaEnergy::solveGasEnergy
     scalarField& evI = ev.primitiveFieldRef();
     scalarField Qvt(mesh_.nCells(), Zero);
 
+    // Baseline the reservoir once per timestep, then integrate FROM that
+    // baseline rather than from wherever the field currently sits. Identical
+    // arithmetic on the first call of a step; repeatable on any later call,
+    // which is what makes discarding and re-running a step safe. See the
+    // header for why this field is the only one that needed it.
+    const label ti = mesh_.time().timeIndex();
+    if (ti != eVibTimeIndex_ || eVibStart_.size() != evI.size())
+    {
+        eVibTimeIndex_ = ti;
+        eVibStart_ = evI;
+    }
+
     forAll(evI, celli)
     {
         const scalar tau = max(tauVT.primitiveField()[celli], SMALL);
-        Qvt[celli] = evI[celli]/tau;
-        evI[celli] += (Pvib.primitiveField()[celli] - Qvt[celli])*dt;
+        Qvt[celli] = eVibStart_[celli]/tau;
+        evI[celli] =
+            eVibStart_[celli]
+          + (Pvib.primitiveField()[celli] - Qvt[celli])*dt;
         evI[celli] = max(evI[celli], scalar(0));
     }
     ev.correctBoundaryConditions();

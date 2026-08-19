@@ -326,6 +326,18 @@ protected:
     //  already having P and L evaluated.
     scalar chemChangeLimit_ = 0.1;
 
+    //- Pass the transport cross term to the per-cell stiff integration.
+    //  False integrates every stiff cell as CLOSED. See the measured numbers
+    //  at the read site in plasmaTransport.C -- the term currently flips the
+    //  sign of the Co 1.5 streamer error, so this is a live question, not a
+    //  legacy switch.
+    bool chemCrossTerm_ = true;
+
+    //- Cap on the cross term's sink coefficient, in units of 1/deltaT.
+    //  Zero disables the sink, which is the default; see
+    //  plasmaChemistryODE::extSinkLimit_ for the measurements behind that.
+    scalar chemCrossSinkLimit_ = 0.0;
+
     //- Density below which a relative change is meaningless [m^-3]
     //
     //  This is the knob that decides how much of the mesh the change test
@@ -592,6 +604,24 @@ public:
 
     //- Runtime type information
     TypeName("plasmaTransport");
+
+        //- Throw away the step just solved, restoring the start-of-step state.
+        //
+        //  Every transported density goes back to its own oldTime(), which is
+        //  the last ACCEPTED state: oldTime() only rotates when the time INDEX
+        //  advances, and a retry deliberately holds the index fixed, so it is
+        //  still the right level to come back to -- and oldTime().oldTime(),
+        //  which `backward` (BDF2) also needs, is untouched.
+        //
+        //  Nothing else needs restoring, which is a property of how this
+        //  solver was already written: surfCharge resets from its own
+        //  oldTime() before accumulating, chemN0_/chemExtPrev_ are keyed on
+        //  the time index and so still hold start-of-step values, the
+        //  photoionization and rate-table caches are index-keyed too, and the
+        //  chemistry source is rebuilt from n^n on every outer iteration
+        //  rather than from the partially updated field. e_vib was the one
+        //  exception and is now baselined per index for exactly this reason.
+        void discardStep();
 
     // Constructors
 

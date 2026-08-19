@@ -207,13 +207,48 @@ int main(int argc, char *argv[])
 
     while (runTime.run())
     {
+        // BEFORE the clock moves: the only point at which the time this step
+        // starts from is unambiguous. A retry needs it to place the shortened
+        // step, and it cannot be reconstructed afterwards -- ++runTime uses
+        // the previous deltaT while adjustDeltaT then installs a new one.
+        timeControl.noteStepStart();
+
+        // CHOOSE deltaT BEFORE ADVANCING THE CLOCK.
+        //
+        // It used to be chosen after ++runTime, which meant the clock advanced
+        // by the PREVIOUS step's deltaT while fvm::ddt then discretised over
+        // the newly chosen one. Under the 1.2x ramp those differ by 20%, so
+        // the state written at `Time = t` had actually been advanced over a
+        // different interval than the label implies. It does not accumulate --
+        // the two running sums telescope, so the mismatch stays bounded at
+        // about one step -- but the label and the discretisation should agree,
+        // and a retry that has to place a shortened step cannot reason about a
+        // clock that moved by a different amount than it is about to solve.
+        //
+        // adjustDeltaT reads only the transport state, which the advance does
+        // not touch, so moving it earlier changes nothing it depends on.
+        timeControl.adjustDeltaT(transport);
+
         ++runTime;
 
         Info << "Time = " << runTime.timeName() << nl << endl;
         gasMesh().update();
 
-        timeControl.adjustDeltaT(transport);
-
+        // RETRY LOOP.
+        //
+        // Under `outerCoupling/onNonConvergence retryStep` a step whose outer
+        // loop did not converge is DISCARDED rather than accepted: the fields
+        // go back to oldTime(), deltaT is halved, and the step is solved
+        // again. Under every other setting stepRejected() is false and this
+        // loop runs exactly once, so existing cases are untouched.
+        //
+        // The time INDEX is held fixed across retries. That is the whole
+        // trick: oldTime() rotates on the index, and so do the solver's
+        // per-step caches, so a retry starts from precisely the state the
+        // first attempt did -- with no snapshot buffers and no rewinding of
+        // the BDF2 history.
+        for (bool stepDone = false; !stepDone; /*retry*/)
+        {
         // Correctors executed this step. The loop exiting before the cap is
         // OpenFOAM's own residualControl verdict that the Poisson-species
         // coupling has converged -- which is what makes the step second order.
@@ -278,6 +313,17 @@ int main(int argc, char *argv[])
         // AFTER the loop, BEFORE the next adjustDeltaT: a step that exhausted
         // the cap is not second order, and the response is a smaller step.
         timeControl.noteOuterLoop(nOuter);
+
+        if (timeControl.stepRejected())
+        {
+            transport.discardStep();
+            if (energy) energy->discardStep();
+            timeControl.prepareRetry();
+            continue;                       // solve this step again, smaller
+        }
+
+        stepDone = true;
+        }   // end retry loop
 
         diagnostics.report();
 

@@ -198,6 +198,174 @@ class plasmaChemistryODE
         //- Substep length, needed to centre the slope. Set by integrate().
         scalar extDt_ = 0;
 
+        //- Start-of-substep densities, used to make a REMOVING cross term
+        //  proportional to the state instead of constant [m^-3].
+        //
+        //  A constant negative rate removes the same amount per unit time
+        //  whatever is left in the cell, so it drives the species through zero
+        //  once |ext| dt exceeds the content -- which is exactly the species
+        //  Courant number exceeding one. The ODE then integrates a trajectory
+        //  with negative densities, the rate laws turn to nonsense, and
+        //  rodas23 grinds into its step limit. MEASURED: both Co 2.5 streamer
+        //  arms died at step 14 with "Integration steps greater than maximum
+        //  10000" and negative entries in the state vector, and neither did
+        //  before the cross term reached the adaptive stiff path.
+        //
+        //  So the REMOVING part is carried as a linear sink instead:
+        //
+        //      e < 0:   dn/dt += e n/n_0     (rather than  dn/dt += e)
+        //
+        //  which equals e exactly at n = n_0, the state the transport rate was
+        //  measured at, so nothing changes where the old form was valid. Away
+        //  from it the removal decays with what is left and the species
+        //  approaches zero asymptotically instead of crossing it. The Jacobian
+        //  gains a negative diagonal e/n_0, which a Rosenbrock method uses:
+        //  the term becomes stiff-but-well-posed rather than explicit.
+        //
+        //  This is the same trade the wall-loss model already makes, for the
+        //  same reason -- exponential decay rather than n -= nu n dt, so a step
+        //  longer than 1/nu decays instead of going negative.
+        //
+        //  ADDING cross terms (e > 0) stay constant: inflow cannot make a
+        //  density negative, and scaling it would suppress filling of an empty
+        //  cell, which is how a streamer front advances.
+        //
+        //  Empty when not supplied, in which case the cross term is used raw.
+        scalarField extRef_;
+
+        //- Cap on the sink coefficient, in units of 1/dt, from
+        //  `chemCrossSinkLimit`. ZERO DISABLES THE SINK ENTIRELY, and that is
+        //  the default, because the sink was MEASURED to cost accuracy in
+        //  every form tried.
+        //
+        //  Streamer at Co 1.5, peak n_e at 2 ns against the Co 0.25 reference
+        //  (9.453e19), all with the cross term on:
+        //
+        //      no sink      +42%
+        //      cap 1/dt     +83%
+        //      cap 3/dt     +67%
+        //      cap 10/dt    +95%
+        //
+        //  The hypothesis was a removal deficit -- a cap of nu removes only
+        //  1 - exp(-nu dt) of what transport takes -- which predicts the error
+        //  falling MONOTONICALLY as the cap rises. It does not. The prediction
+        //  failed, so the mechanism is refuted and this is not a knob to tune;
+        //  the sink is kept only so the experiment can be repeated.
+        //
+        //  Positivity is instead protected where it actually mattered -- the
+        //  Co 2.5 crash -- by catching the integrator's failure and falling
+        //  back to the linearised source. See plasmaTransport.C.
+        //
+        //  Caveat on all four numbers: variants differing only in this one
+        //  constant scatter over 28 percentage points, while front position
+        //  agrees to within a cell. Head peak density at 2 ns is an
+        //  ill-conditioned metric and none of these differences should be read
+        //  as precise.
+        scalar extSinkLimit_ = 0.0;
+
+        //- Cross term for species i at substep time x, split into the part
+        //  that is added as a rate and the linear-sink coefficient [1/s].
+        //
+        //  rate is the ADDING part, sink the coefficient multiplying y[i].
+        inline void crossTerm
+        (
+            const label i,
+            const scalar x,
+            scalar& rate,
+            scalar& sink
+        ) const
+        {
+            rate = 0;
+            sink = 0;
+            if (!ext_) return;
+
+            // The step MEAN decides which branch this species takes, and the
+            // sink coefficient is FIXED across the substep.
+            //
+            // Letting the sink vary with x instead cost the Jacobian its
+            // bound: d f/dx then carries the slope scaled by y/n_0, and the
+            // slope here is (ext - extPrev)/dt ~ 1e42 in streamer-head cells.
+            // Multiplying that by an unbounded ratio collapses the Rosenbrock
+            // step controller -- MEASURED: the integrator stalled at
+            // dxDid = 8.9e-31 against a step of 1.7e-12 and hit its step
+            // limit. The removal's own time variation is a second-order
+            // detail next to its proportionality to what is left, which is
+            // the part that matters, so only the ADDING branch keeps the
+            // slope.
+            const scalar e0 = (*ext_)[i];
+
+            // GUARDED, not unconditional. The sink is only needed where the
+            // constant form would actually take the species through zero,
+            // i.e. where the removal over the step is a significant fraction
+            // of what the cell holds. Everywhere else -- the overwhelming
+            // majority of cells -- the old constant form is safe, cheaper,
+            // and bit-for-bit what it always was.
+            //
+            // Applying it to every removing species instead was measured at
+            // 564 s to step 10 of the Co 1.5 streamer, against 16-20 s/step
+            // for the runs that did not carry a sink at all: it turns an
+            // explicit source into a stiff decay with a Jacobian diagonal in
+            // cells that never needed one.
+            //
+            // theta = 1/2: at most half the content removed over the step.
+            if (extRef_.empty())
+            {
+                rate = e0;
+                if (extSlope_ && extDt_ > 0)
+                {
+                    rate += (*extSlope_)[i]*(x - 0.5*extDt_);
+                }
+                return;
+            }
+
+            const bool safeExplicit =
+                (extDt_ > 0) && (-e0*extDt_ <= 0.5*extRef_[i]);
+
+            if (e0 >= 0 || safeExplicit || extSinkLimit_ <= 0)
+            {
+                rate = e0;
+                if (extSlope_ && extDt_ > 0)
+                {
+                    rate += (*extSlope_)[i]*(x - 0.5*extDt_);
+                }
+                return;
+            }
+
+            // n_0 can be zero where transport is removing from a cell the
+            // linear solve had already emptied -- an artifact, not a rate.
+            // Capping the coefficient keeps that from becoming an infinitely
+            // fast decay the integrator would have to resolve.
+            //
+            // The cap is applied by COMPARISON, never by dividing and then
+            // clamping: with n_0 at VSMALL the quotient overflows to infinity
+            // before any min() sees it, and SIGFPE is raised inside
+            // derivatives(). Measured -- that is exactly how the first version
+            // of this died, on step 2 of the Co 1.5 streamer.
+            //
+            // THE CAP IS 1/dt, and that value is the whole cost story.
+            //
+            // Transport wanting to remove more than the cell holds is not a
+            // fast decay -- the most that can leave is what is there. Capping
+            // at 10/dt instead treated it as one, and since a far-field cell
+            // holds n_0 ~ 0 of most excited species, ANY negative ext there
+            // exceeds the cap and the whole quiescent mesh acquired a decay
+            // ten times faster than the step. nu dt = 10 is stiff by
+            // construction and rodas23 pays for it in substeps: MEASURED at
+            // 50-90 s/step against 9-12 s/step for the build without any of
+            // this, and guarding which cells got the sink did NOT help,
+            // because those cells all failed the guard.
+            //
+            // At 1/dt the term removes ~63% of the content over the step and
+            // adds no stiffness whatsoever. The real removal is the linearised
+            // transport solve's job in any case; ext is a cross-term estimate,
+            // not the transport operator.
+            const scalar n0 = extRef_[i];
+            const scalar nuMax =
+                (extDt_ > 0) ? extSinkLimit_/extDt_ : 1e30;
+
+            sink = (-e0 >= nuMax*n0) ? -nuMax : e0/n0;
+        }
+
         //- Reaction rates, sized once and reused: derivatives() is called
         //  several times per step by every ODE solver worth using.
         mutable scalarField rate_;
@@ -228,6 +396,14 @@ public:
         void setExternal(const scalarField* e) { ext_ = e; }
         void setExternalSlope(const scalarField* s, const scalar dt)
         { extSlope_ = s; extDt_ = dt; }
+
+        //- Start-of-substep state that a REMOVING cross term is scaled
+        //  against; clear it to carry the cross term raw. See extRef_.
+        void setExternalRef(const scalarField& r) { extRef_ = r; }
+        void clearExternalRef() { extRef_.clear(); }
+
+        //- Cap on the sink coefficient, in units of 1/dt. Default 1.
+        void setCrossSinkLimit(const scalar c) { extSinkLimit_ = c; }
 
         //- Evaluate the heavy reactions here (true) or leave them to the
         //  Cantera backend (false). Affects derivatives() and

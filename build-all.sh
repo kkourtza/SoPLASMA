@@ -6,6 +6,11 @@ export SoPLASMA=$HOME/soplasma-scratch
 export SoPLASMA_SRC=$HOME/soplasma-scratch/src
 export SoPLASMA_ETC=$HOME/soplasma-scratch/etc
 cd "$SoPLASMA" || exit 1
+
+# Never rebuild over a library a running solver has mapped. See the script for
+# what that costs and how to override it.
+./check-no-running-solvers.sh || exit 1
+
 mkdir -p buildlogs
 for d in src/profilers src/constants src/numerics src/models/electromagnetics \
          src/models/plasmaModels/genericPlasmaProperties \

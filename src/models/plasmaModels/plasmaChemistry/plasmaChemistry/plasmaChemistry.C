@@ -451,6 +451,16 @@ void Foam::plasmaChemistry::integrate
     ode_->setExternal(ext);
     ode_->setExternalSlope(extSlope, dt);
 
+    // The state the transport rate was MEASURED at, so a removing cross term
+    // can be carried as a sink proportional to what is left rather than as a
+    // constant drain that empties the cell and keeps going. Taken here rather
+    // than passed in: `n` is the start-of-substep state by definition, and the
+    // solver overwrites it in place. See plasmaChemistryODE::extRef_.
+    if (ext)
+    {
+        ode_->setExternalRef(n);
+    }
+
     scalar dtTry = dt;
     solver_->solve(0.0, dt, n, dtTry);
 
@@ -459,6 +469,7 @@ void Foam::plasmaChemistry::integrate
     // through turns the next step's rate law into nonsense.
     ode_->setExternal(nullptr);
     ode_->setExternalSlope(nullptr, 0);
+    ode_->clearExternalRef();
 
     forAll(n, i)
     {

@@ -282,6 +282,28 @@ void plasmaTransport::correctTransportModels()
 // This is for the positive streamer case
 // * * * * * * * * * * * * * * * G2: gas energy * * * * * * * * * * * * * * //
 
+void Foam::plasmaTransport::discardStep()
+{
+    forAll(species_.numberDensities(), s)
+    {
+        volScalarField& n = species_.numberDensities()[s];
+        n == n.oldTime();
+        n.correctBoundaryConditions();
+    }
+
+    // Derived from the densities, so it must not be left describing the
+    // attempt that was just thrown away -- the Poisson solve of the retry
+    // would start from a space charge that no longer matches any state.
+    species_.updateChargeDensity();
+
+    // Diagnostics are per-pass accumulators; without this the discarded
+    // attempt would be counted alongside the one that is finally kept.
+    chemODEFailures_ = 0;
+    chemNegativeCells_ = 0;
+    chemPicardPeak_ = 0;
+}
+
+
 void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
 {
     // `chem_` is deliberately NOT required. The prompt channels -- elastic,
@@ -934,13 +956,26 @@ S_iz_.correctBoundaryConditions();
                 // In adaptive mode the stiff cells are already being
                 // integrated, so a residual change here means the LIMIT is set
                 // too high for this case rather than that the mode is wrong.
+                //
+                // The advice used to be "lower chemStiffnessLimit so more
+                // cells take the integrated path", written when that path was
+                // the SAFE one and the linearisation was the risk. Both are
+                // second order now (p = 1.94 linearised, 1.95 integrated), so
+                // routing more cells to the ODE buys robustness and costs
+                // time, not the other way round -- and it is no longer the
+                // first thing to reach for.
                 WarningInFunction
                     << "the chemistry source is still changing by "
                     << change << " on the last outer iteration, with "
                     << chemNstiff_ << " cell(s) already integrated." << nl
-                    << "    Lower `chemStiffnessLimit` (currently "
-                    << chemStiffLimit_ << ") so more cells take the integrated"
-                    << " path, or reduce deltaT." << endl;
+                    << "    Reduce deltaT, or raise nOuterCorrectors so the"
+                    << " Picard iteration has room to converge." << nl
+                    << "    Lowering `chemStiffnessLimit` (currently "
+                    << chemStiffLimit_ << ") sends more cells to the stiff"
+                    << " integrator, which is more ROBUST where the"
+                    << " linearisation struggles but costs time; it is not an"
+                    << " accuracy fix, since both paths are second order."
+                    << endl;
             }
             else if (change > 1e-2)
             {
@@ -954,8 +989,8 @@ S_iz_.correctBoundaryConditions();
                     << " it." << nl
                     << "    Either reduce deltaT, raise nOuterCorrectors, or"
                     << " switch to `chemistrySolver ode`, which integrates"
-                    << " through the stiffness at the cost of first order."
-                    << endl;
+                    << " through the stiffness -- at a cost in time, no longer"
+                    << " in order." << endl;
             }
         }
     }
@@ -1338,10 +1373,12 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     //   none  (default) electron-impact sources are added to the transport
     //         equations, as before. Existing cases are unaffected.
     //   ode   the WHOLE mechanism -- electron-impact and heavy -- is
-    //         integrated per cell by a stiff ODE solver and delivered as a
-    //         mean rate over the step (Lie composition, first order; see
-    //         solve()). This is the only mode in which ions have a
-    //         loss channel, because recombination lives in the heavy set.
+    //         integrated per cell by a stiff ODE solver, and the source is
+    //         reconstructed as the INSTANTANEOUS rate at the integrated end
+    //         state (p = 1.95; it was a step mean, and first order, until
+    //         2026-08-18 -- see solve()). This is the only mode in which ions
+    //         have a loss channel, because recombination lives in the heavy
+    //         set.
     //
     // The two are mutually exclusive by construction: with `ode`,
     // mechanismSourceTerms() adds nothing, or the chemistry would be applied
@@ -1480,14 +1517,21 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // WHAT ORDER THIS COMBINATION CAN ACTUALLY REACH.
     //
     // Converging the outer loop is NECESSARY for second order but not
-    // SUFFICIENT: `ode` splits the chemistry off and takes a mean rate over
-    // the step, which is a Lie composition and first order by construction, so
-    // it stays first order however well the loop converges. Measured on the
-    // 40x40 benchmark (200 ps, dt 4:2:1, Richardson on n_e max and n_e sum):
+    // SUFFICIENT: it is also necessary that the chemistry hands the field
+    // equation the right OBJECT. It used to hand back a step MEAN rate, which
+    // is a Lie composition and first order by construction however well the
+    // loop converges. It now reconstructs the INSTANTANEOUS rate at the
+    // integrated end state, which is what BDF2 asks for at t^{n+1}, and that
+    // is what lifts `ode` to second order. Measured on the 40x40 benchmark
+    // (200 ps, dt 4:2:1, Richardson on n_e max and n_e sum):
     //
-    //   lagged     + ode        p = 0.99
-    //   converged  + ode        p = 0.99   <- converging did NOT help
-    //   converged  + adaptive   p = 1.94
+    //   lagged     + ode  (mean rate)      p = 0.99
+    //   converged  + ode  (mean rate)      p = 0.99   <- converging did NOT help
+    //   converged  + ode  (instant rate)   p = 1.95   <- the fix
+    //   converged  + adaptive              p = 1.94
+    //
+    // So every chemistry solver is second-order capable now, and the only
+    // remaining order question is whether the outer loop is converged.
     //
     // Order is achieved, not selected, so the run says which it will get
     // rather than leaving the user to infer it from two separate keys.
@@ -1506,8 +1550,10 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         const word target = controls.subOrEmptyDict("outerCoupling")
             .getOrDefault<word>("target", "converged");
 
-        const bool secondOrderCapable =
-            (chemistrySolver_ != csODE) && (chemReactions_ != rxNone);
+        // `ode` used to be excluded here, because it handed back a step mean.
+        // It no longer does, and the 40x40 study measures p = 1.95 for it, so
+        // the only disqualifier left is having no chemistry at all.
+        const bool secondOrderCapable = (chemReactions_ != rxNone);
 
         if (target != "converged")
         {
@@ -1519,28 +1565,23 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         else if (!secondOrderCapable)
         {
             Info<< "plasmaTransport: temporal order 1 -- the outer loop is"
-                << " converged, but chemistry/solver" << nl
-                << "    `" << cs << "` splits the chemistry off with a mean"
-                << " rate over the step, which is" << nl
-                << "    first order by construction. Use `implicitRate` or"
-                << " `adaptive` for second order." << endl;
+                << " converged, but there is no" << nl
+                << "    chemistry to be second order about"
+                << " (`chemistry/reactions none`)." << endl;
         }
         else if (isAdaptive())
         {
-            // `adaptive` is a per-cell MIXTURE of a second-order path and a
-            // first-order one, so a flat "order 2" cannot be asserted here:
-            // at start-up nothing is known about how many cells will fall
-            // back. Measured p = 1.94 was obtained where the fallback was
-            // rare; it degrades toward 1 as cells are routed to the ODE path.
-            // The runtime report carries the fraction that actually occurred.
-            Info<< "plasmaTransport: temporal order 2 where the linearisation"
-                << " holds -- outer loop" << nl
-                << "    converged and chemistry/solver `adaptive` (measured"
-                << " p = 1.94 with the" << nl
-                << "    stiff fallback rare). Cells routed to the stiff ODE"
-                << " path are first order;" << nl
-                << "    the chemistry report gives the fraction per run."
-                << endl;
+            // Both destinations are second order now, so unlike before, the
+            // per-cell mixture no longer makes the order conditional: the
+            // stiff path measures p = 1.95 in its own right. What the switch
+            // still decides is COST and ROBUSTNESS, not order.
+            Info<< "plasmaTransport: temporal order 2 -- outer loop converged"
+                << " and chemistry/solver" << nl
+                << "    `" << cs << "` (measured p = 1.94; the stiff path it"
+                << " falls back to measures" << nl
+                << "    1.95, so the switch costs no order). The chemistry"
+                << " report gives the" << nl
+                << "    fraction integrated per run." << endl;
         }
         else
         {
@@ -1593,6 +1634,29 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         // what makes that visible, so raise it only with that number in view.
         chemStiffLimit_ =
             cd.getOrDefault<scalar>("chemStiffnessLimit", 1.0);
+
+        // Hand the per-cell stiff integration the TRANSPORT CROSS TERM, so it
+        // integrates an open cell rather than a closed one. On by default:
+        // integrating a cell as closed ignores the drift and diffusion that
+        // are actually happening to it over the step.
+        //
+        // A key rather than a compile-time choice because its accuracy effect
+        // at large Courant number is UNSETTLED. Measured on the 1.15M-cell
+        // streamer at Co 1.5, peak n_e against the Co 0.25 reference:
+        //
+        //   cross term off (integrated closed)   -24%
+        //   cross term on, positivity broken     +42%
+        //   cross term on, positivity fixed      +42%   (shifted only 1.35%)
+        //
+        // So including it FLIPPED the sign of the error and enlarged it, and
+        // repairing how it is integrated did essentially nothing -- the bias
+        // is in the term itself, not in its integration. It is inferred by
+        // subtraction from the step change rather than evaluated from the
+        // transport operator, and it inherits every inconsistency in that
+        // subtraction. Until that is resolved, this key is how a case escapes
+        // it, and how the two are compared on equal footing.
+        chemCrossTerm_ =
+            cd.getOrDefault<bool>("chemCrossTerm", true);
 
         // See plasmaTransport.H. Measured rather than assumed: in the 0-D
         // sweep 0.5 let a single accepted step leave an afterglow 190x off,
@@ -1681,6 +1745,15 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
             )
         );
 
+        // Cap on the transport SINK coefficient, in units of 1/deltaT; ZERO
+        // (the default) disables the sink. It cost accuracy at every value
+        // tried and its proposed mechanism was falsified -- the measured
+        // numbers are in plasmaChemistryODE::extSinkLimit_. Positivity is
+        // protected by the fail-soft fallback below instead.
+        chemCrossSinkLimit_ =
+            cd.getOrDefault<scalar>("chemCrossSinkLimit", 0.0);
+        chem_->setCrossSinkLimit(chemCrossSinkLimit_);
+
         // How many outer iterations a timestep takes, so the trailing
         // half-step lands on the last one.
         nOuterCorrectors_ = mesh_.solutionDict().subOrEmptyDict("PIMPLE")
@@ -1701,9 +1774,10 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         }
         else
         {
-            Info<< "    ode: stiff substep, mean rate over the step. First"
-                << " order, but it integrates THROUGH stiffness -- use it when"
-                << " a chemical timescale is far below deltaT." << endl;
+            Info<< "    ode: stiff substep, instantaneous rate at the"
+                << " integrated end state. Second order (p = 1.95), and it"
+                << " integrates THROUGH stiffness -- use it when a chemical"
+                << " timescale is far below deltaT." << endl;
         }
     }
 
@@ -1891,6 +1965,12 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
     // Per CELL now, not a dictionary constant: this is the thermal-ionisation
     // feedback. See TgasCell().
 
+    // Make the ODE solver's FatalError catchable for the duration of the cell
+    // loop, so one cell it cannot integrate does not end the run. Restored
+    // below; see the catch site for why this is parallel-safe.
+    const bool throwWas = FatalError.throwing();
+    FatalError.throwExceptions();
+
     label nActive = 0;
     forAll(neI, celli)
     {
@@ -1919,7 +1999,8 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         }
 
         // Transport rate for this cell, from the previous outer iteration.
-        const bool haveExt = !chemExt_.empty() && !chemExt_[0].empty();
+        const bool haveExt =
+            chemCrossTerm_ && !chemExt_.empty() && !chemExt_[0].empty();
         if (haveExt)
         {
             for (label s = 0; s < nSp; ++s) ext[s] = chemExt_[s][celli];
@@ -1930,12 +2011,26 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         {
             for (label si = 0; si < nSp; ++si) extS[si] = chemExtSlope_[si][celli];
         }
-        chem_->integrate
-        (
-            n, kTab, TgasCell(celli), dt,
-            haveExt ? &ext : nullptr,
-            haveExt ? &extS : nullptr
-        );
+        // FAIL SOFT, as in the adaptive path: a cell the ODE solver cannot
+        // integrate falls back to the linearised source instead of ending the
+        // run. Here the fallback state is the START-OF-STEP state, which `n`
+        // still holds if the solver threw before overwriting it -- and
+        // restoring it explicitly costs one copy and removes the doubt.
+        const scalarField nStart(n);
+        try
+        {
+            chem_->integrate
+            (
+                n, kTab, TgasCell(celli), dt,
+                haveExt ? &ext : nullptr,
+                haveExt ? &extS : nullptr
+            );
+        }
+        catch (const Foam::error&)
+        {
+            n = nStart;
+            ++chemODEFailures_;
+        }
 
         // The integrated change contains BOTH processes, so the transport part
         // is removed to leave the chemical source alone. Adding the whole
@@ -2061,6 +2156,10 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
             }
         }
     }
+
+    // Cell loop over: put FatalError back the way it was, so a genuine fatal
+    // anywhere else still ends the run immediately.
+    if (!throwWas) FatalError.dontThrowExceptions();
 
     if (!chemCellsReported_)
     {
@@ -2207,6 +2306,10 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         {
             chemErrorRefDensity_ = gMax(neI);
         }
+
+        // Catchable for the cell loop; restored after it. See the catch site.
+        const bool throwWasAd = FatalError.throwing();
+        FatalError.throwExceptions();
 
         forAll(neI, celli)
         {
@@ -2382,7 +2485,8 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 // streamer's 23-34% error came from.
                 scalarField extA(nSp, Zero), extAS(nSp, Zero);
                 const bool haveExtA =
-                    !chemExt_.empty() && chemExt_[0].size() == mesh_.nCells();
+                    chemCrossTerm_
+                 && !chemExt_.empty() && chemExt_[0].size() == mesh_.nCells();
                 if (haveExtA)
                 {
                     for (label si = 0; si < nSp; ++si)
@@ -2391,12 +2495,35 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                         extAS[si] = chemExtSlope_[si][celli];
                     }
                 }
-                chem_->integrate
-                (
-                    nEnd, kTab, TgasCell(celli), dtNow,
-                    haveExtA ? &extA : nullptr,
-                    haveExtA ? &extAS : nullptr
-                );
+                // FAIL SOFT. The ODE solver does not only return bad values,
+                // it can THROW: OpenFOAM's adaptive solvers raise a
+                // FatalError -- "Integration steps greater than maximum" --
+                // which by default exits the run. One pathological cell out
+                // of 1146466 then kills a 45-minute job, which is what both
+                // Co 2.5 arms did.
+                //
+                // throwExceptions() turns that into a catchable Foam::error.
+                // It is set around the CELL LOOP by the caller, not here, so
+                // it costs nothing per cell.
+                //
+                // Safe in parallel: the fallback is purely local and there is
+                // no collective communication inside this loop, so a rank
+                // that catches simply takes a different branch and rejoins
+                // its peers at the next reduce.
+                bool threw = false;
+                try
+                {
+                    chem_->integrate
+                    (
+                        nEnd, kTab, TgasCell(celli), dtNow,
+                        haveExtA ? &extA : nullptr,
+                        haveExtA ? &extAS : nullptr
+                    );
+                }
+                catch (const Foam::error&)
+                {
+                    threw = true;
+                }
 
                 // An ODE solver can fail on a step far longer than the
                 // chemistry it is integrating, and it does not always say so:
@@ -2408,13 +2535,12 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 // cell. That is exactly the right fallback: it is stable at
                 // any L*dt, only less accurate, which is the trade the cell
                 // was going to make anyway.
-                bool ok = true;
-                for (label sp = 0; sp < nSp; ++sp)
+                bool ok = !threw;
+                for (label sp = 0; ok && sp < nSp; ++sp)
                 {
                     if (!std::isfinite(nEnd[sp]) || nEnd[sp] < 0)
                     {
                         ok = false;
-                        break;
                     }
                 }
                 if (!ok)
@@ -2471,6 +2597,10 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 chemL_[sp][celli] = L[sp];
             }
         }
+
+        // Cell loop over: restore FatalError, so a genuine fatal elsewhere
+        // still ends the run at the point it happens.
+        if (!throwWasAd) FatalError.dontThrowExceptions();
 
         // Peak-hold between reports, so a stiff step is not missed just
         // because it fell between two samples. Now that the counters above are
@@ -2702,18 +2832,11 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 }
                 Info<< "    peak over the steps since the last report" << endl;
 
-                // The order claim printed at start-up only holds where the
-                // linearisation does. Say so with the measured number rather
-                // than leaving the banner to be read as unconditional.
-                if (rNstiff > 0)
-                {
-                    Info<< "    NOTE: those cells take the stiff ODE path,"
-                        << " which is FIRST order in the" << nl
-                        << "    splitting, so the effective temporal order is"
-                        << " between 1 and 2 here." << nl
-                        << "    Reduce deltaT, or use `implicitRate`, if they"
-                        << " cover the region of interest." << endl;
-                }
+                // No order caveat here any more. It used to warn that these
+                // cells took a FIRST-order path, which was true while the
+                // stiff path returned a step mean; it now returns the
+                // instantaneous rate at the integrated end state and measures
+                // p = 1.95, so being routed there costs cost, not order.
             }
             Info<< "plasmaChemistry: "
                 << (chemistrySolver_ == csAdaptiveError ? "adaptiveError"

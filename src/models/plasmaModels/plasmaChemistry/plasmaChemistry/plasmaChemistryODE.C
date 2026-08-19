@@ -46,22 +46,21 @@ void Foam::plasmaChemistryODE::derivatives
     // trajectory the chemistry follows is the one the cell actually takes
     // rather than the one it would take if it were closed. `x` was unnamed
     // here while the term was constant.
+    // Linear across the substep, centred so the mean stays *ext_. A constant
+    // cross term caps the coupling at first order however well converged --
+    // measured, see plasmaChemistryODE.H. crossTerm() applies that centring
+    // and splits the result: an ADDING transport rate is a constant source, a
+    // REMOVING one a linear sink proportional to what is left, so the species
+    // cannot be driven through zero by transport at any Courant number.
+    dydx = Zero;
     if (ext_)
     {
-        dydx = *ext_;
-
-        // Linear across the substep, centred so the mean stays *ext_.
-        // A constant cross term caps the coupling at first order however
-        // well converged -- measured, see plasmaChemistryODE.H.
-        if (extSlope_ && extDt_ > 0)
+        forAll(dydx, i)
         {
-            const scalar w = x - 0.5*extDt_;
-            forAll(dydx, i) dydx[i] += (*extSlope_)[i]*w;
+            scalar rate, sink;
+            crossTerm(i, x, rate, sink);
+            dydx[i] = rate + sink*max(y[i], scalar(0));
         }
-    }
-    else
-    {
-        dydx = Zero;
     }
 
     forAll(reactions_, r)
@@ -166,6 +165,33 @@ void Foam::plasmaChemistryODE::jacobian
         dfdx = *extSlope_;
     }
     dfdy = Zero;
+
+    // The REMOVING part of the cross term depends on the state, so it belongs
+    // in dfdy as well: d/dy (sink y) = sink, a NEGATIVE diagonal. Supplying it
+    // is what turns transport-driven depletion from an explicit source the
+    // integrator must resolve with tiny substeps into a stiff decay a
+    // Rosenbrock method takes in one -- the failure mode this repairs.
+    //
+    // Where the sink is active the derivative is sink*y rather than the raw
+    // rate, so dfdx carries the slope scaled the same way; an inconsistent
+    // dfdx costs ORDER here for the reason recorded above.
+    if (ext_ && !extRef_.empty())
+    {
+        forAll(y, i)
+        {
+            scalar rate, sink;
+            crossTerm(i, x, rate, sink);
+            if (sink != 0)
+            {
+                dfdy(i, i) += sink;
+
+                // The sink is constant across the substep by construction, so
+                // this species' cross term has NO explicit time dependence and
+                // the slope must not be reported for it. See crossTerm().
+                dfdx[i] = 0;
+            }
+        }
+    }
 
     // Under `chemistryBackend cantera` the heavy reactions are SKIPPED here
     // and their block is contributed by Cantera below, from its own analytic
