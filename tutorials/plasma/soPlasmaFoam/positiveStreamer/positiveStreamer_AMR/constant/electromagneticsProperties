@@ -27,5 +27,4 @@ singleRegionPoissonCoeffs
 
     nNonOrthogonalCorrectors 0;              // Non-ortho correctors
 
-    backgroundDensity       2.4463e25;          // m^-3, for plasma applications
 }
