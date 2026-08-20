@@ -61,6 +61,7 @@ Author
 #include "plasmaEnergy.H"
 #include "driftDiffusion.H"
 #include "plasmaSimulationDiagnostics.H"
+#include "plasmaDischargeCurrent.H"
 #include "plasmaSimulationProfiler.H"
 
 int main(int argc, char *argv[])
@@ -199,6 +200,26 @@ int main(int argc, char *argv[])
     //- Create the plasmaSimulationDiagnostics manager
     plasmaSimulationDiagnostics diagnostics(runTime, transport);
 
+    //- External circuit current by Sato's equation. Default OFF, so no
+    //  existing case changes behaviour or cost. Its geometric weighting field
+    //  is solved ONCE here, at construction.
+    IOdictionary plasmaControlsDict
+    (
+        IOobject
+        (
+            "plasmaSimulationControls",
+            runTime.system(),
+            runTime,
+            IOobject::READ_IF_PRESENT,
+            IOobject::NO_WRITE
+        )
+    );
+
+    plasmaDischargeCurrent dischargeCurrent
+    (
+        gasMesh(), plasmaControlsDict, em()
+    );
+
     #include "reportSimulationSummary.H"
 
     runTime.writeNow();
@@ -335,6 +356,10 @@ int main(int argc, char *argv[])
         }   // end retry loop
 
         diagnostics.report();
+
+        // AFTER the retry loop, so a discarded step never contributes: the
+        // current is a diagnostic of the state that was actually accepted.
+        dischargeCurrent.update(transport, species, em());
 
         runTime.write();
         runTime.printExecutionTime(Info);

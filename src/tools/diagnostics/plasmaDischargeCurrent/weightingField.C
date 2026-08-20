@@ -245,6 +245,16 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
     defaultSolverDict.add("relTol", 0.0);
     defaultSolverDict.add("maxIter", 5000);
 
+    // DISCRETISATION scheme, borrowed from the potential for the same reason:
+    // psi_hat IS the potential's Laplacian operator, so it wants the same
+    // scheme, and a case cannot be expected to declare
+    // `laplacian(epsilon,psiHat)` for a diagnostic it did not ask for. Cases
+    // must define the potential's entry anyway, for the Poisson solve.
+    //
+    // If a case sets `default` in laplacianSchemes this name resolves to it,
+    // so the borrow is harmless there too.
+    const word psiScheme("laplacian(" + epsGas.name() + ",ePotential)");
+
     const dictionary& solvers = mesh_.solution().subDict("solvers");
 
     const dictionary psiSolverDict =
@@ -266,7 +276,10 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
     {
         if (coupled)
         {
-            fvScalarMatrix gasEqn(fvm::laplacian(epsGas, psiHatGas_()));
+            fvScalarMatrix gasEqn
+            (
+                fvm::laplacian(epsGas, psiHatGas_(), psiScheme)
+            );
 
             // Dimensions taken FROM the equation, not hardcoded. The real
             // Poisson assembly uses the charge-sourced potential's dimensions;
@@ -279,9 +292,14 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
 
             for (label i = 0; i < nDiel; ++i)
             {
+                const word dielScheme
+                (
+                    "laplacian(" + mrp->epsilon(i).name() + ",ePotential)"
+                );
+
                 fvScalarMatrix dielEqn
                 (
-                    fvm::laplacian(mrp->epsilon(i), psiHatDiel_[i])
+                    fvm::laplacian(mrp->epsilon(i), psiHatDiel_[i], dielScheme)
                 );
                 assembly.addFvMatrix(dielEqn);
             }
@@ -300,7 +318,10 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
             // segregated. Segregated psi_hat would need its own outer loop to
             // converge the interfaces; rather than half-implement that, it is
             // refused below when dielectrics are present.
-            fvScalarMatrix psiEqn(fvm::laplacian(epsGas, psiHatGas_()));
+            fvScalarMatrix psiEqn
+            (
+                fvm::laplacian(epsGas, psiHatGas_(), psiScheme)
+            );
             psiEqn.solve(psiSolverDict);
             psiHatGas_().correctBoundaryConditions();
         }

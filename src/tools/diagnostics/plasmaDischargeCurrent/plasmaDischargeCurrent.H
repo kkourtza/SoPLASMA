@@ -56,6 +56,9 @@ SourceFiles
 #include "fvMesh.H"
 #include "wordList.H"
 #include "OFstream.H"
+#include "plasmaSpecies.H"
+#include "plasmaTransport.H"
+#include "plasmaConstants.H"
 
 namespace Foam
 {
@@ -112,6 +115,9 @@ class plasmaDischargeCurrent
         bool   seeded_ = false;
 
         autoPtr<OFstream> os_;
+
+        //- Per-species conduction current [A], for the optional columns.
+        List<scalar> perSpeciesCurrent_;
 
         //- 2*pi/theta on a wedge mesh, 1 otherwise. Per MESH, because
         //  nothing guarantees a dielectric region was built with the same
