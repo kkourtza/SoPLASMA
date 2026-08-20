@@ -26,6 +26,7 @@ for d in src/profilers src/constants src/numerics src/models/electromagnetics \
          src/applications/utilities/plasmaChemistry0D \
          src/applications/utilities/testWallLoss \
          src/applications/utilities/testVibRelax \
+         src/applications/utilities/testDischargeCurrent \
          src/applications/solvers/soPlasmaFoam \
          ThirdParty/libROUNDSchemes; do
   n=$(basename "$d")

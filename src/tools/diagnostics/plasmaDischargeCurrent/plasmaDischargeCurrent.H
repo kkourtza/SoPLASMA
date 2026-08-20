@@ -156,6 +156,10 @@ public:
         //- The geometric weighting field [1/m].
         const volVectorField& eHat() const { return eHat_(); }
 
+        //- Write psi_hat and e_hat per region, for inspecting a weighting
+        //  field that looks wrong. Cheap and written on demand only.
+        void writeFields() const;
+
         //- Accumulate and write this step's current.
         void update
         (

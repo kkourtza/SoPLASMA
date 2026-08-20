@@ -14,6 +14,7 @@
 #include "multiRegionPoisson.H"
 #include "fixedValueFvPatchFields.H"
 #include "wedgePolyPatch.H"
+#include "mappedPatchBase.H"
 
 // * * * * * * * * * * * * * * Static Helpers  * * * * * * * * * * * * * * * //
 
@@ -73,8 +74,51 @@ static autoPtr<volScalarField> clonePsiHat
 
         if (!driven && !grounded)
         {
-            // Not an electrode: leave the cloned BC exactly as it is. On a
-            // dielectric region this is how the interface coupling survives.
+            // Not an electrode. Interface conditions need RETARGETING, not
+            // just copying, and this is the subtle failure the plate2D test
+            // exposed.
+            //
+            // `coupledElectricPotential` resolves its neighbour by NAME:
+            //     phiNbrName_(dict.getOrDefault<word>("phiNbr", "ePotential"))
+            // so a cloned interface BC on psi_hat couples it to the REAL
+            // POTENTIAL in the neighbour region instead of to psi_hat. It
+            // also carries a surface-charge source, which does not belong in
+            // a weighting-field problem at all.
+            //
+            // MEASURED before the fix: the interior field was exactly right
+            // (|e_hat| = 1.66667 everywhere) while the single cell layer
+            // against the interface reached 20, inflating C_g by 3.76x. A
+            // wrong answer with a perfect-looking interior.
+            //
+            // So the BC is REBUILT from its own dictionary with the field
+            // name retargeted and the surface charge disabled ("none" is the
+            // documented default that zeroes the term). Rebuilding through
+            // the dictionary keeps the type, `useImplicit` and all sampling
+            // information, none of which can be reconstructed by hand.
+            if (isA<mappedPatchBase>(bf[patchi].patch().patch()))
+            {
+                OStringStream os;
+                bf[patchi].write(os);
+
+                IStringStream is(os.str());
+                dictionary bcDict(is);
+
+                bcDict.set("phiNbr", name);
+                bcDict.set("surfCharge", word("none"));
+                bcDict.set("surfChargeNbr", word("none"));
+
+                bf.set
+                (
+                    patchi,
+                    fvPatchScalarField::New
+                    (
+                        bf[patchi].patch(),
+                        psi->internalField(),
+                        bcDict
+                    )
+                );
+            }
+
             bf[patchi] == 0.0;
             continue;
         }
@@ -180,6 +224,34 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
 
     const dimensionedScalar& epsGas = em.epsilon();
 
+    // Linear-solver settings.
+    //
+    // NOT borrowed from ePotential, which was tried and failed: that entry is
+    // tuned for TIME-STEPPED continuation, where each step starts from the
+    // previous solution and a few GaussSeidel sweeps suffice. psi_hat is a
+    // ONE-SHOT cold solve from a zero field, and the tutorial's
+    // smoothSolver/GaussSeidel stalled at residual 7e-3 after its 2000-
+    // iteration cap -- giving a field with max|e_hat| 11.5 against a physical
+    // 1.67, and a C_g wrong by 91%.
+    //
+    // A symmetric Laplacian wants a Krylov method. Defaults are set here, in
+    // code, so a user gets a correct weighting field without configuring a
+    // diagnostic they did not ask for; an explicit `psiHat` block in
+    // fvSolution overrides them.
+    dictionary defaultSolverDict;
+    defaultSolverDict.add("solver", word("PCG"));
+    defaultSolverDict.add("preconditioner", word("DIC"));
+    defaultSolverDict.add("tolerance", 1e-12);
+    defaultSolverDict.add("relTol", 0.0);
+    defaultSolverDict.add("maxIter", 5000);
+
+    const dictionary& solvers = mesh_.solution().subDict("solvers");
+
+    const dictionary psiSolverDict =
+        solvers.found("psiHat")
+      ? solvers.subDict("psiHat")
+      : defaultSolverDict;
+
     // MONOLITHIC across regions when the solver is coupled -- which is the
     // default here, and the solver paper's headline contribution (Pasolari &
     // Kourtzanidis, arXiv:2607.05137): a monolithic multi-region Poisson
@@ -194,13 +266,15 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
     {
         if (coupled)
         {
-            fvMatrix<scalar> assembly
-            (
-                psiHatGas_(),
-                dimensionSet(0, 0, 1, 0, 0, 1, 0)
-            );
-
             fvScalarMatrix gasEqn(fvm::laplacian(epsGas, psiHatGas_()));
+
+            // Dimensions taken FROM the equation, not hardcoded. The real
+            // Poisson assembly uses the charge-sourced potential's dimensions;
+            // psi_hat is dimensionless, so laplacian(eps, psi_hat) differs and
+            // addFvMatrix rejects the mismatch outright -- which is how this
+            // was found.
+            fvMatrix<scalar> assembly(psiHatGas_(), gasEqn.dimensions());
+
             assembly.addFvMatrix(gasEqn);
 
             for (label i = 0; i < nDiel; ++i)
@@ -212,7 +286,7 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
                 assembly.addFvMatrix(dielEqn);
             }
 
-            assembly.solve();
+            assembly.solve(psiSolverDict);
 
             psiHatGas_().correctBoundaryConditions();
             for (label i = 0; i < nDiel; ++i)
@@ -227,7 +301,7 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
             // converge the interfaces; rather than half-implement that, it is
             // refused below when dielectrics are present.
             fvScalarMatrix psiEqn(fvm::laplacian(epsGas, psiHatGas_()));
-            psiEqn.solve();
+            psiEqn.solve(psiSolverDict);
             psiHatGas_().correctBoundaryConditions();
         }
     }
@@ -293,6 +367,37 @@ void Foam::plasmaDischargeCurrent::computeWeightingField
         << "    gap capacitance   " << Cg_ << " F" << nl
         << "    max |e_hat|       " << gMax(mag(eHat_().primitiveField()))
         << " 1/m" << endl;
+}
+
+
+// ************************************************************************* //
+
+
+void Foam::plasmaDischargeCurrent::writeFields() const
+{
+    if (psiHatGas_)
+    {
+        psiHatGas_->write();
+
+        Info<< "  psiHat (gas):        min " << gMin(psiHatGas_->primitiveField())
+            << "  max " << gMax(psiHatGas_->primitiveField())
+            << "  volume " << gSum(psiHatGas_->mesh().V()) << " m^3" << endl;
+    }
+
+    if (eHat_)
+    {
+        eHat_->write();
+    }
+
+    forAll(psiHatDiel_, i)
+    {
+        psiHatDiel_[i].write();
+
+        Info<< "  psiHat (dielectric " << i << "): min "
+            << gMin(psiHatDiel_[i].primitiveField())
+            << "  max " << gMax(psiHatDiel_[i].primitiveField())
+            << "  volume " << gSum(psiHatDiel_[i].mesh().V()) << " m^3" << endl;
+    }
 }
 
 

@@ -10,6 +10,7 @@
 #include "plasmaConstants.H"
 #include "fixedValueFvPatchFields.H"
 #include "zeroGradientFvPatchFields.H"
+#include "multiRegionPoisson.H"
 
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
 
@@ -35,27 +36,59 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
     writeInterval_   = cd.getOrDefault<label>("writeInterval", 1);
     printInterval_   = cd.getOrDefault<label>("printInterval", 0);
 
-    if (mesh_.boundaryMesh().findPatchID(drivenPatch_) < 0)
+    // Patch validation spans ALL regions, not just the gas.
+    //
+    // In a real DBD the electrodes sit on different meshes -- the driven one
+    // against the gas, the grounded one behind the dielectric slab -- so
+    // checking either name against the gas mesh alone would reject a
+    // perfectly valid setup. Found on the plate2D two-region case, where
+    // `left` is a gas patch and `right` belongs to the dielectric.
+    wordList allPatches;
+    {
+        DynamicList<word> names;
+
+        for (const word& w : mesh_.boundaryMesh().names())
+        {
+            names.append(w);
+        }
+
+        if (isA<multiRegionPoisson>(em))
+        {
+            const multiRegionPoisson& mrp =
+                refCast<const multiRegionPoisson>(em);
+
+            for (label i = 0; i < mrp.nDielectrics(); ++i)
+            {
+                for (const word& w : mrp.dielectric(i).mesh().boundaryMesh().names())
+                {
+                    names.append(w);
+                }
+            }
+        }
+
+        allPatches.transfer(names);
+    }
+
+    if (!allPatches.found(drivenPatch_))
     {
         FatalErrorInFunction
             << "dischargeCurrent/drivenPatch `" << drivenPatch_
-            << "` is not a patch of this mesh." << nl
-            << "    Available: " << mesh_.boundaryMesh().names() << nl
+            << "` is not a patch of any region." << nl
+            << "    Available: " << allPatches << nl
             << exit(FatalError);
     }
 
-    // Every grounded patch must exist too. A misspelt name would otherwise
-    // silently become a zeroGradient boundary on the weighting field, which
-    // changes C_g without any error -- the failure would surface only as a
-    // wrong current, long after the fact.
+    // A misspelt grounded patch would otherwise silently keep its cloned
+    // boundary condition, changing C_g with no error at all -- the failure
+    // would surface only as a wrong current, long after the fact.
     for (const word& p : groundedPatches_)
     {
-        if (mesh_.boundaryMesh().findPatchID(p) < 0)
+        if (!allPatches.found(p))
         {
             FatalErrorInFunction
                 << "dischargeCurrent/groundedPatches names `" << p
-                << "`, which is not a patch of this mesh." << nl
-                << "    Available: " << mesh_.boundaryMesh().names() << nl
+                << "`, which is not a patch of any region." << nl
+                << "    Available: " << allPatches << nl
                 << exit(FatalError);
         }
     }
