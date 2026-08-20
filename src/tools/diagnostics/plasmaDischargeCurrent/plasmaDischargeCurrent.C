@@ -34,6 +34,7 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
     groundedPatches_ = cd.getOrDefault<wordList>("groundedPatches", wordList());
     perSpecies_      = cd.getOrDefault<Switch>("perSpecies", false);
     writeInterval_   = cd.getOrDefault<label>("writeInterval", 1);
+    crossCheck_      = cd.getOrDefault<Switch>("crossCheck", false);
     printInterval_   = cd.getOrDefault<label>("printInterval", 0);
 
     // Patch validation spans ALL regions, not just the gas.
@@ -130,6 +131,67 @@ Foam::scalar Foam::plasmaDischargeCurrent::appliedVoltage
 // ************************************************************************* //
 
 
+void Foam::plasmaDischargeCurrent::surfaceIntegralCurrent
+(
+    const plasmaTransport& transport,
+    const plasmaSpecies& species,
+    const electromagneticsModel& em,
+    scalar& Icond,
+    scalar& Idisp
+)
+{
+    Icond = 0;
+    Idisp = 0;
+
+    const label patchi = mesh_.boundaryMesh().findPatchID(drivenPatch_);
+
+    if (patchi < 0) return;      // electrode lives on another region's mesh
+
+    const scalar qe = constant::plasma::eCharge.value();
+    const List<scalar>& qs = species.speciesChargeNumbers();
+
+    // CONDUCTION at the electrode. particleFlux_ on the patch is already
+    // Gamma_s . Sf with the OUTWARD normal, so this is the particle current
+    // leaving the gas into the electrode.
+    forAll(transport.particleFlux(), s)
+    {
+        if (s >= qs.size() || mag(qs[s]) < SMALL) continue;
+        if (!transport.particleFlux().set(s)) continue;      // immobile
+
+        const scalarField& pf =
+            transport.particleFlux()[s].boundaryField()[patchi];
+
+        Icond += qs[s]*gSum(pf);
+    }
+
+    Icond *= qe*revolutionFactor_;
+
+    // DISPLACEMENT at the electrode: eps dE/dt . Sf.
+    //
+    // This is the term Sato's volume form exists to avoid. It differentiates
+    // the field in time AT THE BOUNDARY, where the condition is imposed, and
+    // near the electrode it very nearly cancels the conduction term -- so the
+    // difference of two large numbers is what produces the small answer. Any
+    // disagreement between the two routes is expected to live here.
+    const scalar eps = em.epsilon().value();
+
+    const vectorField& Sfp = mesh_.Sf().boundaryField()[patchi];
+    const vectorField Ep(em.E().boundaryField()[patchi]);
+
+    scalarField eFlux(eps*(Ep & Sfp));
+
+    const scalar dt = mesh_.time().deltaTValue();
+
+    if (eFluxSeeded_ && prevEFlux_.size() == eFlux.size() && dt > 0)
+    {
+        Idisp = revolutionFactor_*gSum(eFlux - prevEFlux_)/dt;
+    }
+
+    prevEFlux_ = eFlux;
+    eFluxSeeded_ = true;
+}
+
+
 void Foam::plasmaDischargeCurrent::update
 (
     const plasmaTransport& transport,
@@ -207,6 +269,23 @@ void Foam::plasmaDischargeCurrent::update
 
     const scalar Itot = Icond + Idisp;
 
+    // CROSS-CHECK. The identity is
+    //     INT_electrode J_tot . dS = - INT_V e_hat . J_tot dV
+    // with the outward normal, so the surface route carries the OPPOSITE sign
+    // to Sato's volume route. It is negated here on that basis -- from the
+    // derivation, not by fitting it to the answer -- so that agreement means
+    // agreement.
+    scalar IsurfC = 0, IsurfD = 0;
+
+    if (crossCheck_)
+    {
+        surfaceIntegralCurrent(transport, species, em, IsurfC, IsurfD);
+        IsurfC = -IsurfC;
+        IsurfD = -IsurfD;
+    }
+
+    const scalar Isurf = IsurfC + IsurfD;
+
     // OUTPUT. The cadence is independent of the field write interval and may
     // be far shorter: this is one scalar per step, while a nanosecond current
     // pulse is destroyed by sampling at the field cadence.
@@ -233,6 +312,11 @@ void Foam::plasmaDischargeCurrent::update
                   << revolutionFactor_ << nl
                   << "time,V_applied,I_total,I_cond,I_disp";
 
+            if (crossCheck_)
+            {
+                os_() << ",I_surface,I_surface_cond,I_surface_disp";
+            }
+
             if (perSpecies_)
             {
                 forAll(qs, s)
@@ -248,6 +332,11 @@ void Foam::plasmaDischargeCurrent::update
         {
             os_() << t << ',' << Va << ',' << Itot << ',' << Icond << ','
                   << Idisp;
+
+            if (crossCheck_)
+            {
+                os_() << ',' << Isurf << ',' << IsurfC << ',' << IsurfD;
+            }
 
             if (perSpecies_)
             {
@@ -266,6 +355,15 @@ void Foam::plasmaDischargeCurrent::update
         Info<< "  discharge current:        " << Itot << " A"
             << "   (conduction " << Icond << ", displacement " << Idisp
             << ", V = " << Va << ")" << endl;
+
+        if (crossCheck_)
+        {
+            const scalar rel =
+                mag(Itot - Isurf)/max(max(mag(Itot), mag(Isurf)), VSMALL);
+
+            Info<< "    surface-integral check: " << Isurf << " A"
+                << "   relative difference " << rel << endl;
+        }
     }
 }
 

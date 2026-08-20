@@ -119,6 +119,32 @@ class plasmaDischargeCurrent
         //- Per-species conduction current [A], for the optional columns.
         List<scalar> perSpeciesCurrent_;
 
+        //- CROSS-CHECK: the same current by the electrode surface integral,
+        //  which is mathematically equivalent and numerically unrelated.
+        //
+        //      INT_electrode J_tot . dS = - INT_V e_hat . J_tot dV
+        //
+        //  (div J_tot = 0 plus Green's reciprocity; outward normal). The sign
+        //  is FIXED BY THAT IDENTITY, not chosen to make the numbers agree.
+        //
+        //  Off by default: it needs dE/dt at the boundary, which is the noisy
+        //  quantity Sato's form exists to avoid, and it costs a stored field.
+        bool crossCheck_ = false;
+
+        //- eps E . Sf on the driven patch at the previous step, for dE/dt.
+        scalarField prevEFlux_;
+        bool eFluxSeeded_ = false;
+
+        //- The surface-integral current [A], conduction and displacement.
+        void surfaceIntegralCurrent
+        (
+            const plasmaTransport& transport,
+            const plasmaSpecies& species,
+            const electromagneticsModel& em,
+            scalar& Icond,
+            scalar& Idisp
+        );
+
         //- 2*pi/theta on a wedge mesh, 1 otherwise. Per MESH, because
         //  nothing guarantees a dielectric region was built with the same
         //  wedge angle as the gas.
