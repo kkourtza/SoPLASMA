@@ -140,6 +140,15 @@ int main(int argc, char *argv[])
     argList::addOption("wallL", "m", "discharge length for -wallLoss");
     argList::addOption("wallMuiN", "1/(V m s)",
         "reduced ion mobility for -wallLoss (default 5e21, ~O2+ in O2)");
+    // ---- LMEA (transported electron energy) --------------------------------
+    argList::addBoolOption("lmea",
+        "solve the LMEA electron energy equation instead of taking the mean "
+        "energy from the LFA table");
+    argList::addOption("lmeaSource", "explicit|implicit",
+        "how the collisional loss enters the energy update (default implicit)");
+    argList::addOption("lmeaDt", "s",
+        "fixed energy sub-step; default follows the chemistry step");
+
     argList::addOption("chemistryBackend", "native|cantera",
         "who evaluates the heavy reactions. Same keyword as the CFD.");
     argList::addOption("chemistrySource",
@@ -182,6 +191,15 @@ int main(int argc, char *argv[])
         ("tables", "constant/plasmaTables");
     const scalar EN_Td   = args.getOrDefault<scalar>("EN", 150.0);
     const bool   heating = args.found("gasHeating");
+
+    // LMEA. The point of doing this in 0-D is that the answer is KNOWN: at
+    // fixed E/N the steady mean energy must return meanEnergy_vs_reducedE,
+    // the LFA table, because that is the local-equilibrium limit LMEA reduces
+    // to. Getting it wrong here costs seconds; getting it wrong at 1.15M
+    // cells costs a day.
+    const bool lmea = args.found("lmea");
+    const bool lmeaImplicit =
+        args.getOrDefault<word>("lmeaSource", "implicit") == "implicit";
 
     // A PRESCRIBED relaxation time, not a Landau-Teller model, and that is a
     // deliberate first step. Within a nanosecond pulse tau_VT is microseconds,
@@ -661,6 +679,7 @@ int main(int argc, char *argv[])
 
     OFstream os(out);
     os << "t,EN_Td,Tgas,e_vib,E_dep,E_gas,E_vib";
+    if (lmea) os << ",meanE_lmea,meanE_lfa,nEps";
     forAll(species, s) os << "," << species[s];
     os << nl;
 
@@ -754,6 +773,21 @@ int main(int argc, char *argv[])
     scalarField Pchem(chem.nSpecie(), 0.0), Lchem(chem.nSpecie(), 0.0);
     scalarField n0chem(chem.nSpecie(), 0.0);
     scalar wallLossPeak = 0.0;
+
+    // LMEA state: the ENERGY DENSITY n_eps [eV/m^3], not the mean energy.
+    // Conservative by choice -- see the model header. Seeded from the LFA
+    // table so the run starts in equilibrium and any drift away from it is
+    // the model's own doing rather than a transient from a cold start.
+    scalar nEps = 0.0;
+    if (lmea)
+    {
+        const scalar en0 = fieldAt(0.0);
+        const scalar e0 = (en0 > 0)
+            ? tableAt(tableDir/"meanEnergy_vs_reducedE", en0*1e-21) : 0.0;
+        nEps = e0*((ie >= 0) ? max(n[ie], scalar(0)) : 0.0);
+    }
+    scalar meanELmea = 0.0, meanELfa = 0.0;
+
     label nWritten = 0;
     label k = 0;
     while (t < endTime)
@@ -770,6 +804,53 @@ int main(int argc, char *argv[])
         dt = min(dt, endTime - t);
         const scalar en = fieldAt(t);
         ++k;
+
+        // ---- LMEA electron energy ------------------------------------------
+        //
+        //   d(n_eps)/dt = Joule - P_loss
+        //   Joule  = mu_e n_e E^2   = (muN) n_e N (E/N)^2
+        //   P_loss = n_e N (PelasticN + PinelasticN)(eps_bar)
+        //
+        // NOTE what is NOT here: a term for the energy carried by newly
+        // created electrons. It is not missing -- n_eps is conservative and
+        // n_e grows through the chemistry, so eps = n_eps/n_e carries that
+        // term automatically via d(n_e eps) = eps dn_e + n_e deps. The 0-D
+        // table gate measured exactly this: Joule - P_loss = eps nu_eff in
+        // steady state, to 0.3%.
+        if (lmea)
+        {
+            const scalar ne = (ie >= 0) ? max(n[ie], scalar(0)) : 0.0;
+            const scalar Ngas = pres/(1.380649e-23*T);
+
+            meanELfa = (en > 0)
+                ? tableAt(tableDir/"meanEnergy_vs_reducedE", en*1e-21) : 0.0;
+
+            // Floor then divide, never divide then clamp.
+            meanELmea = nEps/max(ne, scalar(1.0));
+            meanELmea = min(max(meanELmea, scalar(1e-3)), scalar(100.0));
+
+            const scalar muN = tableAt(tableDir/"muN_vs_meanE", meanELmea);
+            const scalar PlN =
+                tableAt(tableDir/"PelasticN_vs_meanE",   meanELmea)
+              + tableAt(tableDir/"PinelasticN_vs_meanE", meanELmea);
+
+            const scalar enSI = en*1e-21;
+            const scalar joule = muN*ne*Ngas*enSI*enSI;
+            const scalar ploss = ne*Ngas*PlN;
+
+            if (lmeaImplicit)
+            {
+                // n^{k+1} = (n + P dt)/(1 + L dt): unconditionally stable and
+                // positivity-preserving for L >= 0, which is the whole reason
+                // to write the loss as a RATE rather than as a source.
+                const scalar L = (nEps > VSMALL) ? max(ploss/nEps, 0.0) : 0.0;
+                nEps = (nEps + joule*dt)/(1.0 + L*dt);
+            }
+            else
+            {
+                nEps = max(nEps + (joule - ploss)*dt, 0.0);
+            }
+        }
         {
             // Rates follow the field, and the field follows the pulse. With
             // the field off there is no electron-impact chemistry at all --
@@ -1163,6 +1244,10 @@ int main(int argc, char *argv[])
         {
             os << t << ',' << en << ',' << T << ',' << eVib
                << ',' << Edep << ',' << Egas << ',' << Evib;
+            if (lmea)
+            {
+                os << ',' << meanELmea << ',' << meanELfa << ',' << nEps;
+            }
             forAll(n, s) os << "," << n[s];
             os << nl;
             ++nWritten;
