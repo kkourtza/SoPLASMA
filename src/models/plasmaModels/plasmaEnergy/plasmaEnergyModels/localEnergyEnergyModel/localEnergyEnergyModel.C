@@ -105,6 +105,13 @@ localEnergyEnergyModel::localEnergyEnergyModel
                  IOobject::NO_READ, IOobject::NO_WRITE),
         mesh,
         dimensionedScalar("zero", dimensionSet(0, 3, -1, 0, 0, 0, 0), 0.0)
+    ),
+    dSdEps_
+    (
+        IOobject("dSdEps_lmea", mesh.time().timeName(), mesh,
+                 IOobject::NO_READ, IOobject::NO_WRITE),
+        mesh,
+        dimensionedScalar("zero", dimless/dimTime, 0.0)
     )
 {
     const dictionary& c = dict.subOrEmptyDict("localEnergyCoeffs");
@@ -113,6 +120,8 @@ localEnergyEnergyModel::localEnergyEnergyModel
     nEfloor_  = c.getOrDefault<scalar>("electronDensityFloor", 1.0);
     meanEmin_ = c.getOrDefault<scalar>("meanEnergyMin", 1e-3);
     meanEmax_ = c.getOrDefault<scalar>("meanEnergyMax", 100.0);
+    sourceSensitivity_ =
+        c.getOrDefault<Switch>("sourceSensitivity", true);
 
     if (!c.found("mobility") || !c.found("diffusivity"))
     {
@@ -233,6 +242,61 @@ void localEnergyEnergyModel::correct()
         Pinelastic_->correct(Pi);
         PlossN_ += Pi;
     }
+
+    // SOURCE SENSITIVITY, by finite difference on the tabulated coefficients:
+    //
+    //     D = -dS/deps / n_e = N [ dPlossN/deps - (E/N)^2 dmuN/deps ]
+    //
+    // Evaluated by re-running the evaluators on a perturbed mean energy. That
+    // is why meanE_ is a REGISTERED field: the evaluators read their lookup
+    // coordinate from the registry, so perturbing it and re-correcting is the
+    // only way to differentiate a table this code does not own.
+    dSdEps_ == dimensionedScalar("zero", dSdEps_.dimensions(), 0.0);
+
+    if (sourceSensitivity_)
+    {
+        const volScalarField meanE0(meanE_);
+
+        // Step proportional to the local energy, floored so a near-zero cell
+        // does not divide by a vanishing h.
+        const volScalarField h
+        (
+            max(1e-3*meanE0, dimensionedScalar("hmin", dimless, 1e-4))
+        );
+
+        volScalarField muP(muEf_), muM(muEf_);
+        volScalarField PlP(PlossN_), PlM(PlossN_);
+
+        meanE_ == meanE0 + h;
+        muE_->correct(muP);
+        {
+            PlP == dimensionedScalar("z", PlP.dimensions(), 0.0);
+            if (Pelastic_)   { volScalarField t(PlP); Pelastic_->correct(t);   PlP += t; }
+            if (Pinelastic_) { volScalarField t(PlP); Pinelastic_->correct(t); PlP += t; }
+        }
+
+        meanE_ == max(meanE0 - h, dimensionedScalar("z", dimless, 0.0));
+        muE_->correct(muM);
+        {
+            PlM == dimensionedScalar("z", PlM.dimensions(), 0.0);
+            if (Pelastic_)   { volScalarField t(PlM); Pelastic_->correct(t);   PlM += t; }
+            if (Pinelastic_) { volScalarField t(PlM); Pinelastic_->correct(t); PlM += t; }
+        }
+
+        meanE_ == meanE0;      // restore before anything else reads it
+
+        const volScalarField dMu((muP - muM)/(2.0*h));
+        const volScalarField dPl((PlP - PlM)/(2.0*h));
+
+        const volScalarField EN(mag(E_)/species_.backgroundDensity());
+
+        // NOT clamped positive here: fvm::SuSp does that job per cell, putting
+        // it implicit where it damps and explicit where it would anti-damp.
+        // This is the genuinely sign-indefinite coefficient the codebase had
+        // no use for until now -- see the note on why Sp is used everywhere
+        // else.
+        dSdEps_ = species_.backgroundDensity()*(dPl - EN*EN*dMu);
+    }
 }
 
 
@@ -303,8 +367,10 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
           + fvm::div(phiEps, nEps_)
           - fvm::laplacian(DEps, nEps_)
           + fvm::Sp(Lrate, nEps_)
+          + fvm::SuSp(dSdEps_/max(ne, dimensionedScalar("f", ne.dimensions(), nEfloor_)), nEps_)
          ==
             jouleHeating
+          + dSdEps_/max(ne, dimensionedScalar("f", ne.dimensions(), nEfloor_))*nEps_
         )
     );
 

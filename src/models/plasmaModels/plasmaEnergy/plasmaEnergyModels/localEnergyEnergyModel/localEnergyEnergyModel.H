@@ -99,6 +99,23 @@ private:
     volScalarField DEf_;
     volScalarField PlossN_;
 
+    //- SOURCE SENSITIVITY dS/deps, Hagelaar's linearisation. Implicit in how
+    //  the source RESPONDS to the mean energy, not merely in the magnitude of
+    //  the loss.
+    //
+    //  MEASURED in 0-D (validation/lmea/dt_stability.csv, air at 200 Td):
+    //  linearising only the loss magnitude survives to dt ~ 5 tau_eps and then
+    //  oscillates 2.3-8.8 eV at 18 tau; adding the sensitivity holds
+    //  4.85-5.36 eV there. About 9x on the oscillation-free step against
+    //  explicit -- NOT the ~100x Hagelaar reports, and the difference is
+    //  stated rather than papered over.
+    //
+    //  Enabled by default because ROBUSTNESS is the point: our streamer runs
+    //  at dt/tau ~ 0.7, comfortably inside even the explicit limit, but a case
+    //  we have not run has no such guarantee.
+    bool sourceSensitivity_ = true;
+    volScalarField dSdEps_;
+
     //- DENSITY FLOOR for eps_bar = n_eps/n_e, which is 0/0 in the far field.
     //
     //  Flagged as a risk in the plan before any of this was written, and it is

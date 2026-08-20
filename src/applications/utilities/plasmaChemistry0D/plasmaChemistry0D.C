@@ -144,8 +144,10 @@ int main(int argc, char *argv[])
     argList::addBoolOption("lmea",
         "solve the LMEA electron energy equation instead of taking the mean "
         "energy from the LFA table");
-    argList::addOption("lmeaSource", "explicit|implicit",
-        "how the collisional loss enters the energy update (default implicit)");
+    argList::addOption("lmeaSource", "explicit|implicit|newton",
+        "how the source enters the energy update (default implicit). "
+        "`newton` adds the SENSITIVITY dS/deps -- Hagelaar's linearisation -- "
+        "not merely the loss magnitude.");
     argList::addOption("lmeaDt", "s",
         "fixed energy sub-step; default follows the chemistry step");
 
@@ -198,8 +200,9 @@ int main(int argc, char *argv[])
     // to. Getting it wrong here costs seconds; getting it wrong at 1.15M
     // cells costs a day.
     const bool lmea = args.found("lmea");
-    const bool lmeaImplicit =
-        args.getOrDefault<word>("lmeaSource", "implicit") == "implicit";
+    const word lmeaSrc = args.getOrDefault<word>("lmeaSource", "implicit");
+    const bool lmeaImplicit = (lmeaSrc == "implicit");
+    const bool lmeaNewton   = (lmeaSrc == "newton");
 
     // A PRESCRIBED relaxation time, not a Landau-Teller model, and that is a
     // deliberate first step. Within a nanosecond pulse tau_VT is microseconds,
@@ -838,7 +841,41 @@ int main(int argc, char *argv[])
             const scalar joule = muN*ne*Ngas*enSI*enSI;
             const scalar ploss = ne*Ngas*PlN;
 
-            if (lmeaImplicit)
+            if (lmeaNewton)
+            {
+                // HAGELAAR'S LINEARISATION: implicit in the SENSITIVITY of the
+                // source to the mean energy, not merely in the magnitude of
+                // the loss.
+                //
+                //     S(eps),  eps = n_eps/n_e   =>   dS/d(n_eps) = S'(eps)/n_e
+                //     D = -S'(eps)/n_e = N [ dPlossN/deps - (E/N)^2 dmuN/deps ]
+                //
+                // Both terms are POSITIVE for air -- PlossN rises with eps,
+                // muN falls -- so D damps. That is a property of the gas, not
+                // a theorem, which is why D is clamped at zero: a negative D
+                // is anti-damping, the same shape that broke the Rosenbrock
+                // controller and the transport cross-term sink.
+                const scalar h = max(1e-3*meanELmea, 1e-4);
+
+                const scalar dMu =
+                    (tableAt(tableDir/"muN_vs_meanE", meanELmea + h)
+                   - tableAt(tableDir/"muN_vs_meanE", max(meanELmea - h, 0.0)))
+                  / (2.0*h);
+
+                const scalar dPl =
+                    ( tableAt(tableDir/"PelasticN_vs_meanE",   meanELmea + h)
+                    + tableAt(tableDir/"PinelasticN_vs_meanE", meanELmea + h)
+                    - tableAt(tableDir/"PelasticN_vs_meanE",
+                              max(meanELmea - h, 0.0))
+                    - tableAt(tableDir/"PinelasticN_vs_meanE",
+                              max(meanELmea - h, 0.0)) ) / (2.0*h);
+
+                const scalar D = max(Ngas*(dPl - enSI*enSI*dMu), 0.0);
+
+                // Implicit in the increment: (1 + D dt) dn = S dt
+                nEps = max(nEps + (joule - ploss)*dt/(1.0 + D*dt), 0.0);
+            }
+            else if (lmeaImplicit)
             {
                 // n^{k+1} = (n + P dt)/(1 + L dt): unconditionally stable and
                 // positivity-preserving for L >= 0, which is the whole reason
