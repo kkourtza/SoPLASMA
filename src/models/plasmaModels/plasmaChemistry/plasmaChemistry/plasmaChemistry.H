@@ -205,6 +205,31 @@ public:
         //  reaches second order: a constant ext leaves the scheme at p = 0.99
         //  even with the outer loop converged to 1e-12 (measured 2026-08-18,
         //  40x40 study). Centred so the mean stays `ext`.
+        //- Add the electron energy density to the integrated state vector
+        //  (Option 4, docs/lmea-option4-plan.md).
+        //
+        //  REBUILDS the ODE solver, because ODESolver sizes its workspace from
+        //  nEqns() at construction and this changes nEqns(). Call once at
+        //  set-up, never in a cell loop.
+        //
+        //  After this the state vector handed to integrate() must be
+        //  nSpecie+1 long, with n_eps last.
+        void enableEnergyEquation
+        (
+            const label electronIndex,
+            const scalar epsMin,
+            const scalar epsMax,
+            const scalar neFloor,
+            std::function<scalar(scalar)> muE,
+            std::function<scalar(scalar)> PlossN
+        );
+
+        //- Per-cell field and background density for the energy equation.
+        void setEnergyCell(const scalar Emag, const scalar Ngas) const;
+
+        //- Whether the energy equation is part of the integrated state.
+        bool energyIntegrated() const;
+
         void integrate
         (
             scalarField& n,

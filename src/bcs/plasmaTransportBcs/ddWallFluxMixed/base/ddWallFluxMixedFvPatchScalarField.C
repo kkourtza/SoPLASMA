@@ -65,6 +65,7 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
 :
     mixedFvPatchScalarField(p, iF),
     TName_("none"),
+    speciesNameOverride_(word::null),
     TValue_("T", dimTemperature, 300.0)
 {
     this->refValue()      = 0.0;
@@ -82,6 +83,7 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
 :
     mixedFvPatchScalarField(p, iF),
     TName_("none"),
+    speciesNameOverride_(dict.lookupOrDefault<word>("species", word::null)),
     TValue_("T", dimTemperature, 300.0)
 {
     const entry& e = dict.lookupEntry("T", keyType::LITERAL);
@@ -126,6 +128,7 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
 :
     mixedFvPatchScalarField(ptf, p, iF, mapper),
     TName_(ptf.TName_),
+    speciesNameOverride_(ptf.speciesNameOverride_),
     TValue_(ptf.TValue_)
 {}
 
@@ -137,6 +140,7 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
 :
     mixedFvPatchScalarField(ptf),
     TName_(ptf.TName_),
+    speciesNameOverride_(ptf.speciesNameOverride_),
     TValue_(ptf.TValue_)
 {}
 
@@ -149,10 +153,28 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
 :
     mixedFvPatchScalarField(ptf, iF),
     TName_(ptf.TName_),
+    speciesNameOverride_(ptf.speciesNameOverride_),
     TValue_(ptf.TValue_)
 {}
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
+
+Foam::word
+Foam::ddWallFluxMixedFvPatchScalarField::resolveSpeciesName() const
+{
+    if (!speciesNameOverride_.empty())
+    {
+        return speciesNameOverride_;
+    }
+
+    word name = this->internalField().name();
+    if (name.startsWith("n_"))
+    {
+        name.erase(0, 2);
+    }
+    return name;
+}
+
 
 void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
 {
@@ -168,13 +190,8 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
     // Access the normal vector and delta coeffs
     const scalarField& delta = p.deltaCoeffs();
 
-    // Determine species name (e.g., n_e -> e)
-    const word fieldName = this->internalField().name();
-    word speciesName = fieldName;
-    if (speciesName.startsWith("n_"))
-    {
-        speciesName.erase(0, 2);
-    }
+    // Determine species name (e.g., n_e -> e), or take the override.
+    const word speciesName = resolveSpeciesName();
 
     // Lookup Transport Registry and Species Data
     if (!db().foundObject<plasmaTransport>("plasmaTransport"))

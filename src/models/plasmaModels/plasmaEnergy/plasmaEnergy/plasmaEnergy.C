@@ -12,6 +12,7 @@
 \*---------------------------------------------------------------------------*/
 
 #include "plasmaEnergy.H"
+#include "localEnergyEnergyModel.H"
 #include "plasmaEnergyModel.H"
 
 #include "plasmaSimulationProfiler.H"
@@ -28,6 +29,123 @@ namespace Foam
 defineTypeNameAndDebug(plasmaEnergy, 0);
 
 // * * * * * * * * * * * * * * Private Member Functions * * * * * * * * * *  //
+
+Foam::scalar Foam::plasmaEnergy::maxEnergyRate() const
+{
+    // The ACTUAL energy-transport rate [1/s], from the energy flux itself.
+    //
+    // This replaces a 5/3 factor applied to the SPECIES rate, which was wrong
+    // twice over: it assumed the Maxwellian mu_eps/mu_e = 5/3 (measured
+    // 1.24-1.57 on this air set) and it used a mobility evaluated at the
+    // reduced field rather than at the mean energy. Taking the rate from the
+    // flux the equation actually convects with removes both.
+    scalar r = 0;
+
+    forAll(energyModels_, i)
+    {
+        if (isA<localEnergyEnergyModel>(energyModels_[i]))
+        {
+            r = max
+            (
+                r,
+                refCast<const localEnergyEnergyModel>
+                (
+                    energyModels_[i]
+                ).maxEnergyRate()
+            );
+        }
+    }
+
+    return r;
+}
+
+
+const Foam::localEnergyEnergyModel* Foam::plasmaEnergy::lmeaModel() const
+{
+    forAll(energyModels_, i)
+    {
+        if (isA<localEnergyEnergyModel>(energyModels_[i]))
+        {
+            return &refCast<const localEnergyEnergyModel>(energyModels_[i]);
+        }
+    }
+    return nullptr;
+}
+
+
+Foam::scalar Foam::plasmaEnergy::maxEnergyRelaxationRate() const
+{
+    // Mirrors maxEnergyRate() -- the largest over every LMEA model present,
+    // so a case with more than one transported energy is limited by the
+    // stiffest of them rather than by whichever happens to be last.
+    scalar r = 0;
+
+    forAll(energyModels_, i)
+    {
+        if (isA<localEnergyEnergyModel>(energyModels_[i]))
+        {
+            r = max
+            (
+                r,
+                refCast<const localEnergyEnergyModel>
+                (
+                    energyModels_[i]
+                ).maxEnergyRelaxationRate()
+            );
+        }
+    }
+
+    return r;
+}
+
+
+void Foam::plasmaEnergy::solveSpeciesEnergy()
+{
+    forAll(energyModels_, i)
+    {
+        // Every model must be corrected -- that is what refreshes the derived
+        // fields and the tabulated coefficients -- but only the models that
+        // TRANSPORT energy return a matrix. The LFA family returns nullptr,
+        // which is not a failure but a statement that their temperature is an
+        // algebraic function of the local state.
+        energyModels_[i].correct();
+
+        tmp<fvScalarMatrix> tEqn = energyModels_[i].eEqn();
+
+        if (tEqn.valid())
+        {
+            // LINEAR-SOLVER SETTINGS, borrowed from the species this energy
+            // belongs to. Cases carry a regex entry `"n_.*"` covering every
+            // transported species, which `nEps_e` does NOT match -- so without
+            // this the run aborts with `Entry 'nEps_e' not found in
+            // solvers`, and every case would have to declare a solver for an
+            // equation it enabled with one keyword.
+            //
+            // Borrowing is right on the merits too: this is a transported
+            // scalar on the same mesh with the same operator structure as the
+            // species density, so it wants the same settings. An explicit
+            // `nEps_<specie>` entry still wins, because subDict() resolves
+            // exact names before regexes.
+            const word sName = species_.speciesNames()[i];
+
+            const dictionary& solvers =
+                mesh_.solution().subDict("solvers");
+
+            const word key =
+                solvers.found("nEps_" + sName, keyType::REGEX)
+              ? word("nEps_" + sName)
+              : word("n_" + sName);
+
+            tEqn.ref().relax();
+            tEqn.ref().solve(solvers.subDict(key));
+
+            // Re-derive AFTER the solve: eps_bar and T_e follow from the new
+            // energy density, and everything downstream reads them.
+            energyModels_[i].correct();
+        }
+    }
+}
+
 
 void plasmaEnergy::constructModels()
 {

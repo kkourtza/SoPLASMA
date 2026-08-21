@@ -62,6 +62,8 @@ SourceFiles
 namespace Foam
 {
 
+class localEnergyEnergyModel;
+
 // Forward declaration rather than an include: janafMixture lives in
 // libplasmaChemistry, and pulling it through this PUBLIC header would force
 // every consumer of plasmaTransport.H -- the boundary conditions, the tools,
@@ -109,6 +111,10 @@ private:
     //  SOURCE keeps ddt and oldTime consistent by construction, which is
     //  what reactingFoam does with its RR field.
     void computeChemistrySources(const scalar dt);
+
+    //- Enable the electron energy in the chemistry ODE (once) and return the
+    //  LMEA model, or nullptr. Called from BOTH chemistry paths.
+    const localEnergyEnergyModel* enableChemistryEnergy();
 
     //- True on the last PIMPLE outer iteration of this timestep. Retained
     //  for reporting; the source formulation no longer needs it, because
@@ -438,7 +444,9 @@ protected:
 
     //- Cells sent to the stiff path by the error test, per pass and peak-held
     label chemNstiffByError_ = 0;
+    label chemNstiffByEnergy_ = 0;
     label chemNstiffByErrorPeak_ = 0;
+    label chemNstiffByEnergyPeak_ = 0;
 
     //- Cells sent to the stiff path by each criterion, for reporting.
     //
@@ -581,6 +589,27 @@ protected:
 
     //- Instantaneous production and loss coefficient, for csImplicitRate
     List<scalarField> chemP_;
+
+    //- ENERGY source from the chemistry ODE (Option 4), in the same
+    //  production/loss-rate form the species use, so the energy equation can
+    //  put the sink on its diagonal exactly as before.
+    //
+    //  Written only when the ODE integrates the energy; the LMEA model checks
+    //  energyInChemistry() and falls back to its own hand-rolled source when
+    //  it does not. Applying BOTH would count the source twice.
+    //  REGISTERED FIELDS, looked up BY NAME by localEnergyEnergyModel.
+    //
+    //  Not passed by type: plasmaTransport links plasmaEnergy, so a
+    //  plasmaEnergy -> plasmaTransport dependency would be circular. The
+    //  registry is the seam that already exists between them.
+    autoPtr<volScalarField> chemPeps_;
+    autoPtr<volScalarField> chemLeps_;
+    bool energyInChemistry_ = false;
+
+    //- `energySource chemistry` in the chemistry dict: integrate the electron
+    //  energy with the species instead of sourcing it in the energy model.
+    //  Default OFF, so existing cases are unchanged.
+    bool chemEnergyRequested_ = false;
     List<scalarField> chemL_;
 
     //- Outer iterations taken in the current timestep, and how many are
@@ -610,6 +639,15 @@ volScalarField S_iz_;
 
 autoPtr<photoionizationModel> photoionization_;
 public:
+
+    //- Whether the electron energy is integrated by the chemistry ODE rather
+    //  than sourced by the energy model itself.
+    bool energyInChemistry() const { return energyInChemistry_; }
+
+    //- End-state energy production [eV/m^3/s] and loss RATE [1/s]. Valid
+    //  only when energyInChemistry().
+    const volScalarField& chemPeps() const { return chemPeps_(); }
+    const volScalarField& chemLeps() const { return chemLeps_(); }
 
     //- Runtime type information
     TypeName("plasmaTransport");

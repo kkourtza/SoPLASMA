@@ -99,6 +99,46 @@ static scalar tableAt(const fileName& path, const scalar x)
     return ys.last();
 }
 
+
+// Integrate one substep, carrying the electron energy density in the state
+// vector when Option 4 is active.
+//
+// `n` stays the SPECIES vector everywhere else in this file; the padded copy
+// lives only for the duration of the call. Resizing `n` itself would mean
+// every output loop, every chemistry call and every energy-budget sum had to
+// know about the extra slot.
+static void integrateWithEnergy
+(
+    const Foam::plasmaChemistry& chem,
+    Foam::scalarField& n,
+    Foam::scalar& nEps,
+    const Foam::scalarField& kTab,
+    const Foam::scalar T,
+    const Foam::scalar dt,
+    const bool withEnergy,
+    const Foam::scalar Emag,
+    const Foam::scalar Ngas
+)
+{
+    if (!withEnergy)
+    {
+        chem.integrate(n, kTab, T, dt);
+        return;
+    }
+
+    chem.setEnergyCell(Emag, Ngas);
+
+    const Foam::label nSp = n.size();
+    Foam::scalarField y(nSp + 1);
+    for (Foam::label i = 0; i < nSp; ++i) y[i] = n[i];
+    y[nSp] = nEps;
+
+    chem.integrate(y, kTab, T, dt);
+
+    for (Foam::label i = 0; i < nSp; ++i) n[i] = y[i];
+    nEps = Foam::max(y[nSp], Foam::scalar(0));
+}
+
 int main(int argc, char *argv[])
 {
     argList::noParallel();
@@ -144,7 +184,7 @@ int main(int argc, char *argv[])
     argList::addBoolOption("lmea",
         "solve the LMEA electron energy equation instead of taking the mean "
         "energy from the LFA table");
-    argList::addOption("lmeaSource", "explicit|implicit|newton",
+    argList::addOption("lmeaSource", "explicit|implicit|newton|ode",
         "how the source enters the energy update (default implicit). "
         "`newton` adds the SENSITIVITY dS/deps -- Hagelaar's linearisation -- "
         "not merely the loss magnitude.");
@@ -203,6 +243,34 @@ int main(int argc, char *argv[])
     const word lmeaSrc = args.getOrDefault<word>("lmeaSource", "implicit");
     const bool lmeaImplicit = (lmeaSrc == "implicit");
     const bool lmeaNewton   = (lmeaSrc == "newton");
+
+    // OPTION 4: integrate n_eps INSIDE the stiff chemistry ODE rather than
+    // updating it by hand after the chemistry. See docs/lmea-option4-plan.md.
+    const bool lmeaOde      = (lmeaSrc == "ode");
+    if (lmeaOde && !lmea)
+    {
+        FatalErrorInFunction
+            << "-lmeaSource ode integrates the electron energy in the"
+               " chemistry ODE, but -lmea was not given."
+            << exit(FatalError);
+    }
+
+    // -lmeaDt PINS the integration step, overriding the pulse-derived dtFine
+    // and the afterglow growth. It exists to map the LMEA stability boundary
+    // in dt, which is impossible while the step is chosen for you.
+    //
+    // It was declared here and NEVER READ for its first several commits: an
+    // 18-run dt scan came back bit-identical because every run silently used
+    // dtFine = fwhm/50. A dead option is worse than a missing one -- it
+    // reports success while measuring nothing.
+    const scalar lmeaDtFix = args.getOrDefault<scalar>("lmeaDt", 0.0);
+    if (lmeaDtFix > 0 && !lmea)
+    {
+        FatalErrorInFunction
+            << "-lmeaDt pins the step for the LMEA energy integration but"
+               " -lmea was not given, so there is nothing to pin."
+            << exit(FatalError);
+    }
 
     // A PRESCRIBED relaxation time, not a Landau-Teller model, and that is a
     // deliberate first step. Within a nanosecond pulse tau_VT is microseconds,
@@ -771,6 +839,14 @@ int main(int argc, char *argv[])
             << " s, then growing" << endl;
     }
 
+    if (lmeaDtFix > 0)
+    {
+        dtFine = lmeaDtFix;
+        Info<< "lmeaDt: step PINNED at " << dtFine
+            << " s (pulse-derived step and afterglow growth both overridden)"
+            << endl;
+    }
+
     scalar t = 0.0, dt = min(dtFine, endTime/10.0);
     scalar tNextOut = 0.0;                    // next sample time, see below
     scalarField Pchem(chem.nSpecie(), 0.0), Lchem(chem.nSpecie(), 0.0);
@@ -791,6 +867,38 @@ int main(int argc, char *argv[])
     }
     scalar meanELmea = 0.0, meanELfa = 0.0;
 
+    // OPTION 4 set-up. Done ONCE, before any integration: enableEnergyEquation
+    // changes nEqns() and rebuilds the ODE solver, whose workspace is sized at
+    // construction.
+    //
+    // The lambdas are pure table reads with NO captured mutable state -- the
+    // gas density they would otherwise need is passed per cell through
+    // setEnergyCell(), because it changes with the gas temperature.
+    if (lmeaOde)
+    {
+        if (ie < 0)
+        {
+            FatalErrorInFunction
+                << "-lmeaSource ode needs the electron in the transported set."
+                << exit(FatalError);
+        }
+
+        const fileName td = tableDir;
+        chem.enableEnergyEquation
+        (
+            ie,
+            1.0e-3,            // eps floor, as the hand-rolled path uses
+            100.0,             // eps ceiling, as meanEnergyMax
+            1.0,               // n_e floor inside the ratio
+            [td](const scalar e) { return tableAt(td/"muN_vs_meanE", e); },
+            [td](const scalar e)
+            {
+                return tableAt(td/"PelasticN_vs_meanE",   e)
+                     + tableAt(td/"PinelasticN_vs_meanE", e);
+            }
+        );
+    }
+
     label nWritten = 0;
     label k = 0;
     while (t < endTime)
@@ -803,6 +911,7 @@ int main(int argc, char *argv[])
             // driven to denormals (1e-323). The cap is a property of the
             // chemistry rather than of the output cadence, hence absolute.
             dt = min(min(dt*1.05, endTime/50.0), 1.0e-6);
+            if (lmeaDtFix > 0) dt = lmeaDtFix;   // pinned: no growth at all
         }
         dt = min(dt, endTime - t);
         const scalar en = fieldAt(t);
@@ -841,7 +950,19 @@ int main(int argc, char *argv[])
             const scalar joule = muN*ne*Ngas*enSI*enSI;
             const scalar ploss = ne*Ngas*PlN;
 
-            if (lmeaNewton)
+            if (lmeaOde)
+            {
+                // NOTHING TO DO. The energy density is a component of the
+                // integrated state vector and was advanced by the stiff
+                // solver alongside the species -- see integrateWithEnergy().
+                // Updating it here as well would apply the source twice.
+                //
+                // Note the reported meanE therefore lags by one step: this
+                // block runs BEFORE the chemistry, so `nEps` here is the
+                // start-of-step value. Harmless for a diagnostic, and stated
+                // rather than left to be discovered.
+            }
+            else if (lmeaNewton)
             {
                 // HAGELAAR'S LINEARISATION: implicit in the SENSITIVITY of the
                 // source to the mean energy, not merely in the magnitude of
@@ -973,7 +1094,11 @@ int main(int argc, char *argv[])
             // the step is being asked to leap over that timescale.
             if (chemSource == csODE)
             {
-                chem.integrate(n, kTab, T, dt);
+                integrateWithEnergy
+                (
+                    chem, n, nEps, kTab, T, dt,
+                    lmeaOde, en*1e-21*(pres/(1.380649e-23*T)), pres/(1.380649e-23*T)
+                );
                 ++nODEsteps;
             }
             else
@@ -993,7 +1118,11 @@ int main(int argc, char *argv[])
                   || chemSource == csAdaptiveError)
                  && Ldtmax > stiffTol)
                 {
-                    chem.integrate(n, kTab, T, dt);
+                    integrateWithEnergy
+                    (
+                        chem, n, nEps, kTab, T, dt,
+                        lmeaOde, en*1e-21*(pres/(1.380649e-23*T)), pres/(1.380649e-23*T)
+                    );
                     ++nODEsteps;
                 }
                 else
@@ -1102,7 +1231,11 @@ int main(int argc, char *argv[])
                       || chemSource == csAdaptiveError))
                     {
                         n = n0chem;
-                        chem.integrate(n, kTab, T, dt);
+                        integrateWithEnergy
+                        (
+                            chem, n, nEps, kTab, T, dt,
+                            lmeaOde, en*1e-21*(pres/(1.380649e-23*T)), pres/(1.380649e-23*T)
+                        );
                         ++nODEsteps;
                         ++nRejected;
                     }

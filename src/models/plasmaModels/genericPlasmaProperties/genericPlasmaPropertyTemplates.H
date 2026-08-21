@@ -185,6 +185,189 @@ public:
                       Class TabulatedProperty1D Declaration
 \*---------------------------------------------------------------------------*/
 
+//- Bounded 1-D table lookup: interpolate inside the range, HOLD below it,
+//  POWER-LAW extrapolate above it.
+//
+//  Written because OpenFOAM's interpolationTable does NOT extrapolate at all.
+//  Its CLAMP and WARN both `return Zero` beyond the range and REPEAT wraps
+//  modulo the span -- so a loss coefficient silently becomes ZERO past the
+//  table, removing the only sink from the electron energy equation. That was
+//  measured as a runaway: mean energy 5.95 -> 9.2 -> 26 -> 60 -> clamp, with
+//  J/L reaching 1.4e4.
+//
+//  THE METHOD, chosen from the data rather than assumed. Fitting log(y)
+//  against log(x) over the top decade of the air tables gives R^2 = 0.999 for
+//  PelasticN, 0.999 for DLN, 0.996 for muEpsN -- these are power laws. The
+//  rate coefficients fit far worse (nuEffN 0.90, k_ION 0.95) because they are
+//  THRESHOLD processes that saturate once eps >> eps_threshold.
+//
+//  Using the LOCAL slope over the last few points handles both automatically:
+//
+//      table              top-decade p     last-5 p
+//      muN                    -0.380        -0.364     smooth, unchanged
+//      PelasticN               1.347         1.232     smooth, unchanged
+//      PinelasticN             2.010         1.183     saturating
+//      alphaN                  3.069         0.867     saturating
+//      nuEffN                  4.452         1.621     saturating
+//
+//  So the fit self-limits exactly where the physics does, with no per-variable
+//  special-casing. Extrapolating alphaN at its top-decade slope of 3.07 rather
+//  than its local 0.87 would over-ionise by orders of magnitude.
+//
+//  Anchored at the last table point, y = y_last (x/x_last)^p, so the result is
+//  CONTINUOUS at the boundary.
+//
+//  BELOW the range the value is HELD at the first entry, not extrapolated: the
+//  tables start at zero field where the physics is already the thermal limit,
+//  and a power law through the origin is meaningless there.
+class boundedTable1D
+{
+    scalarField x_;
+    scalarField y_;
+    scalar slopeHi_ = 0;
+    bool logSafe_ = false;
+    mutable bool warned_ = false;
+    word name_;
+
+public:
+
+    void init(const List<Tuple2<scalar, scalar>>& tbl, const word& nm)
+    {
+        name_ = nm;
+        const label n = tbl.size();
+        x_.setSize(n); y_.setSize(n);
+        for (label i = 0; i < n; ++i)
+        {
+            x_[i] = tbl[i].first();
+            y_[i] = tbl[i].second();
+        }
+
+        // Local log-log slope over the last few points. Needs strictly
+        // positive x and y; anything else falls back to holding the last
+        // value, which is bounded and cannot invert a sign.
+        const label nFit = min(label(5), n);
+        logSafe_ = (n >= 2);
+        for (label i = n - nFit; i < n; ++i)
+        {
+            if (i < 0 || x_[i] <= 0 || y_[i] <= 0) { logSafe_ = false; break; }
+        }
+
+        if (logSafe_)
+        {
+            scalar sx = 0, sy = 0, sxx = 0, sxy = 0;
+            for (label i = n - nFit; i < n; ++i)
+            {
+                const scalar lx = log(x_[i]), ly = log(y_[i]);
+                sx += lx; sy += ly; sxx += lx*lx; sxy += lx*ly;
+            }
+            const scalar den = nFit*sxx - sx*sx;
+            slopeHi_ = (mag(den) > SMALL) ? (nFit*sxy - sx*sy)/den : 0.0;
+
+            // BOUND the slope. Nothing here is mechanism-specific -- the fit
+            // is taken from each table's own data -- but a mechanism we have
+            // not seen could have a process whose threshold sits just below
+            // the sweep maximum, leaving the last few points on a near
+            // vertical rise. Extrapolating THAT slope would explode.
+            //
+            // For air every local slope is |p| < 1.7, so this never binds on
+            // known data; it exists so an unfamiliar mechanism degrades to a
+            // steep-but-finite power law instead of a divergence.
+            const scalar pMax = 6.0;
+
+            if (mag(slopeHi_) > pMax)
+            {
+                WarningInFunction
+                    << "table `" << nm << "` has a local log-log slope of "
+                    << slopeHi_ << " at its upper end, which is too steep to"
+                    << " extrapolate safely; limiting to "
+                    << sign(slopeHi_)*pMax << "." << nl
+                    << "    This usually means a process threshold sits just"
+                    << " below the top of the sweep. Extend the E/N range so"
+                    << " the region is tabulated rather than extrapolated."
+                    << endl;
+
+                slopeHi_ = sign(slopeHi_)*pMax;
+            }
+        }
+    }
+
+    scalar lookup(const scalar x) const
+    {
+        const label n = x_.size();
+        if (n == 0) return 0;
+        if (n == 1) return y_[0];
+
+        // BELOW: hold the first value. No extrapolation, by design.
+        if (x <= x_[0]) return y_[0];
+
+        if (x >= x_[n-1])
+        {
+            if (!warned_)
+            {
+                warned_ = true;
+                WarningInFunction
+                    << "table `" << name_ << "` evaluated at " << x
+                    << ", beyond its range [" << x_[0] << ", " << x_[n-1]
+                    << "]." << nl
+                    << "    Extrapolating as a power law with the local"
+                    << " log-log slope " << slopeHi_ << "." << nl
+                    << "    Extend the EEDF sweep if this region matters:"
+                    << " extrapolated coefficients are not supported by the"
+                    << " Boltzmann solution." << endl;
+            }
+
+            if (!logSafe_ || x_[n-1] <= 0) return y_[n-1];
+
+            return y_[n-1]*pow(x/x_[n-1], slopeHi_);
+        }
+
+        // Inside: linear interpolation, matching the table's own behaviour.
+        label lo = 0, hi = n - 1;
+        while (hi - lo > 1)
+        {
+            const label mid = (lo + hi)/2;
+            if (x < x_[mid]) hi = mid; else lo = mid;
+        }
+        // LOG-LOG interpolation, falling back to linear where a log is
+        // undefined (a zero or negative endpoint, which the rate tables have
+        // at their bottom end).
+        //
+        // MEASURED on these tables by dropping every second point and
+        // predicting it from its neighbours:
+        //
+        //     table              span      linear    log-log
+        //     muN               5.2e1      0.053%     0.037%
+        //     PelasticN         1.5e5      0.035%     0.025%
+        //     PinelasticN       5.1e6      0.166%     0.125%
+        //     k_EI_N2_ION_N2    2.6e9      1.907%     1.103%
+        //
+        // At 52 points/decade linear is already good to ~0.1% for the smooth
+        // quantities -- the method barely matters there. It matters for the
+        // STEEP rate coefficients, which span nine decades and where linear
+        // interpolation of a convex function overshoots systematically.
+        //
+        // It also makes interpolation and EXTRAPOLATION the same method, so
+        // there is no change of behaviour at the last table point.
+        if (x_[lo] > 0 && x_[hi] > 0 && y_[lo] > 0 && y_[hi] > 0)
+        {
+            const scalar lx0 = log(x_[lo]), lx1 = log(x_[hi]);
+            const scalar dlx = lx1 - lx0;
+
+            if (mag(dlx) > SMALL)
+            {
+                const scalar p =
+                    (log(y_[hi]) - log(y_[lo]))/dlx;
+
+                return y_[lo]*pow(x/x_[lo], p);
+            }
+        }
+
+        const scalar w = (x - x_[lo])/max(x_[hi] - x_[lo], VSMALL);
+        return y_[lo] + w*(y_[hi] - y_[lo]);
+    }
+};
+
+
 template<class Base>
 class TabulatedProperty1D
 :
@@ -192,6 +375,9 @@ class TabulatedProperty1D
 {
     //- The interpolation table (handles file reading and interpolation)
     interpolationTable<scalar> table_;
+
+    //- Bounded lookup: hold below, power-law above. See boundedTable1D.
+    boundedTable1D bounded_;
 
     //- The name of the field used as the lookup coordinate (e.g., "E" or "T_e")
     word lookupVariable_;
@@ -231,6 +417,11 @@ public:
                 << "    " << tableFile << nl
                 << exit(FatalIOError);
         }
+
+        // Bounded lookup replaces interpolationTable's out-of-range
+        // behaviour, which returns ZERO rather than extrapolating.
+        // See boundedTable1D.
+        bounded_.init(table_, propertyName);
     }
 
     //- Destructor
@@ -275,8 +466,16 @@ public:
         );
         const volScalarField& var = tVar();
 
-        field.primitiveFieldRef() =
-            table_.interpolateValues(var.primitiveField());
+        // Per cell, through the bounded lookup: interpolate inside the
+        // table, hold below it, power-law above it.
+        {
+            scalarField& f = field.primitiveFieldRef();
+            const scalarField& v = var.primitiveField();
+            forAll(f, celli)
+            {
+                f[celli] = bounded_.lookup(v[celli]);
+            }
+        }
 
         forAll(field.boundaryField(), patchi)
         {
@@ -286,7 +485,7 @@ public:
                 const scalarField& pVar = var.boundaryField()[patchi];   // reuse, no re-fetch
                 forAll(pField, i)
                 {
-                    pField[i] = table_.interpolateValue(pVar[i]);
+                    pField[i] = bounded_.lookup(pVar[i]);
                 }
             }
         }
@@ -308,9 +507,20 @@ public:
 
         forAll(pField, i)
         {
-            pField[i] = table_.interpolateValue(pVar[i]);
+            pField[i] = bounded_.lookup(pVar[i]);
         }
     }
+
+    //- Scalar lookup for the chemistry-ODE energy coupling. Returns the RAW
+    //  table value -- see plasmaPropertyEvaluator::atValue() on why no
+    //  post-processing is applied here.
+    virtual bool hasScalarLookup() const override { return true; }
+
+    virtual scalar atValue(const scalar x) const override
+    {
+        return bounded_.lookup(x);
+    }
+
 };
 
 /*---------------------------------------------------------------------------*\
@@ -783,6 +993,9 @@ class MechanismProperty
     //- Reduced quantity from the sweep, e.g. mu*N [1/(V m s)]
     interpolationTable<scalar> table_;
 
+    //- Bounded lookup: hold below, power-law above. See boundedTable1D.
+    boundedTable1D bounded_;
+
     word lookupVariable_;
 
     //- Registered field holding the gas number density, used to turn the
@@ -836,6 +1049,11 @@ public:
         td.add("file", path);
         td.add("outOfBounds", dict.getOrDefault<word>("outOfBounds", "clamp"));
         table_ = interpolationTable<scalar>(td);
+
+        // Bounded lookup replaces interpolationTable's out-of-range
+        // behaviour, which returns ZERO rather than extrapolating -- fatal
+        // for a loss coefficient. See boundedTable1D.
+        bounded_.init(table_, this->propertyName());
 
         // Echo the table's provenance line.
         //
@@ -925,7 +1143,7 @@ public:
         const scalarField& n = N.primitiveField();
         forAll(f, celli)
         {
-            f[celli] = table_.interpolateValue(x[celli])/n[celli];
+            f[celli] = bounded_.lookup(x[celli])/n[celli];
         }
 
         // Boundaries take the density from the SAME field's boundary values
@@ -940,7 +1158,7 @@ public:
                 const scalarField& pN = N.boundaryField()[patchi];
                 forAll(pF, i)
                 {
-                    pF[i] = table_.interpolateValue(pX[i])/pN[i];
+                    pF[i] = bounded_.lookup(pX[i])/pN[i];
                 }
             }
         }
@@ -958,9 +1176,20 @@ public:
         const scalarField& pN = gasDensity().boundaryField()[patchi];
         forAll(pField, i)
         {
-            pField[i] = table_.interpolateValue(pX[i])/pN[i];
+            pField[i] = bounded_.lookup(pX[i])/pN[i];
         }
     }
+
+    //- Scalar lookup for the chemistry-ODE energy coupling. Returns the RAW
+    //  table value -- see plasmaPropertyEvaluator::atValue() on why no
+    //  post-processing is applied here.
+    virtual bool hasScalarLookup() const override { return true; }
+
+    virtual scalar atValue(const scalar x) const override
+    {
+        return bounded_.lookup(x);
+    }
+
 };
 
 

@@ -55,7 +55,12 @@ void Foam::plasmaChemistryODE::derivatives
     dydx = Zero;
     if (ext_)
     {
-        forAll(dydx, i)
+        // BOUNDED BY nSpecie_, not by dydx.size(). With the energy equation
+        // active dydx is nSpecie_+1 long, while ext_ is nSpecie_ long and
+        // crossTerm() reads (*ext_)[i] -- so `forAll(dydx, i)` would read one
+        // past the end of ext_ on the energy row. The energy's own transport
+        // is carried by the field equation, not by this cross term.
+        for (label i = 0; i < nSpecie_; ++i)
         {
             scalar rate, sink;
             crossTerm(i, x, rate, sink);
@@ -125,10 +130,46 @@ void Foam::plasmaChemistryODE::derivatives
     if (ct_)
     {
         ct_->productionLoss(y, Tgas_, Pc_, Lc_);
-        forAll(dydx, s)
+        // Species rows only: Pc_/Lc_ are sized nSpecie_, and the energy row is
+        // ours regardless of which backend evaluates the heavy chemistry.
+        for (label s = 0; s < nSpecie_; ++s)
         {
             dydx[s] += Pc_[s] - Lc_[s]*max(y[s], scalar(0));
         }
+    }
+
+    // ---- ELECTRON ENERGY (Option 4) -------------------------------------
+    //
+    //     d(n_eps)/dt = mu_e(eps) n_e |E|^2  -  n_e N P_loss(eps)
+    //
+    // mu_e and P_loss are evaluated at the EVOLVING eps, not frozen. That is
+    // the entire point: with P_loss frozen both terms are linear in n_e and
+    // CONSTANT in n_eps, so dS_eps/d(n_eps) = 0 and there is no restoring
+    // force for the integrator to resolve.
+    //
+    // Units: mu_e [m^2/(V s)] * |E|^2 [V^2/m^2] = [V/s], times n_e [1/m^3]
+    // gives [V m^-3 s^-1], which IS [eV m^-3 s^-1] per electron -- no volt
+    // conversion needed once the fields are plain scalars. P_loss/N is
+    // [eV m^3 s^-1], so n_e N P_loss is [eV m^-3 s^-1] to match.
+    // GUARDED ON THE STATE SIZE, not only on the flag. Several callers
+    // (chargeResidual, productionLoss, the implicit-rate path) legitimately
+    // pass a SPECIES-ONLY vector while the energy equation is active, and
+    // reading y[nSpecie_] there would run off the end. Making the row
+    // conditional on the vector actually carrying it means those callers keep
+    // working unchanged and cannot trip over the extra slot.
+    if (energyActive_ && y.size() > nSpecie_ && dydx.size() > nSpecie_)
+    {
+        const scalar ne  = max(y[eIndex_], neFloor_);
+        const scalar eps = meanEnergy(y);
+
+        // muEFn_ returns mu*N (the tabulated quantity), divided by Ngas_ here
+        // rather than in the caller's lambda. The lambda would otherwise have
+        // to capture a gas density that CHANGES with the gas temperature --
+        // a stale-capture bug waiting to happen. Ngas_ is per-cell and current.
+        const scalar joule = (muEFn_(eps)/Ngas_)*ne*Emag_*Emag_;
+        const scalar loss  = ne*Ngas_*PlossNFn_(eps);
+
+        dydx[nSpecie_] = joule - loss;
     }
 }
 
@@ -158,7 +199,13 @@ void Foam::plasmaChemistryODE::jacobian
     dfdx = Zero;
     if (ext_ && extSlope_ && extDt_ > 0)
     {
-        dfdx = *extSlope_;
+        // ELEMENTWISE over the species rows only. `dfdx = *extSlope_` is a
+        // whole-field assignment, and with the energy equation active dfdx is
+        // nSpecie_+1 long while extSlope_ is nSpecie_ -- a size mismatch.
+        for (label i = 0; i < nSpecie_; ++i)
+        {
+            dfdx[i] = (*extSlope_)[i];
+        }
     }
     dfdy = Zero;
 
@@ -173,7 +220,9 @@ void Foam::plasmaChemistryODE::jacobian
     // dfdx costs ORDER here for the reason recorded above.
     if (ext_ && !extRef_.empty())
     {
-        forAll(y, i)
+        // Species rows only -- see the note in derivatives(): crossTerm()
+        // indexes ext_, which is nSpecie_ long.
+        for (label i = 0; i < nSpecie_; ++i)
         {
             scalar rate, sink;
             crossTerm(i, x, rate, sink);
@@ -276,6 +325,56 @@ void Foam::plasmaChemistryODE::jacobian
     {
         ct_->jacobian(y, Tgas_, dfdy);
     }
+
+    // ---- ELECTRON ENERGY rows/columns (Option 4) ------------------------
+    //
+    // S = mu(eps) ne E^2 - ne N Ploss(eps),  with eps = n_eps/ne, so
+    //
+    //   deps/d(n_eps) =  1/ne
+    //   deps/d(ne)    = -eps/ne
+    //
+    // giving
+    //
+    //   dS/d(n_eps) =  mu' E^2 - N Ploss'
+    //   dS/d(ne)    = (mu E^2 - N Ploss) - eps (mu' E^2 - N Ploss')
+    //
+    // The FIRST is the self-damping this whole exercise exists to obtain: it
+    // is what the hand-rolled Newton linearisation computed as `dSdEps_`, and
+    // which was MEASURED going to ~0 in cold cells because P_loss sits below
+    // every inelastic threshold there. Here it enters the Rosenbrock step
+    // directly and the integrator substeps on it rather than overshooting.
+    //
+    // Rosenbrock USES the Jacobian to take the step, so these entries must be
+    // consistent with derivatives() -- hence the same meanEnergy() and the
+    // same table functions, differenced rather than re-derived.
+    if (energyActive_ && y.size() > nSpecie_ && dfdy.n() > nSpecie_)
+    {
+        const label E = nSpecie_;
+        const scalar ne  = max(y[eIndex_], neFloor_);
+        const scalar eps = meanEnergy(y);
+
+        // Central difference on the same tables derivatives() evaluates.
+        const scalar h = max(1.0e-3*eps, 1.0e-4);
+        const scalar epsP = min(eps + h, epsMax_);
+        const scalar epsM = max(eps - h, epsMin_);
+        const scalar dh   = max(epsP - epsM, VSMALL);
+
+        const scalar dMu = (muEFn_(epsP)    - muEFn_(epsM))/dh;
+        const scalar dPl = (PlossNFn_(epsP) - PlossNFn_(epsM))/dh;
+
+        const scalar dSdEps = (dMu/Ngas_)*Emag_*Emag_ - Ngas_*dPl;
+        const scalar S      = (muEFn_(eps)/Ngas_)*Emag_*Emag_
+                            - Ngas_*PlossNFn_(eps);
+
+        dfdy(E, E) = dSdEps;
+        dfdy(E, eIndex_) = S - eps*dSdEps;
+
+        // dS_e/d(n_eps) -- ionisation responding to the energy -- is ZERO
+        // here by construction, because the electron-impact rate coefficients
+        // are frozen for the substep (Option A' in
+        // docs/lmea-option4-plan.md). Making them live is Phase O2, and that
+        // column is where its effect would appear.
+    }
 }
 
 
@@ -287,13 +386,20 @@ Foam::scalar Foam::plasmaChemistryODE::chargeResidual(const scalarField& y) cons
     const scalarField* saved = ext_;
     const_cast<plasmaChemistryODE*>(this)->ext_ = nullptr;
 
-    scalarField dydx(nSpecie_, Zero);
+    // SIZED nEqns(), not nSpecie_. With the energy equation active
+    // derivatives() writes dydx[nSpecie_], and a field sized nSpecie_ would be
+    // written one past its end -- an out-of-bounds WRITE, which is silent in
+    // an optimised build and corrupts whatever follows it.
+    scalarField dydx(nEqns(), Zero);
     derivatives(0.0, y, dydx);
 
     const_cast<plasmaChemistryODE*>(this)->ext_ = saved;
 
+    // Summed over SPECIES only: the energy row carries no charge, and
+    // charge_ is nSpecie_ long. Including it would make a balanced mechanism
+    // report a violation.
     scalar net = 0.0, traffic = 0.0;
-    forAll(dydx, s)
+    for (label s = 0; s < nSpecie_; ++s)
     {
         net     += charge_[s]*dydx[s];
         traffic += mag(charge_[s]*dydx[s]);

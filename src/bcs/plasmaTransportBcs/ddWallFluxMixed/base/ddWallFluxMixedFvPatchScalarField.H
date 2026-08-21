@@ -73,6 +73,23 @@ protected:
         //- The name of the temperature field (e.g., "T_e"). 
         word TName_;
 
+        //- OPTIONAL override for which species this field belongs to.
+        //
+        //  The family otherwise infers it from the field's own name
+        //  (`n_e` -> `e`) and then resolves a speciesID, mobility and
+        //  diffusivity from it. That breaks for any field which is a property
+        //  OF a species without being its density -- the LMEA electron energy
+        //  density being the first: `nEps_e` would resolve to a species
+        //  `nEps_e` that does not exist.
+        //
+        //  Empty means "infer from the field name", so existing cases are
+        //  untouched.
+        word speciesNameOverride_;
+
+        //- The species this condition acts for: the override when set,
+        //  otherwise inferred from the field name.
+        word resolveSpeciesName() const;
+
         //- Constant Temperature Value
         dimensionedScalar TValue_;
 

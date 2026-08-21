@@ -60,6 +60,8 @@ SourceFiles
 namespace Foam
 {
 
+class localEnergyEnergyModel;
+
 /*---------------------------------------------------------------------------*\
                     Class plasmaEnergy Declaration
 \*---------------------------------------------------------------------------*/
@@ -168,6 +170,40 @@ public:
 
         //- Correct all models
         void correct();
+
+        //- Solve every per-species energy equation that HAS one.
+        //
+        //  Until this existed, eEqn() was declared on the base, overridden by
+        //  every model, and CALLED BY NOBODY. The three LFA-family models
+        //  return nullptr so nothing was missing for them, which is why the
+        //  gap survived -- but it meant the LMEA equation was dead code: its
+        //  energy density stayed at its seed and the published mean energy sat
+        //  at a constant, which the rate-table banner eventually exposed as
+        //  `meanE spans [1, 1]`.
+        //
+        //  Call AFTER the species equations: the conservative form needs
+        //  n_e^{k+1} to recover eps_bar = n_eps/n_e, which is the ordering
+        //  Hagelaar & Kroesen require (their Eqs. 26-28).
+        void solveSpeciesEnergy();
+
+        //- Largest energy-transport RATE [1/s], 0 when no species transports
+        //  its energy.
+        //
+        //  The limiter needs the energy equation's own Courant number. Taken
+        //  from the actual energy flux rather than as 5/3 x the species rate:
+        //  that estimate assumed the Maxwellian mu_eps/mu_e = 5/3 (measured
+        //  1.24-1.57) and used a mobility at the reduced field rather than at
+        //  the mean energy. Reported from here rather than configured, because
+        //  it is a property of the equation, not a preference.
+        scalar maxEnergyRate() const;
+
+        //- Largest energy RELAXATION rate over all LMEA energy models [1/s].
+        scalar maxEnergyRelaxationRate() const;
+
+        //- The LMEA model, if a species is running one; nullptr otherwise.
+        //  Used by plasmaTransport to hand the energy source to the chemistry
+        //  ODE (docs/lmea-option4-plan.md).
+        const localEnergyEnergyModel* lmeaModel() const;
 
         //- Solve the background gas energy equation over dt.
         //

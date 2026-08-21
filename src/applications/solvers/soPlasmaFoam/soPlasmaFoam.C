@@ -195,6 +195,17 @@ int main(int argc, char *argv[])
 
     //- Create the timeControl manager and set initial time-step
     plasmaTimeControl timeControl(runTime, gasMesh());
+
+    // BEFORE setInitialDeltaT: an LMEA energy equation convects at 5/3 the
+    // particle rates, so the very first step must already respect its Courant
+    // number. Declaring it afterwards would leave step 1 unguarded, which is
+    // exactly where the energy was measured going negative.
+    if (energy)
+    {
+        timeControl.setEnergyRate(energy->maxEnergyRate());
+        timeControl.setEnergyRelaxRate(energy->maxEnergyRelaxationRate());
+    }
+
     timeControl.setInitialDeltaT(transport);
 
     //- Create the plasmaSimulationDiagnostics manager
@@ -232,6 +243,14 @@ int main(int argc, char *argv[])
         // starts from is unambiguous. A retry needs it to place the shortened
         // step, and it cannot be reconstructed afterwards -- ++runTime uses
         // the previous deltaT while adjustDeltaT then installs a new one.
+        // The energy rate follows the solution, so refresh it each step --
+        // unlike the old constant 5/3 factor, which never changed.
+        if (energy) timeControl.setEnergyRate(energy->maxEnergyRate());
+        if (energy)
+        {
+            timeControl.setEnergyRelaxRate(energy->maxEnergyRelaxationRate());
+        }
+
         timeControl.noteStepStart();
 
         // CHOOSE deltaT BEFORE ADVANCING THE CLOCK.
@@ -292,6 +311,13 @@ int main(int argc, char *argv[])
                 // Solve transport equations
                 transport.solve(pimple.finalIter());
 
+                // Electron energy (LMEA), AFTER the species: the conservative
+                // form recovers eps_bar = n_eps/n_e, so it needs n_e^{k+1}.
+                // That is Hagelaar & Kroesen's ordering requirement, and it is
+                // why this sits here rather than beside the Poisson solve.
+                // A no-op for the LFA family, whose eEqn() returns nullptr.
+                if (energy) energy->solveSpeciesEnergy();
+
                 if (pimple.finalIter())
                 {
                     // Update charge density
@@ -316,6 +342,9 @@ int main(int argc, char *argv[])
                 plasmaSimulationProfiler::start("Plasma Transport");
                 transport.solve(pimple.finalIter());
                 plasmaSimulationProfiler::stop("Plasma Transport");
+
+                // Electron energy (LMEA); see the semi-implicit branch above.
+                if (energy) energy->solveSpeciesEnergy();
 
                 // Update charge density
                 plasmaSimulationProfiler::start("Update charge density");

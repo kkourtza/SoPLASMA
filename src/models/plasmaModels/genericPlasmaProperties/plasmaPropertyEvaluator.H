@@ -130,6 +130,37 @@ public:
         //- Update an existing field in place
         virtual void correct(volScalarField& field) const = 0;
 
+        //- Whether this property can be evaluated at a SCALAR lookup value,
+        //  outside the field machinery.
+        //
+        //  Needed because the electron energy is integrated inside the
+        //  chemistry ODE (docs/lmea-option4-plan.md), where the coefficients
+        //  must be re-evaluated at an eps that is CHANGING during the substep.
+        //  A field-at-a-time evaluator cannot serve that: there is no field,
+        //  only the integrator's current state.
+        //
+        //  Only the tabulated 1-D forms support it. Everything else returns
+        //  false, and asking anyway is a programming error rather than a
+        //  recoverable condition.
+        virtual bool hasScalarLookup() const { return false; }
+
+        //- The RAW tabulated value at `x`, in the units the TABLE carries.
+        //
+        //  NOT post-processed: `fromMechanism` divides by the gas density when
+        //  it fills a field, and this does NOT. The caller therefore receives
+        //  mu*N for a `muN` table, and is responsible for the division. That is
+        //  deliberate -- the division needs a gas density, which changes with
+        //  the gas temperature, and capturing one in a lambda is how a stale
+        //  value gets baked in.
+        virtual scalar atValue(const scalar x) const
+        {
+            FatalErrorInFunction
+                << "property '" << propertyName_ << "' (type " << modelType_
+                << ") has no scalar lookup; check hasScalarLookup() first."
+                << exit(FatalError);
+            return 0;
+        }
+
         //- Evaluate for a patch field
         virtual void evaluatePatch
         (

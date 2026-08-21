@@ -219,6 +219,15 @@ void plasmaTimeControl::read()
                 dict_.lookupOrDefault<word>("courantSpeciesName", "e");
         }
 
+        // Read OUTSIDE the limitSpeciesCo_ block: the energy relaxation limit
+        // is a stiffness constraint, not a Courant choice, and switching the
+        // Courant limiter off must not silently disable it.
+        limitEnergyRelaxation_ =
+            dict_.lookupOrDefault<Switch>("limitEnergyRelaxation", true);
+
+        maxEnergyRelaxationRatio_ =
+            dict_.lookupOrDefault<scalar>("maxEnergyRelaxationRatio", 0.2);
+
         // Chemistry Courant
         limitChemistryCo_ = 
             dict_.lookupOrDefault<Switch>("limitChemistryCo", false);
@@ -413,6 +422,57 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
                 newDeltaT,
                 maxSpeciesConvectiveCo_ / (maxConvFluxRate + VSMALL)
             );
+
+            // The ENERGY rides the same flux at 5/3 the speed, so it reaches
+            // the same Courant number at 3/5 of the step. Applied to the same
+            // cap rather than a separate one: a user who has chosen a
+            // convective Courant number has chosen it for the physics, and
+            // the energy equation should honour that choice rather than need
+            // a second key that can disagree with it.
+            if (energyRate_ > 0)
+            {
+                newDeltaT = min
+                (
+                    newDeltaT,
+                    maxSpeciesConvectiveCo_ / (energyRate_ + VSMALL)
+                );
+            }
+        }
+
+        // ENERGY RELAXATION LIMIT -- a SEPARATE constraint, deliberately
+        // outside the limitSpeciesCo_ block and with its own coefficient.
+        //
+        // The convective limit above shares maxSpeciesConvectiveCo_ because a
+        // Courant number chosen for the physics should apply to whatever rides
+        // the same flux. This one must NOT: it bounds dt against the stiff
+        // source relaxation time tau_eps = n_eps/P_loss, where a coefficient
+        // of order 1 is not merely inaccurate but unstable. MEASURED
+        // 2026-08-21: dt/tau = 3.1 oscillated between the 100 eV clamp and
+        // 7 eV and died on SIGFPE; dt/tau = 0.15 settled smoothly with zero
+        // clamps. Hence a default ratio of 0.2, not 1.0.
+        if (limitEnergyRelaxation_ && energyRelaxRate_ > 0)
+        {
+            const scalar dtRelax =
+                maxEnergyRelaxationRatio_ / (energyRelaxRate_ + VSMALL);
+
+            // Report only when this limiter is the one that BINDS, so the log
+            // says which constraint is setting the step rather than leaving
+            // the user to infer it from a number that moved.
+            if (dtRelax < newDeltaT && !energyRelaxWarned_)
+            {
+                energyRelaxWarned_ = true;
+                Info<< "plasmaTimeControl: the ENERGY RELAXATION limit is now"
+                    << " setting deltaT (tau_eps = "
+                    << 1.0/(energyRelaxRate_ + VSMALL) << " s, ratio "
+                    << maxEnergyRelaxationRatio_ << " -> " << dtRelax
+                    << " s)." << nl
+                    << "    The energy equilibrates faster than the transport"
+                    << " Courant condition resolves. This is expected once the"
+                    << " mean energy is high, where P_loss rises steeply."
+                    << endl;
+            }
+
+            newDeltaT = min(newDeltaT, dtRelax);
         }
 
         // Diffusive

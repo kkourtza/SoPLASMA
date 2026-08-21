@@ -212,13 +212,10 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
 
     if (!enableSEE_) return;
 
-    // Determine the species name from the field itself (e.g., n_e -> e)
-    const word fieldName = this->internalField().name();
-    word speciesName = fieldName;
-    if (speciesName.startsWith("n_"))
-    {
-        speciesName.erase(0, 2);
-    }
+    // Shared with the base, so a field that is a PROPERTY of a species
+    // rather than its density -- the LMEA energy density -- can say which
+    // species it belongs to instead of having it guessed from its own name.
+    const word speciesName = resolveSpeciesName();
 
     // Modify refValue or refGrad for secondary electron emission
     const fvPatch& p = patch();

@@ -436,6 +436,51 @@ void Foam::plasmaChemistry::setBackground(const word& name, const scalar n)
 }
 
 
+void Foam::plasmaChemistry::enableEnergyEquation
+(
+    const label electronIndex,
+    const scalar epsMin,
+    const scalar epsMax,
+    const scalar neFloor,
+    std::function<scalar(scalar)> muE,
+    std::function<scalar(scalar)> PlossN
+)
+{
+    ode_->enableEnergy
+    (
+        electronIndex, epsMin, epsMax, neFloor,
+        std::move(muE), std::move(PlossN)
+    );
+
+    // REBUILD. ODESolver allocates its workspace from odes_.nEqns() in its
+    // constructor, so a solver built before this call has every internal array
+    // one element short -- an out-of-bounds write inside the integrator, which
+    // is silent in an optimised build. Rebuilding is cheap and happens once.
+    solver_ = ODESolver::New(*ode_, odeDict_);
+
+    Info<< "plasmaChemistry: electron ENERGY added to the integrated state"
+        << " (nEqns " << ode_->nEqns() << ", energy index "
+        << ode_->energyIndex() << "); ODE solver rebuilt for the new size."
+        << endl;
+}
+
+
+void Foam::plasmaChemistry::setEnergyCell
+(
+    const scalar Emag,
+    const scalar Ngas
+) const
+{
+    ode_->setEnergyCell(Emag, Ngas);
+}
+
+
+bool Foam::plasmaChemistry::energyIntegrated() const
+{
+    return ode_->energyActive();
+}
+
+
 void Foam::plasmaChemistry::integrate
 (
     scalarField& n,

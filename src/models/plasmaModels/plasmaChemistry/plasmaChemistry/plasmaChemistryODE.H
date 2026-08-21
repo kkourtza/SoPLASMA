@@ -60,6 +60,7 @@ SourceFiles
 #define plasmaChemistryODE_H
 
 #include "ODESystem.H"
+#include <functional>
 #include "scalarField.H"
 #include "labelList.H"
 #include "wordList.H"
@@ -150,6 +151,18 @@ class plasmaChemistryODE
         //  in both places would double every heavy rate. The reactions stay in
         //  the list either way, because the Jacobian is still taken from them.
         bool heavy_ = true;
+
+        //- ELECTRON ENERGY coupling (Option 4). Inactive by default, so a
+        //  case without an LMEA energy model is bit-for-bit unchanged.
+        bool   energyActive_ = false;
+        label  eIndex_   = -1;
+        scalar Emag_     = 0;
+        scalar Ngas_     = 0;
+        scalar epsMin_   = 0;
+        scalar epsMax_   = GREAT;
+        scalar neFloor_  = 1.0;
+        std::function<scalar(scalar)> muEFn_;
+        std::function<scalar(scalar)> PlossNFn_;
 
         //- Heavy backend, when it is not this class. Non-null exactly when
         //  heavy_ is false: the heavy reactions have to enter the integrated
@@ -420,7 +433,88 @@ public:
     // Member Functions
 
         //- Number of equations: one per transported species
-        label nEqns() const override { return nSpecie_; }
+        //- nSpecie_, PLUS ONE when the electron energy is integrated here.
+        //
+        //  Every loop that indexes a SPECIES array (`ext_`, `extSlope_`,
+        //  `charge_`, the reaction stoichiometry) must be bounded by
+        //  nSpecie_, NOT by y.size()/dydx.size(). `crossTerm()` reads
+        //  `(*ext_)[i]`, which is sized nSpecie_, so `forAll(dydx, i)` would
+        //  run off the end of it the moment this returns nSpecie_+1.
+        label nEqns() const override
+        {
+            return nSpecie_ + (energyActive_ ? 1 : 0);
+        }
+
+        //- Index of the energy density in the state vector, or -1.
+        label energyIndex() const
+        {
+            return energyActive_ ? nSpecie_ : -1;
+        }
+
+        //- Enable the electron energy equation in this ODE system.
+        //
+        //  OPTION 4 (docs/lmea-option4-plan.md): the energy source is
+        //  cell-local and stiff, which is the shape this solver already
+        //  handles, so it is integrated here rather than linearised by hand
+        //  in localEnergyEnergyModel.
+        //
+        //  `muE` and `PlossN` are evaluated at the EVOLVING eps inside
+        //  derivatives(), not frozen. That is deliberate and is the whole
+        //  point: with P_loss frozen the source is CONSTANT in n_eps, so
+        //  dS_eps/d(n_eps) = 0 and there is no restoring force at all -- the
+        //  stiff solver would have nothing to be stiff about. The reaction
+        //  rates stay frozen for now (Option A' in the plan); making them live
+        //  too is Phase O2.
+        //  SPLIT IN TWO ON PURPOSE.
+        //
+        //  enableEnergy() changes nEqns(), and OpenFOAM's ODESolver sizes its
+        //  workspace from nEqns() AT CONSTRUCTION. Flipping the flag after the
+        //  solver exists would leave every internal array one short, which is
+        //  an out-of-bounds write inside the integrator -- silent under
+        //  NDEBUG. plasmaChemistry::enableEnergyEquation() therefore rebuilds
+        //  the solver after calling this.
+        //
+        //  setEnergyCell() carries only per-cell VALUES and changes no sizes,
+        //  so it is safe to call in the cell loop.
+        void enableEnergy
+        (
+            const label electronIndex,
+            const scalar epsMin,
+            const scalar epsMax,
+            const scalar neFloor,
+            std::function<scalar(scalar)> muE,      // mu_e*N(eps) [1/(V m s)]
+            std::function<scalar(scalar)> PlossN    // P_loss/N(eps) [eV m^3/s]
+        )
+        {
+            energyActive_ = true;
+            eIndex_       = electronIndex;
+            epsMin_       = epsMin;
+            epsMax_       = epsMax;
+            neFloor_      = neFloor;
+            muEFn_        = std::move(muE);
+            PlossNFn_     = std::move(PlossN);
+        }
+
+        //- Per-cell state: the field the cell sees and its background density.
+        void setEnergyCell(const scalar Emag, const scalar Ngas)
+        {
+            Emag_ = Emag;
+            Ngas_ = Ngas;
+        }
+
+        void clearEnergy() { energyActive_ = false; }
+
+        bool energyActive() const { return energyActive_; }
+
+        //- eps = n_eps/n_e, floored and clamped exactly as the field model
+        //  does it. Used by derivatives(), jacobian() and the caller, so the
+        //  three cannot disagree about what state the coefficients were
+        //  evaluated at.
+        inline scalar meanEnergy(const scalarField& y) const
+        {
+            const scalar ne = max(y[eIndex_], neFloor_);
+            return min(max(y[nSpecie_]/ne, epsMin_), epsMax_);
+        }
 
         //- Gas temperature used by the Arrhenius rates
         void setTgas(const scalar T) { Tgas_ = T; }

@@ -284,7 +284,46 @@ private:
             //  about it.
             scalar dtHighWater_ = 0;
             scalar dtCollapseRatio_ = 100;
+
+            //- ENERGY transport RATE [1/s] when an LMEA energy equation is
+            //  transported, 0 when there is none. Co_energy = rate*dt.
+            //
+            //  The electron ENERGY convects and diffuses at 5/3 the particle
+            //  rates (Hagelaar & Kroesen Eqs. 11-13), so its Courant and
+            //  diffusion numbers are 5/3 of the species ones computed here.
+            //  A case switching to LMEA at its existing
+            //  maxSpeciesConvectiveCo is therefore silently 67% over that
+            //  limit -- MEASURED: at Co 1.5 the energy ran at ~2.5 and the
+            //  convective term drove n_eps negative on step 1, in cells whose
+            //  SOURCE was strongly positive.
+            //
+            //  Set from the energy model rather than by the user, so enabling
+            //  LMEA cannot leave the step silently unsafe.
+            scalar energyRate_ = 0;
             bool   collapseWarned_ = false;
+
+            //- ENERGY RELAXATION rate, 1/tau_eps = P_loss/n_eps [1/s].
+            //
+            //  A SEPARATE constraint from energyRate_ above, which is a
+            //  CONVECTIVE (Courant) rate. The two are limited by different
+            //  coefficients on purpose: a Courant number of order 1 is
+            //  correct for transport and badly wrong for a stiff relaxation.
+            //
+            //  MEASURED on the 1.15M-cell streamer, 2026-08-21: at the cells
+            //  that reached the 100 eV clamp, tau_eps = n_eps/P_loss = 1.65 ps
+            //  while the step chosen by the SPECIES Courant number was
+            //  5.16 ps -- dt/tau = 3.1. The mean energy then oscillated
+            //  between the clamp and ~7 eV and the run died on SIGFPE. A
+            //  reference run pinned at dt = 0.25 ps (dt/tau = 0.15) passed
+            //  through the same window with ZERO clamps and a smooth monotone
+            //  settle, which is what fixes the ratio below at 0.2.
+            //
+            //  Set from the energy model, like energyRate_, so enabling LMEA
+            //  cannot leave the step silently unsafe.
+            scalar energyRelaxRate_ = 0;
+            bool   limitEnergyRelaxation_ = true;
+            scalar maxEnergyRelaxationRatio_ = 0.2;
+            bool   energyRelaxWarned_ = false;
 
             //- Set when the last step exhausted the cap without converging;
             //  read by adjustDeltaT() so the response is a time-step decision
@@ -355,6 +394,22 @@ public:
         //  loop BEFORE ++runTime, which is the only place the value is
         //  unambiguous. See tStepStart_ for why it cannot be inferred later.
         void noteStepStart() { tStepStart_ = runTime_.value(); }
+
+        //- Declare that an LMEA energy equation is transported, so the step
+        //  is limited on ITS Courant number too. See energyCourantFactor_.
+        void setEnergyRate(const scalar r)
+        {
+            energyRate_ = r;
+        }
+
+        //- Declare the ENERGY RELAXATION rate 1/tau_eps = P_loss/n_eps, so
+        //  the step is limited by how fast the energy equilibrates as well as
+        //  by how fast it convects. See energyRelaxRate_ for the measurement
+        //  that motivates it.
+        void setEnergyRelaxRate(const scalar r)
+        {
+            energyRelaxRate_ = r;
+        }
 
         //- Halve deltaT and move the clock back onto the shortened step.
         //

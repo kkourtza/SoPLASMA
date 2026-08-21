@@ -27,6 +27,7 @@
 #include "vibRelax.H"
 #include "janafMixture.H"
 #include "plasmaEnergy.H"
+#include "localEnergyEnergyModel.H"
 #include "plasmaSimulationProfiler.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -1404,6 +1405,36 @@ bool plasmaTransport::writeData(Ostream& os) const
 
 void Foam::plasmaTransport::readChemistry(const dictionary& dict)
 {
+    // OPTION 4 opt-in. `chemistry` routes the electron-energy SOURCE through
+    // the per-cell stiff solver alongside the species; `model` (default) leaves
+    // it to localEnergyEnergyModel's own linearisation.
+    {
+        // FROM THE `chemistry` SUBDICT, not from `dict`. readChemistry() is
+        // handed the WHOLE plasmaTransportProperties dictionary, so reading
+        // the key at that level silently returns the default while the case
+        // sets it one level down -- the entire Option 4 path then never
+        // activates and nothing says so. Caught by the start-up message not
+        // appearing; that is why the message exists.
+        const dictionary& chemDict = dict.subOrEmptyDict("chemistry");
+        const word es = chemDict.getOrDefault<word>("energySource", "model");
+        if (es != "model" && es != "chemistry")
+        {
+            FatalIOErrorInFunction(dict)
+                << "unknown energySource `" << es << "`."
+                   " Valid: model | chemistry" << exit(FatalIOError);
+        }
+        chemEnergyRequested_ = (es == "chemistry");
+
+        // REPORTED EITHER WAY. A setting that is read but never announced
+        // cannot be distinguished from one that was not read at all, which is
+        // exactly how the mis-scoped version of this key went unnoticed.
+        Info<< "plasmaTransport: electron-energy source = " << es
+            << (chemEnergyRequested_
+                 ? "  (integrated with the species in the stiff solver)"
+                 : "  (sourced by the energy model itself)")
+            << endl;
+    }
+
     if (!dict.found("chemistry"))
     {
         Info<< "plasmaTransport: no `chemistry` dictionary; using the legacy"
@@ -1506,7 +1537,30 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
             << exit(FatalError);
     }
 
-    const word cs = cd.getOrDefault<word>("solver", "adaptive");
+    // DEFAULT: adaptiveError, changed from `adaptive` on 2026-08-21.
+    //
+    // The two share the stiff path exactly -- same integrate, same end-state
+    // reconstruction; the only difference is WHICH CELLS are routed to it.
+    // MEASURED that they agree:
+    //
+    //     arm                 p(ne_max)   p(ne_sum)
+    //     adaptiveError         1.936       1.936
+    //     converged-adaptive    1.936       1.936
+    //
+    // with the underlying values agreeing to five significant figures. So the
+    // routing criterion costs nothing in accuracy, and `adaptiveError` reaches
+    // that answer integrating ~3.3% of cells against `adaptive`'s 100%.
+    //
+    // The deciding defect: `adaptive`'s step-change test uses a purely
+    // RELATIVE normalisation and flags 100% of cells on cases where nothing is
+    // stiff -- observed on the 1.15M-cell streamer with max(L*dt) = 1.6e-4,
+    // i.e. the entire domain integrated for no reason. `adaptiveError` asks
+    // the question that actually matters (would linearising this cell put an
+    // error in the answer?) and has no such degeneracy.
+    //
+    // `adaptive` remains available and is the right choice if a case's error
+    // scale is hard to set; it is no longer the default.
+    const word cs = cd.getOrDefault<word>("solver", "adaptiveError");
     if      (cs == "adaptive")       chemistrySolver_ = csAdaptive;
     else if (cs == "adaptiveError")  chemistrySolver_ = csAdaptiveError;
     else if (cs == "implicitRate")   chemistrySolver_ = csImplicitRate;
@@ -1993,6 +2047,52 @@ bool Foam::plasmaTransport::finalOuterIteration()
 }
 
 
+
+// Enable the electron energy in the chemistry ODE, once, and return the LMEA
+// model (or nullptr). Shared by BOTH chemistry paths.
+//
+// computeChemistrySources() runs only for `solver ode`; `adaptive`,
+// `adaptiveError` and `implicitRate` all go through mechanismSourceTerms().
+// Wiring only the first left the whole feature inert on the DEFAULT solver --
+// which is exactly the case this was built for.
+const Foam::localEnergyEnergyModel*
+Foam::plasmaTransport::enableChemistryEnergy()
+{
+    const localEnergyEnergyModel* lmea = nullptr;
+    if (mesh_.foundObject<plasmaEnergy>("plasmaEnergy"))
+    {
+        lmea = mesh_.lookupObject<plasmaEnergy>("plasmaEnergy").lmeaModel();
+    }
+
+    if (lmea && !energyInChemistry_ && chemEnergyRequested_)
+    {
+        if (!lmea->canExportEnergyCoefficients())
+        {
+            WarningInFunction
+                << "energySource `chemistry` was requested, but this LMEA"
+                   " model's mobility/loss properties have no scalar lookup"
+                   " (they are not tabulated 1-D)." << nl
+                << "    Falling back to the energy model's own source. The"
+                   " relaxation-time limiter still applies." << endl;
+            chemEnergyRequested_ = false;
+        }
+        else
+        {
+            chem_->enableEnergyEquation
+            (
+                species_.electronSpeciesID(),
+                lmea->meanEnergyMin(),
+                lmea->meanEnergyMax(),
+                lmea->electronDensityFloor(),
+                lmea->muNofEps(),
+                lmea->PlossNofEps()
+            );
+            energyInChemistry_ = true;
+        }
+    }
+    return lmea;
+}
+
 void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
 {
     if (!chem_ || dt <= 0) return;
@@ -2014,6 +2114,57 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
     const label nSp = species_.nSpecies();
     const label eIdx = species_.electronSpeciesID();
     const scalarField& neI = species_.numberDensity(eIdx).primitiveField();
+
+    const localEnergyEnergyModel* lmea = enableChemistryEnergy();
+
+    const bool doEnergy = energyInChemistry_ && lmea;
+    if (doEnergy)
+    {
+        if (!chemPeps_.valid())
+        {
+            chemPeps_.reset
+            (
+                new volScalarField
+                (
+                    IOobject("chemPeps", mesh_.time().timeName(), mesh_,
+                             IOobject::NO_READ, IOobject::NO_WRITE),
+                    mesh_,
+                    dimensionedScalar(dimless/dimVolume/dimTime, Zero)
+                )
+            );
+            chemLeps_.reset
+            (
+                new volScalarField
+                (
+                    IOobject("chemLeps", mesh_.time().timeName(), mesh_,
+                             IOobject::NO_READ, IOobject::NO_WRITE),
+                    mesh_,
+                    dimensionedScalar(dimless/dimTime, Zero)
+                )
+            );
+        }
+        chemPeps_() == dimensionedScalar(chemPeps_().dimensions(), Zero);
+        chemLeps_() == dimensionedScalar(chemLeps_().dimensions(), Zero);
+    }
+
+    // |E| per cell, for the Joule term inside the integrator.
+    const scalarField* EmagI = nullptr;
+    if (doEnergy && mesh_.foundObject<volScalarField>("Emag"))
+    {
+        EmagI = &mesh_.lookupObject<volScalarField>("Emag").primitiveField();
+    }
+    if (doEnergy && !EmagI)
+    {
+        FatalErrorInFunction
+            << "the chemistry-integrated electron energy needs the `Emag`"
+               " field, which is not registered." << exit(FatalError);
+    }
+
+    const scalarField* nEpsI = nullptr;
+    if (doEnergy)
+    {
+        nEpsI = &lmea->nEps().primitiveField();
+    }
 
     // Rate coefficients are interpolated per cell from the tables, then held
     // fixed for the substep: under operator splitting the field does not move
@@ -2080,19 +2231,77 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         // still holds if the solver threw before overwriting it -- and
         // restoring it explicitly costs one copy and removes the doubt.
         const scalarField nStart(n);
+
+        // OPTION 4: the state handed to the integrator carries n_eps as its
+        // last component. `n` itself stays SPECIES-ONLY for every other
+        // consumer in this loop -- chemRR_, chemP_, the charge projection --
+        // so the padded copy lives only for the duration of the call.
+        scalarField yE;
+        if (doEnergy)
+        {
+            chem_->setEnergyCell((*EmagI)[celli], species_.backgroundDensity().value());
+            yE.setSize(nSp + 1);
+            for (label s = 0; s < nSp; ++s) yE[s] = n[s];
+            yE[nSp] = (*nEpsI)[celli];
+        }
+
         try
         {
-            chem_->integrate
-            (
-                n, kTab, TgasCell(celli), dt,
-                haveExt ? &ext : nullptr,
-                haveExt ? &extS : nullptr
-            );
+            if (doEnergy)
+            {
+                chem_->integrate
+                (
+                    yE, kTab, TgasCell(celli), dt,
+                    haveExt ? &ext : nullptr,
+                    haveExt ? &extS : nullptr
+                );
+                for (label s = 0; s < nSp; ++s) n[s] = yE[s];
+            }
+            else
+            {
+                chem_->integrate
+                (
+                    n, kTab, TgasCell(celli), dt,
+                    haveExt ? &ext : nullptr,
+                    haveExt ? &extS : nullptr
+                );
+            }
         }
         catch (const Foam::error&)
         {
             n = nStart;
+            if (doEnergy)
+            {
+                // Leave the energy at its start-of-step value too, or the
+                // fallback would mix an integrated energy with un-integrated
+                // species.
+                yE[nSp] = (*nEpsI)[celli];
+            }
             ++chemODEFailures_;
+        }
+
+        // ENERGY SOURCE, reconstructed at the INTEGRATED END STATE in P/L
+        // form -- the same reconstruction Finding 5 applied to the species,
+        // and for the same reason: BDF2 wants f(t^{n+1}), and handing it a
+        // step mean is a Lie composition that caps the order at one.
+        //
+        // The loss goes back as a RATE so the energy equation can keep it on
+        // the diagonal, which is what preserves positivity at any timestep.
+        if (doEnergy)
+        {
+            const scalar ne  = max(yE[eIdx], lmea->electronDensityFloor());
+            const scalar N   = species_.backgroundDensity().value();
+            const scalar eps =
+                min(max(yE[nSp]/ne, lmea->meanEnergyMin()),
+                    lmea->meanEnergyMax());
+
+            const scalar Emag = (*EmagI)[celli];
+            const scalar J = (lmea->muNofEps()(eps)/N)*ne*Emag*Emag;
+            const scalar L = ne*N*lmea->PlossNofEps()(eps);
+
+            chemPeps_().primitiveFieldRef()[celli] = J;
+            chemLeps_().primitiveFieldRef()[celli] =
+                (yE[nSp] > VSMALL) ? max(L/yE[nSp], 0.0) : 0.0;
         }
 
         // The integrated change contains BOTH processes, so the transport part
@@ -2326,6 +2535,43 @@ bool Foam::plasmaTransport::mechanismSourceTerms
     // negative and cannot break the Picard iteration.
     if (chemistrySolver_ == csImplicitRate || isAdaptive())
     {
+        // OPTION 4 on the DEFAULT solver path. computeChemistrySources()
+        // handles `solver ode`; everything else arrives here.
+        const localEnergyEnergyModel* lmeaA = enableChemistryEnergy();
+        const bool doEnergyA = energyInChemistry_ && lmeaA;
+        const scalar NgasA = species_.backgroundDensity().value();
+        const scalarField* nEpsA =
+            doEnergyA ? &lmeaA->nEps().primitiveField() : nullptr;
+
+        if (doEnergyA)
+        {
+            if (!chemPeps_.valid())
+            {
+                chemPeps_.reset
+                (
+                    new volScalarField
+                    (
+                        IOobject("chemPeps", mesh_.time().timeName(), mesh_,
+                                 IOobject::NO_READ, IOobject::NO_WRITE),
+                        mesh_,
+                        dimensionedScalar(dimless/dimVolume/dimTime, Zero)
+                    )
+                );
+                chemLeps_.reset
+                (
+                    new volScalarField
+                    (
+                        IOobject("chemLeps", mesh_.time().timeName(), mesh_,
+                                 IOobject::NO_READ, IOobject::NO_WRITE),
+                        mesh_,
+                        dimensionedScalar(dimless/dimTime, Zero)
+                    )
+                );
+            }
+            chemPeps_() == dimensionedScalar(chemPeps_().dimensions(), Zero);
+            chemLeps_() == dimensionedScalar(chemLeps_().dimensions(), Zero);
+        }
+
         const label nSp = species_.nSpecies();
         const label nTab = rates_->size();
 
@@ -2356,6 +2602,13 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         chemNstiffByL_      = 0;
         chemNstiffByChange_ = 0;
         chemNstiffByError_  = 0;
+        chemNstiffByEnergy_ = 0;   // ADDED WITH THE COUNTER, not after it:
+                                   // omitting it here made the energy count
+                                   // accumulate over outer iterations while
+                                   // its siblings reset, so the report showed
+                                   // 808840 energy-routed cells out of 93248
+                                   // integrated -- impossible, and exactly the
+                                   // failure the comment above describes.
         chemActiveCount_    = 0;
         chemStiffness_      = 0;
         chemODEFailures_    = 0;
@@ -2522,11 +2775,43 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             // The CHANGE test is deliberately NOT carried over: its purely
             // relative normalisation flags 100% of cells (see chemChangeScale_),
             // which is the defect this variant exists to remove.
+            // THE ENERGY HAS ITS OWN STIFFNESS, and it is not the species'.
+            //
+            // MEASURED: in this streamer the species chemistry is benign
+            // (max L*dt = 1.6e-4 against a threshold of 1) while the ENERGY is
+            // genuinely stiff -- tau_eps = 1.65 ps against dt ~ 5 ps, i.e.
+            // L_eps*dt ~ 3. Routing the energy on the species' criterion
+            // therefore sends it to the LINEARISED path in exactly the cells
+            // that need integrating, which is the wrong test applied to the
+            // wrong quantity.
+            //
+            // L_eps = P_loss/n_eps is the same rate the energy equation puts
+            // on its diagonal and the same one the relaxation limiter uses, so
+            // the three cannot disagree about how fast the energy relaxes.
+            bool tooStiffEnergy = false;
+            if (doEnergyA)
+            {
+                const scalar neC = max
+                (
+                    n[species_.electronSpeciesID()],
+                    lmeaA->electronDensityFloor()
+                );
+                const scalar nEpsC = (*nEpsA)[celli];
+                if (nEpsC > VSMALL)
+                {
+                    const scalar epsC =
+                        min(max(nEpsC/neC, lmeaA->meanEnergyMin()),
+                            lmeaA->meanEnergyMax());
+                    const scalar Lp = neC*NgasA*lmeaA->PlossNofEps()(epsC);
+                    tooStiffEnergy = ((Lp/nEpsC)*dtNow > chemStiffLimit_);
+                }
+            }
+
             const bool sendToStiff =
                 (chemistrySolver_ == csAdaptive
-                    && (tooStiff || tooBigStep))
+                    && (tooStiff || tooBigStep || tooStiffEnergy))
              || (chemistrySolver_ == csAdaptiveError
-                    && (tooStiff || tooMuchError));
+                    && (tooStiff || tooMuchError || tooStiffEnergy));
 
             if (sendToStiff)
             {
@@ -2534,6 +2819,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 if (tooStiff)     ++chemNstiffByL_;
                 if (tooBigStep)   ++chemNstiffByChange_;
                 if (tooMuchError) ++chemNstiffByError_;
+                if (tooStiffEnergy) ++chemNstiffByEnergy_;
 
                 scalarField n0(nSp), nEnd(nSp);
                 for (label sp = 0; sp < nSp; ++sp)
@@ -2574,18 +2860,62 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 // that catches simply takes a different branch and rejoins
                 // its peers at the next reduce.
                 bool threw = false;
+                scalarField yE;
+                if (doEnergyA)
+                {
+                    chem_->setEnergyCell(Emag[celli], NgasA);
+                    yE.setSize(nSp + 1);
+                    for (label sp = 0; sp < nSp; ++sp) yE[sp] = nEnd[sp];
+                    yE[nSp] = (*nEpsA)[celli];
+                }
+
                 try
                 {
-                    chem_->integrate
-                    (
-                        nEnd, kTab, TgasCell(celli), dtNow,
-                        haveExtA ? &extA : nullptr,
-                        haveExtA ? &extAS : nullptr
-                    );
+                    if (doEnergyA)
+                    {
+                        chem_->integrate
+                        (
+                            yE, kTab, TgasCell(celli), dtNow,
+                            haveExtA ? &extA : nullptr,
+                            haveExtA ? &extAS : nullptr
+                        );
+                        for (label sp = 0; sp < nSp; ++sp) nEnd[sp] = yE[sp];
+                    }
+                    else
+                    {
+                        chem_->integrate
+                        (
+                            nEnd, kTab, TgasCell(celli), dtNow,
+                            haveExtA ? &extA : nullptr,
+                            haveExtA ? &extAS : nullptr
+                        );
+                    }
                 }
                 catch (const Foam::error&)
                 {
                     threw = true;
+                }
+
+                // Energy source at the INTEGRATED END STATE, in P/L form --
+                // the same reconstruction Finding 5 applied to the species.
+                if (doEnergyA && !threw)
+                {
+                    const scalar neC = max
+                    (
+                        yE[species_.electronSpeciesID()],
+                        lmeaA->electronDensityFloor()
+                    );
+                    const scalar epsC =
+                        min(max(yE[nSp]/neC, lmeaA->meanEnergyMin()),
+                            lmeaA->meanEnergyMax());
+                    const scalar Ec = Emag[celli];
+
+                    const scalar J = (lmeaA->muNofEps()(epsC)/NgasA)*neC*Ec*Ec;
+                    const scalar L = neC*NgasA*lmeaA->PlossNofEps()(epsC);
+
+                    chemPeps_().primitiveFieldRef()[celli] = J;
+                    chemLeps_().primitiveFieldRef()[celli] =
+                        (yE[nSp] > VSMALL) ? max(L/yE[nSp], 0.0) : 0.0;
                 }
 
                 // An ODE solver can fail on a step far longer than the
@@ -2659,6 +2989,40 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 chemP_[sp][celli] = P[sp];
                 chemL_[sp][celli] = L[sp];
             }
+
+            // ENERGY SOURCE FOR A LINEARISED CELL.
+            //
+            // MUST be written here as well as in the stiff branch. Writing it
+            // only where the cell was integrated left `chemPeps`/`chemLeps` at
+            // ZERO everywhere else -- and since the species chemistry in this
+            // case is nowhere near stiff (max L*dt = 1.6e-4 against a
+            // threshold of 1), that was EVERY cell. The energy equation then
+            // ran with no Joule heating and no loss at all, transporting its
+            // initial seed and looking perfectly stable while doing no physics.
+            //
+            // This is the implicit-rate treatment of the energy, matching what
+            // the species get on this branch: J and L evaluated at the CURRENT
+            // state, the loss returned as a rate so it stays on the diagonal.
+            if (doEnergyA)
+            {
+                const scalar neC = max
+                (
+                    n[species_.electronSpeciesID()],
+                    lmeaA->electronDensityFloor()
+                );
+                const scalar nEpsC = (*nEpsA)[celli];
+                const scalar epsC =
+                    min(max(nEpsC/neC, lmeaA->meanEnergyMin()),
+                        lmeaA->meanEnergyMax());
+                const scalar Ec = Emag[celli];
+
+                const scalar J = (lmeaA->muNofEps()(epsC)/NgasA)*neC*Ec*Ec;
+                const scalar Lp = neC*NgasA*lmeaA->PlossNofEps()(epsC);
+
+                chemPeps_().primitiveFieldRef()[celli] = J;
+                chemLeps_().primitiveFieldRef()[celli] =
+                    (nEpsC > VSMALL) ? max(Lp/nEpsC, 0.0) : 0.0;
+            }
         }
 
         // Cell loop over: restore FatalError, so a genuine fatal elsewhere
@@ -2680,6 +3044,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             chemNstiffByLPeak_      = chemNstiffByL_;
             chemNstiffByChangePeak_ = chemNstiffByChange_;
             chemNstiffByErrorPeak_  = chemNstiffByError_;
+            chemNstiffByEnergyPeak_ = chemNstiffByEnergy_;
         }
         chemODEFailuresSinceReport_ += chemODEFailures_;
 
@@ -2834,6 +3199,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             label  rByL        = chemNstiffByLPeak_;
             label  rByChange   = chemNstiffByChangePeak_;
             label  rByError    = chemNstiffByErrorPeak_;
+            label  rByEnergy   = chemNstiffByEnergyPeak_;
             label  rFailures   = chemODEFailuresSinceReport_;
 
             chemStiffnessPeak_ = 0;
@@ -2842,6 +3208,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             chemNstiffByLPeak_ = 0;
             chemNstiffByChangePeak_ = 0;
             chemNstiffByErrorPeak_ = 0;
+            chemNstiffByEnergyPeak_ = 0;
             chemODEFailuresSinceReport_ = 0;
 
             reduce(rChemCharge, maxOp<scalar>());
@@ -2853,6 +3220,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
             reduce(rByL, sumOp<label>());
             reduce(rByChange, sumOp<label>());
             reduce(rByError, sumOp<label>());
+            reduce(rByEnergy, sumOp<label>());
             reduce(rFailures, sumOp<label>());
 
             chemSourceChargeAfter_ = rChemCharge;
@@ -2891,14 +3259,19 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                         << chemErrorRelTol_ << ", absFrac "
                         << chemErrorAbsFrac_ << " of domain max n_e = "
                         << chemErrorRefDensity_ << " m^-3): "
-                        << rByError << nl;
+                        << rByError
+                        << ",  by energy L_eps*dt > " << chemStiffLimit_
+                        << ": " << rByEnergy
+                        << "  (overlap counted in each)" << nl;
                 }
                 else
                 {
                     Info<< "    by L*dt > " << chemStiffLimit_ << ": " << rByL
                         << ",  by step change > " << chemChangeLimit_ << ": "
                         << rByChange
-                        << "  (overlap counted in both)" << nl;
+                        << ",  by energy L_eps*dt > " << chemStiffLimit_
+                        << ": " << rByEnergy
+                        << "  (overlap counted in each)" << nl;
                 }
                 Info<< "    peak over the steps since the last report" << endl;
 
