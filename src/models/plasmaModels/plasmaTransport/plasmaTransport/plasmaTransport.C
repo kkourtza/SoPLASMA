@@ -948,6 +948,23 @@ S_iz_.correctBoundaryConditions();
     // frozen at its initial value while looking entirely healthy.
     forAll(eqns, i)
     {
+        // Optional outer-loop under-relaxation. A NO-OP unless the case
+        // declares `relaxationFactors/equations` for this field:
+        // fvMatrix::relax() looks the factor up and returns untouched when
+        // there is no entry, so every existing case is bit-for-bit unaffected.
+        //
+        // It exists because the species and energy equations can enter a
+        // period-2 Picard limit cycle inside the outer loop -- measured on the
+        // LMEA streamer case at deltaT = 6.19 ps, where n_e's residual
+        // alternates between ~0.03 and ~1.0 and grows until the run dies.
+        // Relaxation damps that; the energy equation already had this hook
+        // (plasmaEnergy.C), and the species equations did not.
+        //
+        // psi_.select() picks the `<field>Final` factor on the final
+        // corrector, so setting that to 1 removes the relaxation from the last
+        // iteration and keeps a CONVERGED outer loop consistent -- relaxation
+        // biases the answer only while the loop is still moving.
+        eqns[i]->relax();
         eqns[i]->solve();
     }
 

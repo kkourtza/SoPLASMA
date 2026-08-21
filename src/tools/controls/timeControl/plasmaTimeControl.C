@@ -1025,21 +1025,121 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
 
     pimpleDict.set("nOuterCorrectors", maxCorr);
 
-    // Applied to ePotential and to every transported species, which together
-    // ARE the coupling: the lag is between the field and the densities.
-    dictionary rc;
-    for (const word& f : wordList({"ePotential", "\"n_.*\""}))
+    // `outerCoupling` is the single user-facing knob, so it OWNS
+    // residualControl and replaces whatever the case wrote. Say so out loud:
+    // a setting that is silently ignored is its own trap.
     {
-        dictionary fd;
-        fd.set("tolerance", tol);
-        fd.set("relTol", scalar(0));
-        rc.set(f, fd);
+        const dictionary& prior = pimpleDict.subOrEmptyDict("residualControl");
+        if (!prior.empty())
+        {
+            Info<< "plasmaTimeControl: PIMPLE/residualControl in the case"
+                << " (" << flatOutput(prior.toc()) << ")" << nl
+                << "    is SUPERSEDED by the outerCoupling block and can be"
+                << " deleted from fvSolution." << endl;
+        }
     }
-    pimpleDict.set("residualControl", rc);
+
+    // WHICH FIELDS GATE THE LOOP -- and why the default is ePotential ALONE.
+    //
+    // This block used to build the pattern `"n_.*"` through a `word` that kept
+    // its own quote characters: `word::stripInvalid()` is DEBUG-GATED
+    // (etc/controlDict ships `word 0;`), so the quotes survived and
+    // solutionControl compiled a pattern that could never match a field called
+    // `n_e`. For the whole life of that code the species half of this
+    // criterion was DEAD, and the outer loop exited on ePotential alone while
+    // n_e was still at 1e-2.
+    //
+    // The patterns below are therefore built as explicit REGEX keyTypes. But
+    // the DEFAULT deliberately remains `(ePotential)`, i.e. exactly the
+    // behaviour that was actually in force, because that is what every
+    // validated result in this project was produced under -- the shipped
+    // benchmark's p = 1.936 order measurement included. Silently switching the
+    // default to "all species and the energy" changes the accept/reject
+    // verdict of every existing case, and it was MEASURED to make the LMEA
+    // case degrade 3 of its first 4 steps (2026-08-21, `co-lmea-o4-rcfix`).
+    //
+    // It degrades for a reason worth recording before anyone raises the list:
+    // OpenFOAM's normFactor is built from the deviation of the field about its
+    // own average, so for a NEARLY UNIFORM field -- which n_e is before the
+    // streamer develops -- it collapses and the normalised residual saturates
+    // near 1 however well converged the coupling is. An absolute 1e-8 on n_e
+    // is then unreachable in principle, not merely in practice.
+    //
+    // So this is a knob, not a new default. Widen it per case, knowing that.
+    const wordList gateFields
+    (
+        oc.getOrDefault<wordList>("gateFields", wordList({"ePotential"}))
+    );
+
+    dictionary rc;
+
+    // Resolve every requested pattern against the fields actually registered
+    // NOW and report the mapping. A pattern matching nothing is exactly the
+    // failure that hid here for so long, so it is an ERROR: a criterion that
+    // cannot fire is decoration, not a check.
+    const wordList regFields(mesh.sortedNames<volScalarField>());
+
+    label nMatched = 0;
 
     Info<< "plasmaTimeControl: outerCoupling target `converged`" << nl
         << "    residual " << tol << ", up to " << maxCorr
-        << " correctors (a CAP -- the loop exits when converged)" << endl;
+        << " correctors (a CAP -- the loop exits when converged)" << nl
+        << "    fields gating the loop:" << endl;
+
+    for (const word& req : gateFields)
+    {
+        // Anything carrying regex metacharacters is a pattern; a plain name is
+        // matched literally. Built here rather than passed through a quoted
+        // `word`, which is what broke before.
+        const bool isPattern =
+            (req.find_first_of(".*[]()^$+?|\\") != std::string::npos);
+
+        const keyType key
+        (
+            req,
+            isPattern ? keyType::REGEX : keyType::LITERAL
+        );
+
+        DynamicList<word> matched;
+        for (const word& f : regFields)
+        {
+            if (key.match(f))
+            {
+                matched.append(f);
+            }
+        }
+
+        if (matched.empty())
+        {
+            FatalErrorInFunction
+                << "outerCoupling/gateFields lists `" << req
+                << "`, which matches NO solved field" << nl
+                << "    on mesh `" << mesh.name() << "`." << nl << nl
+                << "    A convergence criterion that cannot fire is not a"
+                << " criterion: the outer loop" << nl
+                << "    would exit on the remaining fields alone and report a"
+                << " diverging solution" << nl
+                << "    as converged. That is a real bug this project has"
+                << " already been bitten by." << nl << nl
+                << "    Registered volScalarFields: "
+                << flatOutput(regFields) << nl
+                << exit(FatalError);
+        }
+
+        dictionary fd;
+        fd.set("tolerance", tol);
+        fd.set("relTol", scalar(0));
+        rc.set(key, fd);
+
+        nMatched += matched.size();
+
+        Info<< "    " << req << " -> " << flatOutput(matched) << endl;
+    }
+
+    pimpleDict.set("residualControl", rc);
+
+    Info<< "    " << nMatched << " field(s) must meet " << tol
+        << " for the step to be accepted" << endl;
 }
 
 
