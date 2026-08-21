@@ -588,6 +588,28 @@ protected:
     List<scalarField> chemExtPrev_;
     List<scalarField> chemExtSlope_;
 
+    //- THE ENERGY'S OWN TRANSPORT RATE, and the state it was measured at.
+    //
+    //  The species hand the stiff integrator their transport rate through
+    //  chemExt_, so the ODE evolves chemistry AND transport together and its
+    //  end state is the real t^{n+1}. The ENERGY row did not: its transport
+    //  was left to the field equation alone, so `yE[nSpecie_]` came back as a
+    //  chemistry-only state while `yE[eIndex]` carried transport.
+    //
+    //  The reconstruction then formed eps = yE[nSpecie_]/yE[eIndex] -- a ratio
+    //  of two states that do not correspond to the same physics -- and
+    //  evaluated the Joule and loss terms there. That is wrong by O(dt), which
+    //  caps the scheme at first order. MEASURED on the order-study bed:
+    //  p = 0.79 for the energy, and 0.67 for the SPECIES too once
+    //  `lookupVariable meanE` makes the rate coefficients depend on the same
+    //  broken eps. With the chemistry insulated (lookupVariable reducedE) the
+    //  species recover to 1.97 while the energy stays at 0.79 -- one cause,
+    //  both symptoms.
+    scalarField chemExtEps_;
+    scalarField chemExtEpsPrev_;
+    scalarField chemExtEpsSlope_;
+    scalarField chemNEps0_;
+
     //- Instantaneous production and loss coefficient, for csImplicitRate
     List<scalarField> chemP_;
 

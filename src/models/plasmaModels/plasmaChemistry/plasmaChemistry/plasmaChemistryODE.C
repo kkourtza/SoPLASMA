@@ -55,11 +55,10 @@ void Foam::plasmaChemistryODE::derivatives
     dydx = Zero;
     if (ext_)
     {
-        // BOUNDED BY nSpecie_, not by dydx.size(). With the energy equation
-        // active dydx is nSpecie_+1 long, while ext_ is nSpecie_ long and
-        // crossTerm() reads (*ext_)[i] -- so `forAll(dydx, i)` would read one
-        // past the end of ext_ on the energy row. The energy's own transport
-        // is carried by the field equation, not by this cross term.
+        // BOUNDED BY nSpecie_, not by dydx.size(): the energy row is handled
+        // separately below, after its chemical source is formed. ext_ may be
+        // nSpecie_ or nSpecie_+1 long depending on whether the caller supplied
+        // the energy's transport rate, so this loop must not run off the end.
         for (label i = 0; i < nSpecie_; ++i)
         {
             scalar rate, sink;
@@ -170,6 +169,48 @@ void Foam::plasmaChemistryODE::derivatives
         const scalar loss  = ne*Ngas_*PlossNFn_(eps);
 
         dydx[nSpecie_] = joule - loss;
+
+        // THE ENERGY'S OWN TRANSPORT, when the caller supplied it.
+        //
+        // Without this the integrator evolves the energy from chemistry alone
+        // while the SPECIES rows carry their transport, so the end state mixes
+        // two different physics: the reconstruction then forms
+        // eps = y[nSpecie_]/y[eIndex_] from a chemistry-only numerator and a
+        // chemistry-plus-transport denominator, and evaluates the Joule and
+        // loss terms at a state that is wrong by O(dt).
+        //
+        // MEASURED on the order-study bed with it missing: p = 0.79 for the
+        // energy, and 0.67 for the species too, because `lookupVariable meanE`
+        // makes the rate coefficients depend on that same eps. Insulating the
+        // chemistry (lookupVariable reducedE) recovered the species to 1.97
+        // while the energy stayed at 0.79 -- one cause, both symptoms.
+        //
+        // ext_ is only nSpecie_+1 long when the caller has something to give;
+        // the guard keeps every species-only caller working unchanged.
+        if (ext_ && ext_->size() > nSpecie_)
+        {
+            // PLAIN RATE, deliberately NOT crossTerm().
+            //
+            // crossTerm()'s sink branch converts a REMOVING transport term
+            // into a decay proportional to what the cell still holds, so a
+            // species cannot be driven negative by a constant drain. Its
+            // limits (extSinkLimit_, nuMax, the ratio against extRef_) are
+            // tuned for number densities. Applied to n_eps it manufactures a
+            // stiff decay the energy never needed: MEASURED, the outer loop
+            // stopped converging entirely -- 20 correctors, 16 non-converged
+            // steps, and the run stopped on the consecutive-failure guard.
+            //
+            // The energy has its own floor (meanEnergyMin, applied to eps
+            // rather than to n_eps) and the field equation keeps its loss on
+            // the diagonal, so the protection the sink provides is already
+            // there by another route.
+            scalar rate = (*ext_)[nSpecie_];
+            if (extSlope_ && extDt_ > 0)
+            {
+                rate += (*extSlope_)[nSpecie_]*(x - 0.5*extDt_);
+            }
+            dydx[nSpecie_] += rate;
+        }
     }
 }
 

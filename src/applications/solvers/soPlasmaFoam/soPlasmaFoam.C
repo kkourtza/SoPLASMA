@@ -205,8 +205,14 @@ int main(int argc, char *argv[])
     // it.
     autoPtr<plasmaEnergy> energy;
     {
-        const dictionary& bg = species.backgroundDict();
-        if (bg.subOrEmptyDict("energy").getOrDefault<bool>("solve", false))
+        // Ask plasmaEnergy whether it is needed, rather than re-deriving the
+        // condition here. Gas heating and the per-species energy models are
+        // INDEPENDENT physics: a case may want LMEA without solving the gas
+        // temperature, or gas heating without LMEA. Testing only
+        // `energy { solve }` here meant enabling LMEA also switched on the
+        // gas-temperature equation, which then demanded a conduction scheme
+        // and a T_gas linear solver for an equation the case never asked for.
+        if (plasmaEnergy::required(species))
         {
             energy.reset(new plasmaEnergy(species, gasMesh(), em().E()));
         }

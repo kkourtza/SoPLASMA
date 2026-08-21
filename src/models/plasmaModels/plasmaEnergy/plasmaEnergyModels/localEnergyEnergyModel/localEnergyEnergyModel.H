@@ -78,6 +78,26 @@ private:
     //  form and the loss kept implicit.
     volScalarField nEps_;
 
+    //- d(n_eps)/dt contributed by TRANSPORT alone, evaluated straight from the
+    //  operators that do it:  -div(phiEps, nEps) + laplacian(DEps, nEps).
+    //
+    //  Exists because the stiff integrator needs the energy's transport rate
+    //  to produce a genuine t^{n+1} end state (without it the reconstruction
+    //  forms eps from a chemistry-only numerator over a transport-carrying
+    //  denominator, which is wrong by O(dt) and caps the scheme at first
+    //  order -- measured p = 0.68).
+    //
+    //  NOT inferred by subtracting the chemical rate from the total change,
+    //  which is how the SPECIES rate is built. Three attempts at that failed:
+    //  it depends on the reconstruction it feeds (a lagged feedback loop), and
+    //  near local energy equilibrium Joule ~ loss, so the chemical rate is a
+    //  small difference of two large numbers and the transport rate is
+    //  recovered out of their cancellation noise. Computing it from the
+    //  operators has neither problem.
+    //  `mutable` because solve() is const: this is a DIAGNOSTIC OUTPUT of
+    //  the solve, not part of the model's configuration.
+    mutable scalarField energyTransportRate_;
+
     //- Mean energy [eV], published for the tabulated lookups. Derived, not
     //  solved: eps_bar = n_eps / n_e.
     volScalarField meanE_;
@@ -260,6 +280,13 @@ public:
 
         //- The transported energy density field.
         const volScalarField& nEps() const { return nEps_; }
+
+        //- Transport contribution to d(n_eps)/dt, from the operators
+        //  themselves. Empty when the energy is not transported.
+        const scalarField& energyTransportRate() const
+        {
+            return energyTransportRate_;
+        }
 
         //- Mutable access, for the JOINT outer-loop relaxation coordinator.
         //  The electron energy is one half of the period-2 cycle that

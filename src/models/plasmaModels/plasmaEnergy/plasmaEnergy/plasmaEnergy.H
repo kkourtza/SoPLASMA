@@ -250,7 +250,25 @@ public:
         const volScalarField& eVib() const { return eVibPtr_(); }
 
         //- Is the gas energy equation being solved?
+        //- Is a plasmaEnergy object needed at all?
+        //
+        //  TRUE when the case asks for gas heating, OR when any species
+        //  declares an energyModel of its own (e.g. `localEnergy` for LMEA).
+        //  These are INDEPENDENT physics and were previously gated by the
+        //  single `energy { solve }` switch: enabling LMEA therefore also
+        //  switched on the gas-temperature equation, which then demanded a
+        //  conduction scheme and a T_gas linear solver for an equation the
+        //  case never asked for. Three start-up failures, one keyword.
+        //
+        //  This is the ONE place that decides; soPlasmaFoam asks rather than
+        //  re-deriving the condition.
+        static bool required(const plasmaSpecies& species);
+
         bool solvesGasEnergy() const noexcept { return solveGasEnergy_; }
+
+        //- Gas thermal conductivity [W/m/K]. Owned here; the conduction-scheme
+        //  guard in plasmaTransport asks rather than re-reading the dict.
+        scalar kappaGas() const { return kappaGas_; }
 
         // //- Return total total Joule heating [W/m^3]
         // tmp<volScalarField> totalJouleHeating() const;

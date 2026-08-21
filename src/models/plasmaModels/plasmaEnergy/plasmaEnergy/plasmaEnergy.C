@@ -167,13 +167,50 @@ void Foam::plasmaEnergy::solveSpeciesEnergy()
 }
 
 
+bool plasmaEnergy::required(const plasmaSpecies& species)
+{
+    // Gas heating asked for?
+    const dictionary& bg = species.backgroundDict();
+    if (bg.subOrEmptyDict("energy").getOrDefault<bool>("solve", false))
+    {
+        return true;
+    }
+
+    // Or any species carrying its own energy equation? `gasTemperature` is the
+    // default and needs none -- it is the historical "every species sits at
+    // the gas temperature" behaviour. Anything else (localEnergy for LMEA)
+    // does.
+    forAll(species.speciesNames(), i)
+    {
+        if
+        (
+            species.speciesDict(i)
+                .getOrDefault<word>("energyModel", "gasTemperature")
+         != "gasTemperature"
+        )
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 void plasmaEnergy::constructModels()
 {
-    // Read the backgroundGas properties
+    // Read the backgroundGas properties.
+    //
+    // subOrEmptyDict and getOrDefault, NOT subDict/get: since gas heating and
+    // the per-species energy models were separated, a case may enable LMEA
+    // (speciesProperties/<sp>/energyModel localEnergy) without wanting the gas
+    // temperature solved at all, and such a case has no `energy` dictionary to
+    // read. Demanding one would reinstate exactly the coupling that separation
+    // removed.
     const dictionary& bgGasDict = species_.backgroundDict();
-    const dictionary& bgGasEnergyDict = bgGasDict.subDict("energy");
+    const dictionary& bgGasEnergyDict = bgGasDict.subOrEmptyDict("energy");
 
-    solveGasEnergy_ = bgGasEnergyDict.get<bool>("solve");
+    solveGasEnergy_ = bgGasEnergyDict.getOrDefault<bool>("solve", false);
     if (solveGasEnergy_)
     {
         isGasTempField_ = true;
@@ -471,10 +508,26 @@ void Foam::plasmaEnergy::solveGasEnergy
     fvScalarMatrix TEqn
     (
         rhoCv*fvm::ddt(T)
-      - fvm::laplacian(kappa, T)
      ==
         Qtot
     );
+
+    // CONDUCTION ONLY WHEN kappa > 0.
+    //
+    // The start-up guard offers `kappa 0` as a way to drop conduction, and
+    // until 2026-08-21 the equation assembled fvm::laplacian(kappa, T)
+    // unconditionally -- so a case that followed that advice got past the
+    // friendly guard and then died on a raw
+    //
+    //     Entry 'laplacian(kappa,T_gas)' not found in ... laplacianSchemes
+    //
+    // from deep inside OpenFOAM. Assembling a laplacian with a zero
+    // coefficient also costs a scheme lookup and a matrix contribution for a
+    // term that is identically zero. Now the advice and the code agree.
+    if (kappaGas_ > 0)
+    {
+        TEqn -= fvm::laplacian(kappa, T);
+    }
 
     TEqn.relax();
     TEqn.solve();

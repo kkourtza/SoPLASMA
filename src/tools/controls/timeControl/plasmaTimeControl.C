@@ -328,42 +328,73 @@ void plasmaTimeControl::read()
         }
 
         // Voltage rise rate
-        limitVoltageRiseRate_ =
-            dict_.lookupOrDefault<Switch>("limitVoltageRiseRate", false);
+        // ONE CONTROLLER for the voltage rise: `maxVoltageRisePerStep`, in
+        // VOLTS PER STEP, default 100. The limiter solves for the deltaT that
+        // makes the applied voltage change by this much in one step.
+        //
+        // It replaces four keys that described one concept --
+        // limitVoltageRiseRate (whether to limit), printVoltageRiseRate
+        // (whether to report), maxVoltageRiseRate (the old, misleading name --
+        // it was never a rate in V/s) and maxVoltageRisePerStep. Four controls
+        // for one quantity is how a user ends up setting one and being
+        // surprised by another.
+        //
+        // ALWAYS ACTIVE when a voltage patch is named. On a constant-voltage
+        // case dV/step is ~0 and it never binds, so being on costs nothing.
+        // It binds exactly where it should: during a ramp.
+        //
+        // WHY 100 V. The shipped benchmark ramps 0 -> 18.75 kV in 93.75 ps
+        // (2e14 V/s). At the deltaT the Courant limit allows, that rise is
+        // crossed in about TEN STEPS -- dV/step was measured at 501 V (LMEA)
+        // and 1486 V (LFA). 100 V/step puts ~190 points across the rise
+        // instead. This is a genuine resolution limit on the driving term, not
+        // a safety net.
+        //
+        // Set 0 to disable.
+        maxVoltageRiseRate_ =
+            dict_.lookupOrDefault<scalar>("maxVoltageRisePerStep", 100.0);
 
-        printVoltageRiseRate_ =
-            dict_.lookupOrDefault<Switch>("printVoltageRiseRate", false);
+        // Old key still read, so existing cases load -- but it is the same
+        // control, not a second one.
+        maxVoltageRiseRate_ =
+            dict_.lookupOrDefault<scalar>
+            (
+                "maxVoltageRiseRate", maxVoltageRiseRate_
+            );
 
-        if (limitVoltageRiseRate_ || printVoltageRiseRate_)
+        limitVoltageRiseRate_ = (maxVoltageRiseRate_ > 0);
+        printVoltageRiseRate_ = limitVoltageRiseRate_;
+
+        if (limitVoltageRiseRate_)
         {
-            // VOLTS PER STEP, despite the name -- the limiter solves for the
-            // deltaT that makes the applied voltage change by this much in one
-            // step, and the report prints it as `dV/step [V]`. It is NOT a
-            // rate in V/s. Kept under the old key so existing cases still
-            // read, but documented here because the name misleads.
-            //
-            // 100 V/step is a sane ceiling for a kV-scale pulse: fine enough
-            // that the rise is resolved, coarse enough never to bind while the
-            // Courant and dielectric limits are doing their job. It is a
-            // SAFETY NET, not the primary control.
-            maxVoltageRiseRate_ =
-                dict_.lookupOrDefault<scalar>("maxVoltageRisePerStep", 100.0);
-            maxVoltageRiseRate_ =
-                dict_.lookupOrDefault<scalar>
-                (
-                    "maxVoltageRiseRate", maxVoltageRiseRate_
-                );
-
             voltagePatchName_ =
                 dict_.lookupOrDefault<word>("voltagePatchName", "");
 
+            // NOT FATAL when the patch is unnamed.
+            //
+            // This used to be a hard error, which was correct while the
+            // controller was OPT-IN: asking to limit the voltage rise without
+            // saying which electrode is driven is a contradiction. Now that it
+            // is ON BY DEFAULT, the same error would kill every case that has
+            // no driven-voltage patch -- a constant-voltage case, a 0-D
+            // reactor, any tutorial that never named one. Turning a default on
+            // must not make previously valid cases fail to start.
+            //
+            // So: no patch, no controller, said once and clearly.
             if (voltagePatchName_.empty())
             {
-                FatalIOErrorInFunction(dict_)
-                    << "'voltagePatchName' must be specified when "
-                    << "'limitVoltageRiseRate' or 'printVoltageRiseRate' "
-                    << "is true."
-                    << nl << exit(FatalIOError);
+                limitVoltageRiseRate_ = false;
+                printVoltageRiseRate_ = false;
+
+                Info<< "plasmaTimeControl: voltage-rise control is OFF"
+                    << " (no `voltagePatchName`)." << nl
+                    << "    It limits deltaT so the APPLIED voltage changes by"
+                    << " at most maxVoltageRisePerStep" << nl
+                    << "    (" << maxVoltageRiseRate_ << " V) per step, which"
+                    << " matters when the drive ramps: the shipped" << nl
+                    << "    benchmark rises 0 -> 18.75 kV in 93.75 ps and"
+                    << " crosses it in ~10 steps without this." << nl
+                    << "    Name the driven electrode to enable it." << endl;
             }
         }
     }
@@ -1146,9 +1177,43 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
     // is then unreachable in principle, not merely in practice.
     //
     // So this is a knob, not a new default. Widen it per case, knowing that.
+    // Fields registered on this mesh. Needed both to resolve the patterns
+    // below and to pick the DEFAULT, so it is read first.
+    const wordList regFields(mesh.sortedNames<volScalarField>());
+
+    // THE DEFAULT IS PHYSICS-AWARE.
+    //
+    // `ePotential` alone for LFA. For LMEA -- detected by an electron-energy
+    // density being registered -- the energy joins it, because it is solved in
+    // the same outer loop and is part of the same coupling. Leaving it out
+    // meant the loop reported "converged in 2 iterations" while the n_e/nEps_e
+    // coupling was still LAGGED, and a lagged coupling is first order whatever
+    // ddtSchemes says. A user should not have to know to add it by hand.
+    //
+    // This relies on plasmaEnergy being constructed BEFORE this call
+    // (soPlasmaFoam does so deliberately); if it were not, the field would not
+    // yet be registered and the default would silently fall back to LFA.
+    //
+    // MEASURED COST: correctors roughly double (2-3 -> 5-7 on the order-study
+    // bed). MEASURED BENEFIT: it does NOT by itself restore second order
+    // (p 0.662 -> 0.681) -- the LMEA coupling is limited by something else.
+    // The justification is correctness of the verdict, not the order: calling
+    // a step converged while a solved field was never tested is wrong on its
+    // own terms.
+    DynamicList<word> defaultGate;
+    defaultGate.append("ePotential");
+    for (const word& f : regFields)
+    {
+        if (f.starts_with("nEps_"))
+        {
+            defaultGate.append("nEps_.*");
+            break;
+        }
+    }
+
     const wordList gateFields
     (
-        oc.getOrDefault<wordList>("gateFields", wordList({"ePotential"}))
+        oc.getOrDefault<wordList>("gateFields", wordList(defaultGate))
     );
 
     dictionary rc;
@@ -1157,7 +1222,6 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
     // NOW and report the mapping. A pattern matching nothing is exactly the
     // failure that hid here for so long, so it is an ERROR: a criterion that
     // cannot fire is decoration, not a check.
-    const wordList regFields(mesh.sortedNames<volScalarField>());
 
     label nMatched = 0;
 
@@ -1183,6 +1247,18 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
         DynamicList<word> matched;
         for (const word& f : regFields)
         {
+            // SKIP OLD-TIME COPIES. BDF2 registers `<field>_0` and
+            // `<field>_0_0` alongside the field itself, and a pattern like
+            // `nEps_.*` matches them too. They are never SOLVED, so they never
+            // appear in the solver-performance dictionary and could never gate
+            // anything -- but counting them made the start-up banner announce
+            // "4 field(s) must meet 1e-08" when only 2 can, which overstates
+            // what is actually being checked.
+            if (f.ends_with("_0"))
+            {
+                continue;
+            }
+
             if (key.match(f))
             {
                 matched.append(f);

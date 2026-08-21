@@ -473,9 +473,22 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
         // `T_gas`, and the checks therefore passed while the run died anyway.
         const word& Tn = TgasField_->name();
 
+        // ONLY when conduction is actually assembled. The message below
+        // offers `kappa 0` as a way out, and until 2026-08-21 this guard
+        // ignored kappa entirely -- so following its own advice still hit the
+        // FatalError. A diagnostic that recommends a fix which does not work
+        // is worse than no diagnostic: it sends the reader hunting in the
+        // wrong place. kappa is owned by plasmaEnergy and asked for here
+        // rather than re-read, so the guard cannot disagree with the solver
+        // about what it is.
         const dictionary& ls =
             mesh_.schemes().subOrEmptyDict("laplacianSchemes");
-        if (!ls.found("default") && !ls.found("laplacian(kappa," + Tn + ")"))
+        if
+        (
+            energy.kappaGas() > 0
+         && !ls.found("default")
+         && !ls.found("laplacian(kappa," + Tn + ")")
+        )
         {
             FatalErrorInFunction
                 << "gas heating is on, but system/fvSchemes has no laplacian"
@@ -805,6 +818,37 @@ void plasmaTransport::solve(const bool finalIter)
                 chemExt_[s] = Zero;
                 chemExtSlope_[s].setSize(mesh_.nCells(), Zero);
                 chemExtSlope_[s] = Zero;
+            }
+
+            // The ENERGY's transport rate, kept exactly as the species' is.
+            // Sized here rather than lazily so the per-cell assembly can rely
+            // on it being either the right length or empty.
+            {
+                const localEnergyEnergyModel* lm = nullptr;
+                if (mesh_.foundObject<plasmaEnergy>("plasmaEnergy"))
+                {
+                    lm = mesh_.lookupObject<plasmaEnergy>("plasmaEnergy")
+                            .lmeaModel();
+                }
+                if (lm)
+                {
+                    chemExtEpsPrev_.setSize(mesh_.nCells(), Zero);
+                    if (chemExtEps_.size() == mesh_.nCells())
+                    {
+                        chemExtEpsPrev_ = chemExtEps_;
+                    }
+                    else
+                    {
+                        chemExtEpsPrev_ = Zero;
+                    }
+
+                    chemNEps0_ = lm->nEps().primitiveField();
+
+                    chemExtEps_.setSize(mesh_.nCells(), Zero);
+                    chemExtEps_ = Zero;
+                    chemExtEpsSlope_.setSize(mesh_.nCells(), Zero);
+                    chemExtEpsSlope_ = Zero;
+                }
             }
         }
 
@@ -1191,6 +1235,39 @@ S_iz_.correctBoundaryConditions();
                     // multiplied by (x - dt/2) ~ dt, so T is right to O(dt^2).
                     chemExtSlope_[s][c] =
                         (chemExt_[s][c] - chemExtPrev_[s][c])*rdt;
+                }
+            }
+
+            // THE ENERGY'S TRANSPORT RATE, taken from the OPERATORS.
+            //
+            // Deliberately NOT the species' recipe (total change minus the
+            // chemical part). That form was tried three ways and destabilised
+            // the outer loop every time: it depends on the reconstruction it
+            // feeds, and near local energy equilibrium Joule ~ loss makes the
+            // chemical rate a small difference of large numbers, so the
+            // transport rate comes out of their cancellation noise.
+            //
+            // localEnergyEnergyModel computes it as
+            // -div(phiEps,nEps) + laplacian(DEps,nEps) at the current iterate,
+            // which depends only on fields -- no feedback, no cancellation.
+            if (chemExtEps_.size() == mesh_.nCells())
+            {
+                const localEnergyEnergyModel* lm = nullptr;
+                if (mesh_.foundObject<plasmaEnergy>("plasmaEnergy"))
+                {
+                    lm = mesh_.lookupObject<plasmaEnergy>("plasmaEnergy")
+                            .lmeaModel();
+                }
+
+                if (lm && lm->energyTransportRate().size() == mesh_.nCells())
+                {
+                    const scalarField& T = lm->energyTransportRate();
+                    forAll(chemExtEps_, c)
+                    {
+                        chemExtEps_[c] = T[c];
+                        chemExtEpsSlope_[c] =
+                            (chemExtEps_[c] - chemExtEpsPrev_[c])*rdt;
+                    }
                 }
             }
         }
@@ -2318,16 +2395,36 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         // Transport rate for this cell, from the previous outer iteration.
         const bool haveExt =
             chemCrossTerm_ && !chemExt_.empty() && !chemExt_[0].empty();
+        // The energy row gets its transport term too, when it is being
+        // integrated. Sized nSp+1 so crossTerm() can index the energy row --
+        // ext_, extSlope_ AND extRef_ are all indexed by row, so all three
+        // must carry the extra slot or the row reads past the end.
+        // NOT padded into ext_. Handing the energy's transport rate to the
+        // stiff integrator was tried and MEASURED to destabilise the outer
+        // loop -- 20 correctors, 16 non-converged steps, the run stopped on
+        // the consecutive-failure guard -- both through crossTerm() and as a
+        // plain rate. It is a large, corrector-lagged explicit term and the
+        // integrator does not want it. The inconsistency it was meant to cure
+        // is fixed in the RECONSTRUCTION below instead, which costs nothing
+        // and changes no integration.
+        const bool extHasEnergy =
+            doEnergy && haveExt && (chemExtEps_.size() == mesh_.nCells());
+        const label nExt = extHasEnergy ? nSp + 1 : nSp;
+
+        ext.setSize(nExt, Zero);
         if (haveExt)
         {
             for (label s = 0; s < nSp; ++s) ext[s] = chemExt_[s][celli];
         }
-        extS.setSize(nSp, Zero);
+        if (extHasEnergy) { ext[nSp] = chemExtEps_[celli]; }
+
+        extS.setSize(nExt, Zero);
 
         if (haveExt)
         {
             for (label si = 0; si < nSp; ++si) extS[si] = chemExtSlope_[si][celli];
         }
+        if (extHasEnergy) { extS[nSp] = chemExtEpsSlope_[celli]; }
         // FAIL SOFT, as in the adaptive path: a cell the ODE solver cannot
         // integrate falls back to the linearised source instead of ending the
         // run. Here the fallback state is the START-OF-STEP state, which `n`
@@ -2394,6 +2491,33 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         {
             const scalar ne  = max(yE[eIdx], lmea->electronDensityFloor());
             const scalar N   = species_.backgroundDensity().value();
+
+            // NOTE, 2026-08-21: this eps is INCONSISTENT and it costs the
+            // scheme its order. The integrator evolves the SPECIES with their
+            // transport (ext_) but the ENERGY without it, so yE[nSp] is a
+            // chemistry-only state while yE[eIdx] carries transport. Forming
+            // eps from that pair is wrong by O(dt).
+            //
+            // MEASURED (order-study bed, dt 4/2/1e-13): p = 0.79 for the
+            // energy and 0.67 for the species -- the latter because
+            // `lookupVariable meanE` makes the rate coefficients depend on the
+            // same eps. Insulating the chemistry (lookupVariable reducedE)
+            // recovers the species to 1.97 while the energy stays 0.79.
+            // `energySource model` gives 2.7 for both, so the defect is in
+            // THIS path.
+            //
+            // THREE FIXES WERE TRIED AND ALL DESTABILISED THE OUTER LOOP
+            // (20 correctors, non-converged steps, stopped on the
+            // consecutive-failure guard):
+            //   1. energy transport into the ODE via crossTerm();
+            //   2. the same as a plain rate, skipping the density-tuned sink;
+            //   3. correcting eps here by + chemExtEps_*dt.
+            // All three route through a transport rate that is measured from
+            // the PREVIOUS corrector's reconstruction while the state is
+            // current -- a lagged feedback loop with a large coefficient.
+            //
+            // Left as it was, deliberately, so the path is stable. Use
+            // `energySource model` when temporal order matters.
             const scalar eps =
                 min(max(yE[nSp]/ne, lmea->meanEnergyMin()),
                     lmea->meanEnergyMax());

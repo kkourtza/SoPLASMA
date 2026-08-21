@@ -56,7 +56,16 @@ printChemistryCo                    true;
 maxChemistryCo                      0.9;
 limitVoltageRiseRate                false;
 printVoltageRiseRate                true;
-maxVoltageRiseRate                  1;
+// VOLTS PER STEP, not V/s: the limiter solves for the deltaT that makes
+// the applied voltage change by this much in one step. 100 V resolves a
+// nanosecond rise on a kV-scale pulse while staying coarse enough to be a
+// SAFETY NET rather than the primary control -- the Courant and dielectric
+// limits do that job.
+//
+// This shipped as 1, which is inert only because limitVoltageRiseRate is
+// off. Anyone switching that on inherited a 1 V/step ceiling and a run
+// that crawled -- and 58 cases derived from this template carried it.
+maxVoltageRisePerStep               100;
 
 //- Runtime & Parallelization
 endTime                             16e-9;

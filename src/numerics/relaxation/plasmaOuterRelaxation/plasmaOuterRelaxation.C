@@ -223,6 +223,29 @@ void Foam::plasmaOuterRelaxation::applyJoint()
     }
 
     omega_ = aitken_.omega(rj);
+
+    // NO RELAXATION ON THE FINAL OUTER CORRECTOR.
+    //
+    // The accepted iterate of a time step must be what the equations actually
+    // SOLVED, not a blend of the solve and the previous iterate. Relaxation is
+    // a device for getting the Picard iteration to its fixed point; once the
+    // step is being accepted it must not bias the answer.
+    //
+    // The fixed-factor path has always done this -- a case writes
+    // `n_eFinal 1.0` and fvMatrix::relax() picks it up through
+    // psi_.select(isFinalIteration()). This path did not, and the cost was
+    // MEASURED on the order study: with the outer loop exiting in 2-3
+    // correctors, the residual (1 - omega) bias does not vanish at the right
+    // rate as deltaT falls and the observed temporal order collapsed to
+    // p = 0.53 -- for the SPECIES as well as the energy, on a bed where the
+    // same arm without LMEA measures p = 1.95.
+    //
+    // At a genuinely converged fixed point r -> 0 and this changes nothing;
+    // it matters exactly when the loop stops early, which is the normal case.
+    if (mesh_.data().isFinalIteration())
+    {
+        omega_ = 1.0;
+    }
     omegaMinStep_ = min(omegaMinStep_, omega_);
     omegaMaxStep_ = max(omegaMaxStep_, omega_);
     ++nRelaxed_;

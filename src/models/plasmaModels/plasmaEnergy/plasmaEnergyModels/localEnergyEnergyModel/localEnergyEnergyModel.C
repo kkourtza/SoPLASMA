@@ -5,6 +5,7 @@
   License: GNU General Public License v3 or later
 \*---------------------------------------------------------------------------*/
 
+#include "zeroGradientFvPatchFields.H"
 #include "localEnergyEnergyModel.H"
 #include "plasmaSpecies.H"
 #include "plasmaConstants.H"
@@ -50,7 +51,29 @@ localEnergyEnergyModel::localEnergyEnergyModel
             IOobject::AUTO_WRITE
         ),
         mesh,
-        dimensionedScalar("zero", dimless/dimVolume, 0.0)
+        dimensionedScalar("zero", dimless/dimVolume, 0.0),
+
+        // SEED WITH zeroGradient, not the default `calculated`.
+        //
+        // READ_IF_PRESENT means the field is created here when the case does
+        // not supply 0/nEps_e -- which is the normal way to enable LMEA. The
+        // default patch type for this constructor is `calculated`, and
+        // fvMatrix REFUSES to solve a field with calculated patches:
+        //
+        //     cannot be called for a calculatedFvPatchField
+        //     on patch <name> of field nEps_e
+        //
+        // so the solver died at the first energy solve and the user had to
+        // hand-write 0/nEps_e to get past it. Enabling a model with one
+        // keyword should not require also knowing which field file to author.
+        //
+        // Constraint patches (wedge, empty, processor, cyclic) still receive
+        // their own types -- GeometricField honours constraintType over a
+        // requested default -- so this is safe on the wedge meshes these
+        // cases use. A case that wants something other than zeroGradient
+        // (e.g. energyDDWallFluxMixed at the electrodes) still supplies its
+        // own 0/nEps_e and that is read instead.
+        zeroGradientFvPatchScalarField::typeName
     ),
 
     // Registered under a name the tabulated evaluators can find. This is the
@@ -1127,6 +1150,30 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
     );
 
     const volScalarField DEps("DEps", energyFactor*DEf_);
+
+    // TRANSPORT RATE, straight from the operators, at the current iterate.
+    //
+    // Sign follows the equation below: ddt(nEps) + div - laplacian + ... = P,
+    // so transport contributes -div + laplacian to d(nEps)/dt -- the same
+    // convention the species use for chemExt_, so the integrator can add it
+    // to the energy row exactly as it adds theirs.
+    //
+    // The scheme names are BORROWED from the electron equation for the same
+    // reason the implicit operators borrow them: this case declares
+    // div(phi_e,n_e) and laplacian(D_e,n_e) and nothing else, so asking for
+    // div(phiEps,nEps_e) here would abort a case that runs today.
+    if (transportEnergy_)
+    {
+        energyTransportRate_ =
+        (
+            -fvc::div(phiEps, nEps_, "div(phi_e,n_e)")()
+           + fvc::laplacian(DEps, nEps_, "laplacian(D_e,n_e)")()
+        )().primitiveField();
+    }
+    else
+    {
+        energyTransportRate_.setSize(mesh_.nCells(), Zero);
+    }
 
     // JOULE HEATING, explicit in phase A: -e Gamma_e . E, which for electrons
     // drifting against the field is a positive power input. Written from the
