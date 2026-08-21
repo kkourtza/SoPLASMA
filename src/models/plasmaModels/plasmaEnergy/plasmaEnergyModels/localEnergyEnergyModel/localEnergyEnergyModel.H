@@ -261,6 +261,14 @@ public:
         //- The transported energy density field.
         const volScalarField& nEps() const { return nEps_; }
 
+        //- Mutable access, for the JOINT outer-loop relaxation coordinator.
+        //  The electron energy is one half of the period-2 cycle that
+        //  relaxation exists to damp; relaxing only the density was measured
+        //  to floor the Aitken factor and never converge.
+        volScalarField& nEpsRef() { return nEps_; }
+
+        virtual volScalarField* nEpsPtr() { return &nEps_; }
+
         //- mu*N as a function of eps [1/(V m s)]. RAW table units -- the
         //  caller divides by the gas density, which changes with T_gas.
         std::function<scalar(scalar)> muNofEps() const;

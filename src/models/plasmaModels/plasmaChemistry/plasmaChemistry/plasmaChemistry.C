@@ -306,6 +306,28 @@ Foam::plasmaChemistry::plasmaChemistry
     odeDict_.add("absTol", odeDict_.getOrDefault<scalar>("absTol", 1e-6), true);
     odeDict_.add("relTol", odeDict_.getOrDefault<scalar>("relTol", 1e-4), true);
 
+    // SUBSTEP BUDGET PER CELL. OpenFOAM's default is 10000, and exceeding it
+    // raises a FatalError -- which plasmaTransport catches (it enables
+    // FatalError.throwExceptions() around the cell loop) and counts as an ODE
+    // failure, so it is recoverable rather than fatal here.
+    //
+    // The problem is the COST of reaching that budget. MEASURED 2026-08-21: on
+    // a diverged LMEA step, one rank sat in rodas23 for over 18 minutes at
+    // full CPU while the other seven waited in an MPI collective. The run
+    // looked alive and was making no progress, and because the outer loop
+    // never reached its corrector cap, `onNonConvergence reduceDeltaT` was
+    // never reached either -- the recovery path was unreachable while a single
+    // cell could grind.
+    //
+    // 2000 keeps ample headroom for genuinely stiff cells (the healthy steps
+    // on that case use tens of substeps) while turning a pathological cell
+    // into a counted failure in a fraction of the time. Raise it per case
+    // through odeCoeffs/maxSteps if a mechanism genuinely needs more.
+    odeDict_.add
+    (
+        "maxSteps", odeDict_.getOrDefault<label>("maxSteps", 2000), true
+    );
+
     solver_ = ODESolver::New(*ode_, odeDict_);
 
     // ---- heavy-chemistry backend -------------------------------------------

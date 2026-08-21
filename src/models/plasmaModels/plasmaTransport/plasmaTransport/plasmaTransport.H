@@ -48,6 +48,7 @@ SourceFiles
 #ifndef plasmaTransport_H
 #define plasmaTransport_H
 
+#include "plasmaOuterRelaxation.H"
 #include "fvCFD.H"
 #include "fvMesh.H"
 #include "PtrList.H"
@@ -617,6 +618,22 @@ protected:
     label chemOuterCount_ = 0;
     label nOuterCorrectors_ = 1;
 
+    //- ADAPTIVE OUTER-LOOP RELAXATION (opt-in:
+    //  plasmaSimulationControls/outerCoupling/adaptiveRelaxation).
+    //
+    //  The species and electron-energy equations couple through a Picard
+    //  iteration inside the outer loop, and above a critical deltaT that
+    //  iteration has gain > 1 and enters a period-2 limit cycle. A FIXED
+    //  under-relaxation factor damps it but the usable value is case-specific
+    //  AND time-varying -- measured on the LMEA benchmark, 0.9 was stable at
+    //  6.19 ps and unstable at 8.03 ps in the same run. Aitken derives the
+    //  factor from the iteration itself, per corrector.
+    bool adaptiveRelax_ = false;
+
+    //- The per-mesh JOINT relaxation coordinator, shared with plasmaEnergy.
+    //  Not owned -- it lives on the registry.
+    plasmaOuterRelaxation* relax_ = nullptr;
+
     //- Charge-imbalance warning emitted once
     mutable bool chargeWarned_ = false;
 
@@ -714,6 +731,33 @@ public:
 
         //- Metadata access
         inline const fvMesh& mesh() const;
+
+        //- Smallest Aitken relaxation factor used over the last time step,
+        //  across every species. This is the outer coupling's STABILITY
+        //  MARGIN: 1 means nothing needed damping at this deltaT, while a
+        //  small value means the Picard iteration is only stable because it
+        //  is being damped hard, i.e. deltaT is near the coupling's limit.
+        //
+        //  plasmaTimeControl consumes it to govern deltaT growth. Without
+        //  that feedback a damped run simply walks deltaT back up to the new
+        //  stability boundary and sits on it -- which is exactly what a fixed
+        //  relaxation factor was measured doing.
+        //
+        //  Returns 1 when adaptive relaxation is off, so a case that does not
+        //  use it imposes no limit.
+        scalar relaxationMargin() const
+        {
+            return relax_ ? relax_->margin() : 1.0;
+        }
+
+        //- Largest joint relaxation factor over the last step. Reported beside
+        //  the minimum so "omega sat near 0.5 all step" is distinguishable
+        //  from "omega swung from 1.0 to 0.18" -- those describe different
+        //  couplings and a single number conflates them.
+        scalar relaxationOmegaMax() const
+        {
+            return relax_ ? relax_->omegaMaxStep() : 1.0;
+        }
         inline plasmaSpecies& species();
         inline const plasmaSpecies& species() const;
 

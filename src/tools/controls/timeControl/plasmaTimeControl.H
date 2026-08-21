@@ -264,7 +264,27 @@ private:
             //  the very collapse it exists to stop.
             scalar deltaT0_ = 0;
 
-            //- Steps accepted WITHOUT the outer loop converging, because the
+            //- Outer-coupling stability margin from the adaptive (Aitken)
+        //  relaxation: min(omega) over the last step. 1 when adaptive
+        //  relaxation is off, so neither threshold below can bind.
+        scalar relaxMargin_ = 1.0;
+
+        //- Largest factor this step, reported beside the minimum
+        scalar relaxOmegaMax_ = 1.0;
+
+        //- Below this, deltaT is not allowed to GROW
+        scalar relaxMarginHold_ = 0.5;
+
+        //- Below this, deltaT is actively SHRUNK by relaxMarginBackoff_
+        scalar relaxMarginShrink_ = 0.2;
+
+        //- Shrink factor applied below relaxMarginShrink_
+        scalar relaxMarginBackoff_ = 0.7;
+
+        //- Whether the margin governed deltaT this step, for reporting
+        bool relaxMarginBound_ = false;
+
+        //- Steps accepted WITHOUT the outer loop converging, because the
             //  dt lever was exhausted (at the floor, or out of retries).
             //  Graceful degradation: the run completes and the user is told
             //  exactly which steps are suspect, rather than the solver either

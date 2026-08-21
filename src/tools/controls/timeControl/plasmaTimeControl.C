@@ -260,6 +260,40 @@ void plasmaTimeControl::read()
             retryCeilingRelax_ =
                 oc.getOrDefault<scalar>("retryCeilingRelax", 1.05);
 
+            // Stability margin from the ADAPTIVE outer-loop relaxation.
+            // plasmaTransport reports min(omega) over the step; ~1 means the
+            // Picard coupling was benign at this deltaT, small means it was
+            // only stable because Aitken damped it hard.
+            //
+            // Without this feedback a damped run simply walks deltaT back up
+            // to the new stability boundary and sits on it -- MEASURED: a
+            // fixed factor of 0.9 passed 6.19 ps, which let the controller
+            // grow deltaT to 8.03 ps, where the same limit cycle returned.
+            // Nothing else in this controller knows that mode exists.
+            //
+            // Inert unless adaptiveRelaxation is on: relaxationMargin() then
+            // returns 1 and neither threshold can bind.
+            // THRESHOLDS: "the relaxation is running out of room", NOT
+            // "the coupling would be unstable undamped".
+            //
+            // omega ~= 1/(1+g), so omega < 0.5 is exactly g > 1 -- the
+            // undamped instability threshold. Keying the governor there was
+            // MEASURED (2026-08-21) to throttle deltaT constantly on the LMEA
+            // case, whose omega naturally sits at 0.37-0.71: it reached only
+            // 5.16 ps where a fixed factor of 0.8 ran stably at 7.65 ps. But
+            // g > 1 is the situation relaxation EXISTS to handle, so it is the
+            // wrong trigger.
+            //
+            // deltaT only needs limiting when the relaxation can no longer
+            // cope, i.e. when omega approaches its own floor (relaxOmegaMin,
+            // default 0.05). Hence thresholds just above it.
+            relaxMarginHold_ =
+                oc.getOrDefault<scalar>("relaxMarginHold", 0.15);
+            relaxMarginShrink_ =
+                oc.getOrDefault<scalar>("relaxMarginShrink", 0.08);
+            relaxMarginBackoff_ =
+                oc.getOrDefault<scalar>("relaxMarginBackoff", 0.7);
+
             if (retryCeilingRelax_ < 1)
             {
                 FatalErrorInFunction
@@ -592,6 +626,32 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         prevPatchVoltage_ = currentVoltage;
     }
 
+    // OUTER-COUPLING STABILITY MARGIN, from the adaptive (Aitken) relaxation.
+    //
+    // Applied here with the other per-step limits so the smallest still wins.
+    // It MUST live in adjustDeltaT and not in setInitialDeltaT: the latter
+    // runs once, so a governor placed there is dead for the whole run -- which
+    // is exactly the bug this replaces, caught because the reported margin sat
+    // at 1 while the banner showed Aitken active with omegaMax = 0.8.
+    //
+    // Deliberately keyed on omega rather than on a non-convergence verdict: a
+    // diverging step can grind indefinitely inside the stiff chemistry
+    // integrator and never reach the corrector cap, so that verdict may never
+    // arrive. omega is available every corrector.
+    relaxMargin_ = transport.relaxationMargin();
+    relaxOmegaMax_ = transport.relaxationOmegaMax();
+    relaxMarginBound_ = false;
+    if (relaxMargin_ < relaxMarginShrink_)
+    {
+        newDeltaT = min(newDeltaT, currentDeltaT*relaxMarginBackoff_);
+        relaxMarginBound_ = true;
+    }
+    else if (relaxMargin_ < relaxMarginHold_)
+    {
+        newDeltaT = min(newDeltaT, currentDeltaT);
+        relaxMarginBound_ = true;
+    }
+
     // The outer loop failing to converge is a TIME-STEP verdict, so it is
     // applied here with the others and the smallest limit still wins. A
     // separate mechanism that set deltaT on its own could override the
@@ -783,6 +843,26 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
                 dVPerStep, lim, maxVoltageRiseRate_,
                 binding, "abs max"
             ).c_str() << nl;
+    }
+
+    // ADAPTIVE-RELAXATION STABILITY MARGIN.
+    //
+    // Without this line there is no way to tell whether the Aitken factor is
+    // doing anything at all -- the start-up banner only says it is enabled.
+    // A margin of 1 means NOTHING was damped at this deltaT: either the
+    // coupling is genuinely benign, or the global factor is being averaged
+    // over a domain where only a few cells oscillate and cannot see them.
+    // Those want opposite fixes, so the number has to be visible.
+    if (relaxMargin_ < 1.0 - SMALL || relaxMarginBound_)
+    {
+        Info<< "    omega [coupling margin]:  min " << relaxMargin_
+            << "  max " << relaxOmegaMax_
+            << (relaxMarginBound_ ? "   <--  deltaT GOVERNED" : "")
+            << nl;
+    }
+    else
+    {
+        Info<< "    omega [coupling margin]:  min 1  (nothing damped)" << nl;
     }
 
     // OUTER-LOOP HALVING, reported beside the other constraints.

@@ -142,6 +142,14 @@ public:
         //- Correct model
         virtual void correct() = 0;
 
+        //- The electron-energy density field, when this model carries one.
+        //  Returns nullptr otherwise (e.g. the local-field model, which has
+        //  no transported energy). Used by plasmaOuterRelaxation to enrol the
+        //  energy in the JOINT outer-loop residual: it is one half of the
+        //  period-2 cycle relaxation exists to damp, and relaxing the density
+        //  alone was measured to floor the factor without converging.
+        virtual volScalarField* nEpsPtr() { return nullptr; }
+
         //- Return the energy equation (Matrix)
         virtual tmp<fvScalarMatrix> eEqn() const = 0;
 

@@ -4,11 +4,14 @@ EXE_INC = \
     -I$(LIB_SRC)/OpenFOAM/lnInclude \
     -I$(LIB_SRC)/OSspecific/POSIX/lnInclude \
     -I$(SoPLASMA_SRC)/constants/lnInclude \
+    -I$(SoPLASMA_SRC)/numerics/lnInclude \
     -I$(SoPLASMA_SRC)/models/electromagnetics/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaSpecies/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaTransport/lnInclude
 
 LIB_LIBS = \
     -lfiniteVolume \
+    -L$(FOAM_USER_LIBBIN) \
+    -lplasmaNumerics \
     -lOpenFOAM \
     -lmeshTools

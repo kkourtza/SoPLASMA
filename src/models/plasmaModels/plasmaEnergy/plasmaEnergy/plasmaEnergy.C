@@ -11,6 +11,7 @@
       See: <http://www.gnu.org/licenses/>.
 \*---------------------------------------------------------------------------*/
 
+#include "plasmaOuterRelaxation.H"
 #include "plasmaEnergy.H"
 #include "localEnergyEnergyModel.H"
 #include "plasmaEnergyModel.H"
@@ -138,6 +139,25 @@ void Foam::plasmaEnergy::solveSpeciesEnergy()
 
             tEqn.ref().relax();
             tEqn.ref().solve(solvers.subDict(key));
+
+            // JOINT outer-loop relaxation: offer this corrector's energy
+            // density. The coordinator applies ONE factor once every enrolled
+            // field has contributed -- the electron density contributes from
+            // plasmaTransport. This half was missing in the first
+            // implementation, and relaxing the density alone was measured to
+            // drive the factor to its floor without converging.
+            //
+            // BEFORE correct(): eps_bar and T_e are DERIVED from nEps_, so
+            // they must follow the relaxed value, not the unrelaxed one.
+            {
+                plasmaOuterRelaxation* r =
+                    plasmaOuterRelaxation::lookup(mesh_);
+                if (r && r->active())
+                {
+                    volScalarField* ne = energyModels_[i].nEpsPtr();
+                    if (ne) { r->contribute(*ne); }
+                }
+            }
 
             // Re-derive AFTER the solve: eps_bar and T_e follow from the new
             // energy density, and everything downstream reads them.
@@ -325,6 +345,57 @@ plasmaEnergy::plasmaEnergy
     energyModels_(species.nSpecies())
 {
     constructModels();
+
+    // ---- JOINT outer-loop relaxation -------------------------------------
+    //
+    // plasmaEnergy is constructed BEFORE plasmaTransport, so it creates the
+    // coordinator; plasmaTransport's New() then finds the same instance.
+    // Enrolment must happen here, before the time loop, because enrol() seeds
+    // the previous iterate from the field's INITIAL value -- the only point at
+    // which a pre-solve value is available without a before-solve hook.
+    {
+        IOdictionary controls
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                mesh_.time().system(),
+                mesh_,
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+        const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
+
+        // LMEA is the case the joint relaxation exists for, so it is the
+        // default there: an electron-energy equation means the n_e / nEps_e
+        // Picard pair exists and can enter the period-2 cycle that killed this
+        // benchmark. A case can still switch it off explicitly.
+        bool hasLMEA = false;
+        forAll(energyModels_, i)
+        {
+            if (energyModels_.set(i) && energyModels_[i].nEpsPtr())
+            {
+                hasLMEA = true;
+                break;
+            }
+        }
+
+        plasmaOuterRelaxation& r =
+            plasmaOuterRelaxation::New(mesh_, oc, hasLMEA);
+
+        if (r.active())
+        {
+            forAll(energyModels_, i)
+            {
+                if (energyModels_.set(i))
+                {
+                    volScalarField* ne = energyModels_[i].nEpsPtr();
+                    if (ne) { r.enrol(*ne); }
+                }
+            }
+        }
+    }
 }
 
 // * * * * * * * * * * * * * * Public Member Functions * * * * * * * * * * * //

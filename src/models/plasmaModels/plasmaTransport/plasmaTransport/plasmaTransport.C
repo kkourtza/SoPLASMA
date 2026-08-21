@@ -257,6 +257,77 @@ plasmaTransport::plasmaTransport
         );
         readChemistry(transportDict);
     }
+
+    // ---- ADAPTIVE OUTER-LOOP RELAXATION (opt-in) ------------------------
+    //
+    // Read from the same file as the rest of the outer-loop settings, so a
+    // user configures the coupling in one place. OFF by default: it changes
+    // the iterates a converging outer loop passes through, and every
+    // validated result in this project predates it.
+    {
+        IOdictionary controls
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                mesh_.time().system(),
+                mesh_,
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+        const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
+
+        // ONE coordinator per mesh, holding the JOINT Aitken estimator.
+        // plasmaEnergy is constructed FIRST and creates it, passing the
+        // LMEA-dependent default; this call finds that instance.
+        relax_ = &plasmaOuterRelaxation::New(mesh_, oc);
+
+        // FOLLOW THE COORDINATOR, do not re-read the switch with a local
+        // default. Reading it here with `false` meant that on an LMEA case
+        // which did not set the key explicitly, plasmaEnergy enrolled nEps_e
+        // while plasmaTransport did NOT enrol n_e -- leaving exactly the
+        // one-field configuration measured to be the WORST of all
+        // (testAitken: 191 correctors and omega on its floor, against 91 for
+        // the joint pair). The tell was the start-up line reading
+        // "1 field(s) in the joint residual" instead of 2.
+        adaptiveRelax_ = relax_->active();
+
+        if (adaptiveRelax_)
+        {
+            // Only the ELECTRON density takes part from this model. The other
+            // species are solved with a diagonal operator and have identically
+            // zero Picard residual -- enrolling them would pad the joint
+            // vector with zeros and dilute the estimate for no benefit.
+            relax_->enrol
+            (
+                species_.numberDensity(species_.electronSpeciesID())
+            );
+
+            Info<< "plasmaTransport: JOINT adaptive outer-loop relaxation"
+                << " (Aitken)" << nl
+                // RESOLVED values from the coordinator, never a second read
+                // of the dictionary: a banner that re-reads can print a
+                // default the solver is not using.
+                << "    relaxOmegaStart " << relax_->omegaStart()
+                << "  (the one knob; omega is computed from corrector 2 on)"
+                << nl
+                << "    floor " << relax_->omegaFloor()
+                << ", ceiling 1 (fixed), descentLimit "
+                << relax_->descentLimit() << " (0 = off)" << nl
+                << "    ONE factor from the CONCATENATED residual of every"
+                << " enrolled field." << nl
+                << "    Measured on the two-field model problem (testAitken,"
+                << " composite gain -1.43):" << nl
+                << "      only n_e relaxed .............. 191 correctors,"
+                << " omega floors at 0.05" << nl
+                << "      both, INDEPENDENT factors ..... never converges" << nl
+                << "      JOINT factor .................. 91 correctors,"
+                << " omega 0.371, no floor" << nl
+                << "    min(omega) over a step is the coupling's stability"
+                << " margin and governs deltaT." << endl;
+        }
+    }
 }
 
 // * * * * * * * * * * * * * * * * Destructors * * * * * * * * * * * * * * * //
@@ -977,6 +1048,21 @@ S_iz_.correctBoundaryConditions();
     // plasmaSimulationProfiler::start("Clamp number densities");
     species_.clampNumberDensities();
     // plasmaSimulationProfiler::stop("Clamp number densities");
+
+    // JOINT outer-loop relaxation: offer this corrector's electron density.
+    //
+    // AFTER the clamp deliberately -- the clamp is part of the iteration map,
+    // so the accepted iterate must be the clamped one or the residual would
+    // describe a map the solver does not actually apply.
+    //
+    // The factor itself is computed by plasmaOuterRelaxation once EVERY
+    // enrolled field has contributed (the electron energy contributes from
+    // plasmaEnergy), because the unstable mode is a property of the PAIR and
+    // is invisible to either field's own residual.
+    if (relax_ && relax_->active())
+    {
+        relax_->contribute(species_.numberDensity(species_.electronSpeciesID()));
+    }
 
     // Transport rate implied by the solution just obtained, for the next outer
     // iteration's chemistry integration:

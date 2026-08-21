@@ -40,6 +40,8 @@ Author
 
 #include <iomanip>
 
+#include "IFstream.H"
+#include "plasmaOuterRelaxation.H"
 #include "fvCFD.H"
 #include "dynamicFvMesh.H"
 #include "regionProperties.H"
@@ -134,6 +136,39 @@ int main(int argc, char *argv[])
             const dictionary& chem = transportDict.subDict("chemistry");
             const fileName mechFile = chem.get<fileName>("mechanism");
 
+            // THE MECHANISM HASH, read from the mechanism dictionary.
+            //
+            // This used to pass `word::null`, and plasmaBoltzmann::ensureTables
+            // only reuses an existing table set when
+            // `!expectedHash.empty() && head.find(expectedHash)`. An empty
+            // hash therefore made the reuse branch UNREACHABLE: this call
+            // re-solved the entire Boltzmann sweep on EVERY launch -- 261
+            // points, minutes of wall clock, for every user of the solver --
+            // and then plasmaReactionRates, which does pass the real hash,
+            // found the freshly written tables and reused them.
+            //
+            // Read the same way plasmaReactionRates reads it
+            // (plasmaReactionRates::readMechanism): the hash may begin with a
+            // digit, which an OpenFOAM word may not, so mechc quotes it and it
+            // must be read as a string.
+            word mechHash = word::null;
+            {
+                IFstream mis(mechFile);
+                if (mis.good())
+                {
+                    dictionary mdict(mis);
+                    if (mdict.found("mechanismHash"))
+                    {
+                        mechHash =
+                            word(string(mdict.get<string>("mechanismHash")));
+                    }
+                }
+                // A missing hash is NOT fatal here: it simply restores the old
+                // always-rebuild behaviour, which is correct if slow.
+                // plasmaReactionRates fails loudly if the mechanism is
+                // unreadable, so this does not mask a broken case.
+            }
+
             plasmaBoltzmann::ensureTables
             (
                 chem,
@@ -145,7 +180,7 @@ int main(int argc, char *argv[])
                 (
                     "tableDir", "constant/plasmaTables"
                 ),
-                word::null
+                mechHash
             );
         }
     }
@@ -368,6 +403,15 @@ int main(int argc, char *argv[])
         {
             transport.discardStep();
             if (energy) energy->discardStep();
+
+            // The relaxation coordinator must forget the abandoned attempt's
+            // iterate history too, or the retry starts from a residual that
+            // describes a step that was thrown away.
+            {
+                plasmaOuterRelaxation* r =
+                    plasmaOuterRelaxation::lookup(gasMesh());
+                if (r) { r->discardStep(); }
+            }
             timeControl.prepareRetry();
             continue;                       // solve this step again, smaller
         }
