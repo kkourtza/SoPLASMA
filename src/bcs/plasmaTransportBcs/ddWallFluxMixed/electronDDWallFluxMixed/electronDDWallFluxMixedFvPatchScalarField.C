@@ -243,10 +243,29 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
         totalSEE += seec_[specI] * max(0.0, phiI / magSf);
     }
 
-    const fvPatchField<scalar>& Df = 
-                 p.lookupPatchField<volScalarField, scalar>("D_" + speciesName);
+    // THE SAME diffusivity the wall flux above was built from -- through the
+    // virtual, so the energy condition divides by D_eps and not by D_e. It
+    // used to look up "D_<species>" directly, which handed the energy field
+    // the electron's coefficient.
+    const plasmaTransportModel& baseModelD =
+        transport.model(speciesDB.speciesID(speciesName));
+    const driftDiffusion& ddModelD = refCast<const driftDiffusion>(baseModelD);
+    const tmp<scalarField> tDf(this->patchDiffusivity(ddModelD));
+    const scalarField& Df = tDf();
 
-    this->refGrad() += totalSEE / (Df + VSMALL);
+    // Guarded on the diffusivity's OWN scale. D is zero until the transport
+    // models are first corrected, and `+ VSMALL` (1e-300) turns that into an
+    // overflow rather than a guard -- which is how this family used to die in
+    // the first Poisson solve.
+    const scalar Dfloor = SMALL*max(gMax(Df), SMALL);
+
+    forAll(Df, faceI)
+    {
+        if (Df[faceI] > Dfloor)
+        {
+            this->refGrad()[faceI] += totalSEE[faceI]/Df[faceI];
+        }
+    }
 }
 
 void electronDDWallFluxMixedFvPatchScalarField::write(Ostream& os) const

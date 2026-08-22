@@ -147,21 +147,88 @@ void energyDDWallFluxMixedFvPatchScalarField::updateCoeffs()
         return;
     }
 
-    // The parent adds the SECONDARY-ELECTRON PARTICLE inflow to refGrad. The
-    // same electrons carry secondaryElectronEnergy_ each into the energy
-    // field, so the contribution here is that many times larger.
+    // The secondary electrons that enter here are the SAME ones the electron
+    // condition already counted; each carries secondaryElectronEnergy_, so the
+    // energy inflow is simply that inflow times that energy.
     //
-    // Captured as a DELTA rather than recomputed, so the ion loop, the
-    // per-species emission coefficients and the diffusivity lookup are
-    // inherited from the electron condition rather than duplicated -- two
-    // copies of that loop is exactly how the electron and energy conditions
-    // would drift apart under a later change.
-    const scalarField grad0(this->refGrad());
-
+    // WAS A DELTA, AND THE DELTA WAS WRONG. The previous version captured
+    // refGrad BEFORE calling the parent and treated it as a baseline:
+    //
+    //     grad0 = refGrad;  parent();  refGrad = grad0 + s*(refGrad - grad0);
+    //
+    // That assumes the parent ACCUMULATES onto refGrad. It does not -- the
+    // base `ddWallFluxMixed::updateCoeffs` RESETS `refGrad() = 0.0` before
+    // adding the emission term. So grad0 was never a baseline; it was the
+    // value left over from the PREVIOUS corrector, which the parent had
+    // already discarded. The recursion that produced,
+    //
+    //     x_{n+1} = s*SEE_{n+1} + (1 - s)*x_n,
+    //
+    // does not settle on s*SEE at all: at the shipped s = 2 it alternates
+    // sign every corrector and never converges. Nothing downstream can damp a
+    // boundary condition that flips sign on each pass.
+    //
+    // After the parent returns, refGrad IS the secondary-electron particle
+    // inflow (the base zeroed it first), so the energy version is one
+    // multiplication. The ion loop, the per-species coefficients and the
+    // diffusivity lookup are still inherited, not duplicated.
+    // The parent has now built the wall flux from the ENERGY's own mu_eps and
+    // D_eps (see patchMobility/patchDiffusivity below), and its refGrad is the
+    // secondary-electron inflow expressed against D_eps. Those are the same
+    // electrons the electron condition emitted; each carries
+    // secondaryElectronEnergy_, so the energy inflow is that inflow times that
+    // energy -- one multiplication, no diffusivity ratio anywhere.
     electronDDWallFluxMixedFvPatchScalarField::updateCoeffs();
 
-    this->refGrad() =
-        grad0 + secondaryElectronEnergy_*(this->refGrad() - grad0);
+    this->refGrad() *= secondaryElectronEnergy_;
+}
+
+
+tmp<scalarField> energyDDWallFluxMixedFvPatchScalarField::patchMobility
+(
+    const driftDiffusion& ddModel
+) const
+{
+    return energyCoefficient("muEps", ddModel, true);
+}
+
+
+tmp<scalarField> energyDDWallFluxMixedFvPatchScalarField::patchDiffusivity
+(
+    const driftDiffusion& ddModel
+) const
+{
+    return energyCoefficient("DEps", ddModel, false);
+}
+
+
+//- The energy's own coefficient, published by localEnergyEnergyModel from the
+//  same expression its laplacian/div use. NOT derived from the electron
+//  coefficient by a factor: the 5/3 is the Maxwellian limit, while these are
+//  tabulated from the EEDF (the model applies a factor of 1 in that case).
+tmp<scalarField> energyDDWallFluxMixedFvPatchScalarField::energyCoefficient
+(
+    const word& fieldName,
+    const driftDiffusion& ddModel,
+    const bool isMobility
+) const
+{
+    if (!this->db().foundObject<volScalarField>(fieldName))
+    {
+        FatalErrorInFunction
+            << "energyDDWallFluxMixed needs `" << fieldName << "`, which"
+               " localEnergyEnergyModel registers." << nl
+            << "    It was not found: this condition is only meaningful with"
+               " an LMEA electron-energy" << nl
+            << "    equation enabled." << nl
+            << exit(FatalError);
+    }
+
+    return tmp<scalarField>::New
+    (
+        this->db().lookupObject<volScalarField>(fieldName)
+            .boundaryField()[this->patch().index()]
+    );
 }
 
 

@@ -627,7 +627,50 @@ protected:
     //  registry is the seam that already exists between them.
     autoPtr<volScalarField> chemPeps_;
     autoPtr<volScalarField> chemLeps_;
+
+    //- DIAGNOSTIC ONLY (never read by any equation): the energy state the
+    //  loss RATE was normalised by, i.e. the `nEps_end` in
+    //  `chemLeps = L/nEps_end`. The energy equation then applies that rate to
+    //  the value it SOLVES for, so the realised loss is L*(nEps_new/nEps_end)
+    //  rather than L. Publishing nEps_end lets that gap be MEASURED against
+    //  the solved field instead of argued about.
+    autoPtr<volScalarField> chemNEpsEnd_;
+
+    //- DIAGNOSTIC ONLY: the mean energy the ODE path evaluated its Joule and
+    //  loss terms AT. The energy model evaluates the SAME formulae at its own
+    //  meanE field. Publishing both lets the two be diffed TERM BY TERM at one
+    //  cell, which is the only way to see why `energySource model` measures
+    //  p = 2.7 while `chemistry` measures p = 1.05 from identical algebra.
+    autoPtr<volScalarField> chemEpsEnd_;
     bool energyInChemistry_ = false;
+
+    //- `energyLossForm` in the chemistry dict: how the ODE hands the electron
+    //  energy's LOSS back to the energy equation.
+    //
+    //    rate  (default) -- chemLeps = L/nEps_end, applied as fvm::Sp to the
+    //                       value the equation SOLVES for. Keeps the loss on
+    //                       the diagonal, which is what preserves positivity
+    //                       at any timestep -- but the realised loss is then
+    //                       L*(nEps_new/nEps_end), not L.
+    //    power           -- J and L both returned as absolute powers and
+    //                       applied explicitly. Consistent by construction,
+    //                       at the cost of the diagonal.
+    //
+    //  MEASURED (order-study bed, 79 joined output times): the rate form's
+    //  relative gap is -3.86e-3 / -2.04e-3 / -1.05e-3 at dt = 4/2/1e-13,
+    //  i.e. CLEANLY O(dt). Since L nearly cancels Joule heating, that small
+    //  relative error is a much larger fraction of the NET source.
+    bool lossAsPower_ = false;
+
+    //- Was `energySource` written by the case, or is this the default? An
+    //  LFA case has no electron-energy equation, so announcing a value it
+    //  never uses is noise -- but a case that SET the key and is having it
+    //  ignored needs to be told.
+    bool energySourceKeySet_ = false;
+
+    //- Announce the energy-source choice once, from where the presence of an
+    //  LMEA model is actually known (it is not known at read time).
+    bool energySourceReported_ = false;
 
     //- `energySource chemistry` in the chemistry dict: integrate the electron
     //  energy with the species instead of sourcing it in the energy model.

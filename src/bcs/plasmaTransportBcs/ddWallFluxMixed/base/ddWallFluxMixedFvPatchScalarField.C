@@ -115,6 +115,35 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
         this->refGrad()       = 0.0;
         this->valueFraction() = 0.0;
     }
+
+    // INITIALISE THE PATCH VALUE. Without this the boundary field is the
+    // uninitialised memory handed out by `mixedFvPatchScalarField(p, iF)`:
+    // that constructor allocates the patch Field and does NOT set it, and
+    // nothing here read the `value` entry, so a case supplying
+    // `value $internalField;` was silently ignored.
+    //
+    // The consequence is not subtle. The first assembly that touches this
+    // field -- chargeDensity, before any species is solved -- picks up that
+    // garbage, and the Poisson solve diverges to nan (measured: ePotential
+    // initial residual 1, final nan, 2000 iterations) or trips SIGFPE. It
+    // looks like a physics blow-up and is not one.
+    //
+    // The IMPLICIT sibling (ddWallFluxImplicit) never had this: it passes the
+    // dictionary down as `fvPatchScalarField(p, iF, dict)`, which reads
+    // `value`. This is the same contract, restored for the mixed family.
+    if (dict.found("value"))
+    {
+        fvPatchScalarField::operator=
+        (
+            scalarField("value", dict, p.size())
+        );
+    }
+    else
+    {
+        // No `value` given: the internal field is the only defensible
+        // starting point, and is what OpenFOAM's own mixed BC falls back to.
+        fvPatchScalarField::operator=(this->patchInternalField());
+    }
 }
 
 // Mapping Constructor
@@ -223,9 +252,12 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
 
     const driftDiffusion& ddModel = refCast<const driftDiffusion>(baseModel);
 
-    // Access the patch mobility, diffusivity and electric field
-    const scalarField& muf = ddModel.mobility().muPatch(p.index());
-    const scalarField& Df = ddModel.diffusivity().DPatch(p.index());
+    // Access the patch mobility, diffusivity and electric field.
+    // Through the virtuals, so the energy condition can substitute its own.
+    const tmp<scalarField> tmuf(this->patchMobility(ddModel));
+    const tmp<scalarField> tDf(this->patchDiffusivity(ddModel));
+    const scalarField& muf = tmuf();
+    const scalarField& Df = tDf();
     const surfaceScalarField& phiE =
             p.boundaryMesh().mesh().lookupObject<surfaceScalarField>("phiE");
 
@@ -304,6 +336,27 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
 
     mixedFvPatchField<scalar>::updateCoeffs();
 }
+
+tmp<scalarField> ddWallFluxMixedFvPatchScalarField::patchMobility
+(
+    const driftDiffusion& ddModel
+) const
+{
+    return tmp<scalarField>::New(ddModel.mobility().muPatch(patch().index()));
+}
+
+
+tmp<scalarField> ddWallFluxMixedFvPatchScalarField::patchDiffusivity
+(
+    const driftDiffusion& ddModel
+) const
+{
+    return tmp<scalarField>::New
+    (
+        ddModel.diffusivity().DPatch(patch().index())
+    );
+}
+
 
 void ddWallFluxMixedFvPatchScalarField::write(Ostream& os) const
 {

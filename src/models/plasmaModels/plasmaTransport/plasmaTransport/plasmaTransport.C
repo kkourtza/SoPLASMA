@@ -1605,14 +1605,31 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         }
         chemEnergyRequested_ = (es == "chemistry");
 
-        // REPORTED EITHER WAY. A setting that is read but never announced
-        // cannot be distinguished from one that was not read at all, which is
-        // exactly how the mis-scoped version of this key went unnoticed.
-        Info<< "plasmaTransport: electron-energy source = " << es
-            << (chemEnergyRequested_
-                 ? "  (integrated with the species in the stiff solver)"
-                 : "  (sourced by the energy model itself)")
-            << endl;
+        const word lf = chemDict.getOrDefault<word>("energyLossForm", "rate");
+        if (lf != "rate" && lf != "power")
+        {
+            FatalIOErrorInFunction(dict)
+                << "unknown energyLossForm `" << lf << "`."
+                   " Valid: rate | power" << exit(FatalIOError);
+        }
+        lossAsPower_ = (lf == "power");
+
+        // Announced with the energy source, for the same reason: it only
+        // means anything when an LMEA model exists.
+
+        // ANNOUNCED, but NOT HERE. A setting that is read and never announced
+        // cannot be told apart from one that was not read at all -- which is
+        // how the mis-scoped version of this key went unnoticed -- so it must
+        // still be reported. The catch is that whether it MEANS anything
+        // depends on there being an electron-energy equation, and no LMEA
+        // model exists yet at read time.
+        //
+        // Printing it regardless told an LFA case, which has no electron
+        // energy at all, that its "electron-energy source = model". That is
+        // not a harmless default: it describes physics the case is not
+        // solving. Reported from enableChemistryEnergy() instead, where the
+        // model's presence is known.
+        energySourceKeySet_ = chemDict.found("energySource");
     }
 
     if (!dict.found("chemistry"))
@@ -2244,6 +2261,47 @@ Foam::plasmaTransport::enableChemistryEnergy()
         lmea = mesh_.lookupObject<plasmaEnergy>("plasmaEnergy").lmeaModel();
     }
 
+    if (!energySourceReported_)
+    {
+        energySourceReported_ = true;
+
+        if (lmea)
+        {
+            Info<< "plasmaTransport: electron-energy source = "
+                << (chemEnergyRequested_ ? "chemistry" : "model")
+                << (chemEnergyRequested_
+                     ? "  (integrated with the species in the stiff solver)"
+                     : "  (sourced by the energy model itself)")
+                << endl;
+
+            if (chemEnergyRequested_)
+            {
+                Info<< "plasmaTransport: electron-energy loss form = "
+                    << (lossAsPower_ ? "power" : "rate")
+                    << (lossAsPower_
+                         ? "  (absolute power, explicit -- consistent, no"
+                           " diagonal)"
+                         : "  (rate on the diagonal -- positive, but the"
+                           " realised loss is L*nEps_new/nEps_end)")
+                    << endl;
+            }
+        }
+        else if (energySourceKeySet_)
+        {
+            // The case asked for something that cannot happen. Silence here
+            // would leave the user believing the setting took effect.
+            WarningInFunction
+                << "`energySource` is set, but this case has no"
+                   " electron-energy (LMEA) model," << nl
+                << "    so there is no electron-energy source to choose."
+                   " The setting is IGNORED." << nl
+                << "    It takes effect only with an LMEA energy equation"
+                   " enabled." << endl;
+        }
+        // No LMEA and no explicit key: nothing to report. An LFA case should
+        // not be told about an equation it is not solving.
+    }
+
     if (lmea && !energyInChemistry_ && chemEnergyRequested_)
     {
         if (!lmea->canExportEnergyCoefficients())
@@ -2322,9 +2380,31 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
                     dimensionedScalar(dimless/dimTime, Zero)
                 )
             );
+            chemNEpsEnd_.reset
+            (
+                new volScalarField
+                (
+                    IOobject("chemNEpsEnd", mesh_.time().timeName(), mesh_,
+                             IOobject::NO_READ, IOobject::NO_WRITE),
+                    mesh_,
+                    dimensionedScalar(dimless/dimVolume, Zero)
+                )
+            );
+            chemEpsEnd_.reset
+            (
+                new volScalarField
+                (
+                    IOobject("chemEpsEnd", mesh_.time().timeName(), mesh_,
+                             IOobject::NO_READ, IOobject::NO_WRITE),
+                    mesh_,
+                    dimensionedScalar(dimless, Zero)
+                )
+            );
         }
         chemPeps_() == dimensionedScalar(chemPeps_().dimensions(), Zero);
         chemLeps_() == dimensionedScalar(chemLeps_().dimensions(), Zero);
+        chemNEpsEnd_() == dimensionedScalar(chemNEpsEnd_().dimensions(), Zero);
+        chemEpsEnd_() == dimensionedScalar(chemEpsEnd_().dimensions(), Zero);
     }
 
     // |E| per cell, for the Joule term inside the integrator.
@@ -2526,9 +2606,15 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
             const scalar J = (lmea->muNofEps()(eps)/N)*ne*Emag*Emag;
             const scalar L = ne*N*lmea->PlossNofEps()(eps);
 
-            chemPeps_().primitiveFieldRef()[celli] = J;
+            // `power`: hand back the NET absolute source and leave the
+            // diagonal empty, so the loss the equation realises is exactly
+            // the L evaluated at the integrated end state.
+            chemPeps_().primitiveFieldRef()[celli] = lossAsPower_ ? (J - L) : J;
             chemLeps_().primitiveFieldRef()[celli] =
-                (yE[nSp] > VSMALL) ? max(L/yE[nSp], 0.0) : 0.0;
+                lossAsPower_ ? 0.0
+              : ((yE[nSp] > VSMALL) ? max(L/yE[nSp], 0.0) : 0.0);
+            chemNEpsEnd_().primitiveFieldRef()[celli] = yE[nSp];
+            chemEpsEnd_().primitiveFieldRef()[celli] = eps;
         }
 
         // The integrated change contains BOTH processes, so the transport part
@@ -2794,9 +2880,32 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                         dimensionedScalar(dimless/dimTime, Zero)
                     )
                 );
+                chemNEpsEnd_.reset
+                (
+                    new volScalarField
+                    (
+                        IOobject("chemNEpsEnd", mesh_.time().timeName(), mesh_,
+                                 IOobject::NO_READ, IOobject::NO_WRITE),
+                        mesh_,
+                        dimensionedScalar(dimless/dimVolume, Zero)
+                    )
+                );
+                chemEpsEnd_.reset
+                (
+                    new volScalarField
+                    (
+                        IOobject("chemEpsEnd", mesh_.time().timeName(), mesh_,
+                                 IOobject::NO_READ, IOobject::NO_WRITE),
+                        mesh_,
+                        dimensionedScalar(dimless, Zero)
+                    )
+                );
             }
             chemPeps_() == dimensionedScalar(chemPeps_().dimensions(), Zero);
             chemLeps_() == dimensionedScalar(chemLeps_().dimensions(), Zero);
+            chemNEpsEnd_()
+                == dimensionedScalar(chemNEpsEnd_().dimensions(), Zero);
+            chemEpsEnd_() == dimensionedScalar(chemEpsEnd_().dimensions(), Zero);
         }
 
         const label nSp = species_.nSpecies();
@@ -3140,9 +3249,13 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                     const scalar J = (lmeaA->muNofEps()(epsC)/NgasA)*neC*Ec*Ec;
                     const scalar L = neC*NgasA*lmeaA->PlossNofEps()(epsC);
 
-                    chemPeps_().primitiveFieldRef()[celli] = J;
+                    chemPeps_().primitiveFieldRef()[celli] =
+                        lossAsPower_ ? (J - L) : J;
                     chemLeps_().primitiveFieldRef()[celli] =
-                        (yE[nSp] > VSMALL) ? max(L/yE[nSp], 0.0) : 0.0;
+                        lossAsPower_ ? 0.0
+                      : ((yE[nSp] > VSMALL) ? max(L/yE[nSp], 0.0) : 0.0);
+                    chemNEpsEnd_().primitiveFieldRef()[celli] = yE[nSp];
+                    chemEpsEnd_().primitiveFieldRef()[celli] = epsC;
                 }
 
                 // An ODE solver can fail on a step far longer than the
@@ -3246,9 +3359,13 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 const scalar J = (lmeaA->muNofEps()(epsC)/NgasA)*neC*Ec*Ec;
                 const scalar Lp = neC*NgasA*lmeaA->PlossNofEps()(epsC);
 
-                chemPeps_().primitiveFieldRef()[celli] = J;
+                chemPeps_().primitiveFieldRef()[celli] =
+                    lossAsPower_ ? (J - Lp) : J;
                 chemLeps_().primitiveFieldRef()[celli] =
-                    (nEpsC > VSMALL) ? max(Lp/nEpsC, 0.0) : 0.0;
+                    lossAsPower_ ? 0.0
+                  : ((nEpsC > VSMALL) ? max(Lp/nEpsC, 0.0) : 0.0);
+                chemNEpsEnd_().primitiveFieldRef()[celli] = nEpsC;
+                chemEpsEnd_().primitiveFieldRef()[celli] = epsC;
             }
         }
 

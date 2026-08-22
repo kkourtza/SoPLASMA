@@ -90,6 +90,17 @@ protected:
         //  otherwise inferred from the field name.
         word resolveSpeciesName() const;
 
+        //- Transport coefficients this condition builds its wall flux from.
+        //
+        //  VIRTUAL because the field being solved decides them. A density
+        //  equation is carried by the SPECIES' mu and D; the LMEA energy
+        //  equation is carried by the ENERGY's mu_eps and D_eps, which are
+        //  tabulated from the EEDF and are NOT a fixed multiple of the
+        //  electron ones. Hard-coding the species coefficients here silently
+        //  gave the energy condition the electron's wall flux.
+        virtual tmp<scalarField> patchMobility(const driftDiffusion&) const;
+        virtual tmp<scalarField> patchDiffusivity(const driftDiffusion&) const;
+
         //- Constant Temperature Value
         dimensionedScalar TValue_;
 

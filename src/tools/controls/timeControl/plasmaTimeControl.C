@@ -356,6 +356,7 @@ void plasmaTimeControl::read()
 
         // Old key still read, so existing cases load -- but it is the same
         // control, not a second one.
+        const bool haveOldValue = dict_.found("maxVoltageRiseRate");
         maxVoltageRiseRate_ =
             dict_.lookupOrDefault<scalar>
             (
@@ -363,6 +364,49 @@ void plasmaTimeControl::read()
             );
 
         limitVoltageRiseRate_ = (maxVoltageRiseRate_ > 0);
+
+        // MIGRATION, and it is not cosmetic. Before the four keys were
+        // collapsed into one, the limiter was gated by a SEPARATE switch:
+        //
+        //     limitVoltageRiseRate  (Switch, default FALSE)
+        //
+        // so a case carrying `maxVoltageRiseRate 1` with no switch had the
+        // limiter OFF, and the stray number never did anything. Reading the
+        // old key alone would now turn that case ON at 1 V/step -- against an
+        // 18.75 kV ramp, a run that never finishes. Measured on `cmp-lfa`,
+        // whose dV/step had peaked at 2739 V with the limiter off.
+        //
+        // A silent 2700x change in a case's driving term is worse than any
+        // amount of deprecation noise, so the OLD GATE STILL DECIDES for
+        // dictionaries written in the old vocabulary: value alone means off,
+        // exactly as it did before. Cases that genuinely asked for it
+        // (`limitVoltageRiseRate true`) keep the behaviour they had.
+        if (haveOldValue && !dict_.found("maxVoltageRisePerStep"))
+        {
+            const Switch oldGate
+            (
+                dict_.lookupOrDefault<Switch>("limitVoltageRiseRate", false)
+            );
+
+            if (!oldGate && limitVoltageRiseRate_)
+            {
+                limitVoltageRiseRate_ = false;
+
+                WarningInFunction
+                    << "this case sets the DEPRECATED `maxVoltageRiseRate "
+                    << maxVoltageRiseRate_ << "` without" << nl
+                    << "    `limitVoltageRiseRate true`. Under the old keys"
+                    << " that meant the limiter was OFF," << nl
+                    << "    so it is left OFF here and the value is ignored"
+                    << " -- honouring it would silently" << nl
+                    << "    change the driving term of a case that ran fine."
+                    << nl << nl
+                    << "    To limit the voltage rise, use the new key:"
+                    << " maxVoltageRisePerStep <volts>;" << nl
+                    << "    (100 is the default for new cases; 0 disables.)"
+                    << endl;
+            }
+        }
         printVoltageRiseRate_ = limitVoltageRiseRate_;
 
         if (limitVoltageRiseRate_)
@@ -1105,13 +1149,31 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
     // becomes a fixed iteration count again. That is exactly the state the
     // shipped streamer case was in: outer tolerance 1e-10 against a linear
     // tolerance of 1e-10, 4 of 4 correctors used on all 3000 steps.
+    //
+    // SCOPE IS DELIBERATELY EVERY SOLVER, not just the fields that gate the
+    // loop. Fields solved each corrector but left out of `gateFields` (n_e and
+    // n_pIon under the default gate) still feed the gated equations, so a
+    // loose solve on one of them can make the outer criterion unreachable just
+    // as surely as a loose solve on a gated one. A conservative check that
+    // fails LOUDLY is the right trade here; the cost of getting it wrong is
+    // the silent fixed-iteration-count bug described above.
+    //
+    // The binding solver is NAMED. Reporting only the value leaves the user
+    // grepping the case for whichever entry happens to be loosest -- which is
+    // exactly what happened when a `T_gas` entry, irrelevant to the gate,
+    // turned out to be the one setting the floor.
     scalar worstInner = 0;
+    word worstInnerName("(none)");
     const dictionary& solvers = mesh.solution().subDict("solvers");
     for (const entry& e : solvers)
     {
         if (!e.isDict()) continue;
-        worstInner =
-            max(worstInner, e.dict().getOrDefault<scalar>("tolerance", 0));
+        const scalar t = e.dict().getOrDefault<scalar>("tolerance", 0);
+        if (t > worstInner)
+        {
+            worstInner = t;
+            worstInnerName = e.keyword();
+        }
     }
 
     if (worstInner > 0 && tol <= 10*worstInner)
@@ -1119,7 +1181,8 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
         FatalErrorInFunction
             << "outerCoupling/tolerance (" << tol << ") is not comfortably"
             << " above the linear-solver" << nl
-            << "    tolerance (" << worstInner << ")." << nl << nl
+            << "    tolerance (" << worstInner << "), set by solvers/"
+            << worstInnerName << "." << nl << nl
             << "    The outer loop measures how much the coupled solution"
             << " still moves between" << nl
             << "    correctors. It cannot resolve a change smaller than the"
@@ -1129,8 +1192,12 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
             << "    maxCorrectors every step -- a fixed iteration count"
             << " wearing the name of a" << nl
             << "    convergence test." << nl << nl
-            << "    Use at least 10x the linear-solver tolerance, i.e. >= "
-            << 10*worstInner << "." << nl
+            << "    Use MORE than 10x the linear-solver tolerance. Note"
+            << " that 10x exactly is" << nl
+            << "    rejected by this very test, so the next round decade is"
+            << " the safe choice:" << nl
+            << "    set outerCoupling/tolerance >= " << 100*worstInner
+            << ", or tighten solvers/" << worstInnerName << "." << nl
             << exit(FatalError);
     }
 

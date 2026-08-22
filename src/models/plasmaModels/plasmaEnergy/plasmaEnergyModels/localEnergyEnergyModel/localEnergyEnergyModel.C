@@ -138,6 +138,20 @@ localEnergyEnergyModel::localEnergyEnergyModel
         mesh,
         dimensionedScalar("zero", dimensionSet(0, 2, -1, 0, 0, 0, 0), 0.0)
     ),
+    DEpsEff_
+    (
+        IOobject("DEps", mesh.time().timeName(), mesh,
+                 IOobject::NO_READ, IOobject::NO_WRITE),
+        mesh,
+        dimensionedScalar("zero", dimensionSet(0, 2, -1, 0, 0, 0, 0), 0.0)
+    ),
+    muEpsEff_
+    (
+        IOobject("muEps", mesh.time().timeName(), mesh,
+                 IOobject::NO_READ, IOobject::NO_WRITE),
+        mesh,
+        dimensionedScalar("zero", dimensionSet(-1, 0, 2, 0, 0, 1, 0), 0.0)
+    ),
     PlossN_
     (
         IOobject("PlossN_lmea", mesh.time().timeName(), mesh,
@@ -670,6 +684,17 @@ void localEnergyEnergyModel::correct()
     muE_->correct(muEf_);
     muEps_->correct(muEpsf_);
     DE_->correct(DEf_);
+
+    // Published for boundary conditions, from the SAME expression the energy
+    // equation uses below, so the two cannot drift apart.
+    {
+        const dimensionedScalar energyFactor
+        (
+            "energyFactor", dimless, energyCoeffsTabulated_ ? 1.0 : 5.0/3.0
+        );
+        DEpsEff_  == energyFactor*DEf_;
+        muEpsEff_ == energyFactor*muEpsf_;
+    }
 
     PlossN_ == dimensionedScalar("zero", PlossN_.dimensions(), 0.0);
 
@@ -1350,18 +1375,78 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
         const scalarField& diagF = tEqn->diag();
         const scalarField& VF = mesh_.V();
 
-        scalarList q(9, Zero);
+        // REPORT WHAT THE MATRIX RECEIVED, not what this model would have
+        // built. Under `energySource chemistry` the source terms are REPLACED
+        // by Psrc/Lsrc above, so reporting Lrate/jouleHeating here described a
+        // matrix that was never assembled -- the exact failure the comment at
+        // the top of this block warns against.
+        //
+        // The LOSS-RATE GAP (q[9]..q[11]) is the quantity under test:
+        // chemLeps is L/nEps_end, but the equation applies it to the nEps it
+        // SOLVES for, so the realised loss is L*(nEps_new/nEps_end). If that
+        // ratio departs from 1 by O(dt) -- halving as dt halves -- the loss
+        // term is the first-order defect. If it does not scale, the candidate
+        // is refuted.
+        const scalarField* nEpsEndF = nullptr;
+        if (mesh_.foundObject<volScalarField>("chemNEpsEnd"))
+        {
+            nEpsEndF =
+               &mesh_.lookupObject<volScalarField>("chemNEpsEnd")
+                .primitiveField();
+        }
+        const scalarField* epsEndF = nullptr;
+        if (mesh_.foundObject<volScalarField>("chemEpsEnd"))
+        {
+            epsEndF =
+               &mesh_.lookupObject<volScalarField>("chemEpsEnd")
+                .primitiveField();
+        }
+
+        // TERM-BY-TERM DIFF OF THE TWO SOURCE PATHS.
+        //
+        // `energySource model` measures p = 2.7 and `chemistry` p = 1.05 from
+        // algebra that is IDENTICAL on paper. Rather than guess which term
+        // differs -- eight hypotheses have been tried, four refuted by
+        // measurement -- both paths are evaluated at the same cell and the
+        // same instant, and printed side by side:
+        //
+        //   eps    : the model's meanE FIELD vs the ODE's integrated end state
+        //   mu     : the SAME table, looked up at those two eps
+        //   J, L   : the assembled terms
+        //
+        // Whichever line shows the O(dt) discrepancy IS the defect; the ones
+        // that agree are eliminated without further argument.
+        scalarList q(18, Zero);
         if (Pstream::myProcNo() == own && iW >= 0)
         {
             q[0] = epsW;
             q[1] = ddtT[iW];
             q[2] = divT[iW];
             q[3] = lapT[iW];
-            q[4] = Lrate[iW]*nEps_[iW];
-            q[5] = dSdEps_[iW]*nEps_[iW];
-            q[6] = jouleHeating[iW];
+            q[4] = Lsrc[iW]*nEps_[iW];
+            q[5] = chemOwnsSource ? 0.0 : dSdEps_[iW]*nEps_[iW];
+            q[6] = Psrc[iW];
             q[7] = diagF[iW]/max(VF[iW], VSMALL);  // per unit volume
             q[8] = neI2[iW];
+            q[9] = nEpsEndF ? (*nEpsEndF)[iW] : 0.0;
+            q[10] = nEps_[iW];
+            // L itself = rate * the state it was normalised BY.
+            q[11] = nEpsEndF ? Lsrc[iW]*(*nEpsEndF)[iW] : 0.0;
+
+            // --- MODEL path: evaluated at the meanE FIELD ---
+            q[12] = epsW;                       // eps_model = nEps/n_e
+            q[13] = muEf_[iW];                  // mu at the field eps
+            q[14] = jouleHeating[iW];           // J_model
+            q[15] = Lrate[iW]*nEps_[iW];        // L_model (absolute power)
+
+            // --- ODE path: evaluated at the integrated end state ---
+            q[16] = epsEndF ? (*epsEndF)[iW] : 0.0;
+            // The SAME table the ODE used, looked up here at the ODE's eps,
+            // so a difference in q[13] vs q[17] is the eps, not the table.
+            q[17] = (epsEndF && (*epsEndF)[iW] > 0)
+                  ? muNofEps()((*epsEndF)[iW])
+                     /species_.backgroundDensity().value()
+                  : 0.0;
         }
         forAll(q, i) reduce(q[i], sumOp<scalar>());
 
@@ -1374,6 +1459,35 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
             << "      diag/V " << q[7]
             << "   (a diag/V near zero is the SIGFPE; transport >> Joule"
                " means the energy is DELIVERED, not generated)" << endl;
+
+        if (chemOwnsSource && q[9] > VSMALL)
+        {
+            const scalar ratio = q[10]/q[9];
+            Info<< "      LOSS-RATE GAP: nEps_end " << q[9]
+                << "  nEps_solved " << q[10] << nl
+                << "        ratio " << ratio
+                << "  rel.gap " << (ratio - 1.0)
+                << "   L " << q[11] << "  realised " << q[4] << nl
+                << "        (rel.gap ~ O(dt) and halving with dt =>"
+                   " the loss term is the first-order defect)" << endl;
+
+            const scalar dEps = q[16] > 0 ? (q[12] - q[16])/q[16] : 0.0;
+            const scalar dMu  = q[17] > 0 ? (q[13] - q[17])/q[17] : 0.0;
+            const scalar dJ   = q[6]  != 0 ? (q[14] - q[6])/q[6]  : 0.0;
+            const scalar dL   = q[11] != 0 ? (q[15] - q[11])/q[11] : 0.0;
+
+            Info<< "      PATH DIFF (model - ODE)/ODE at the same cell:" << nl
+                << "        eps  model " << q[12] << "  ode " << q[16]
+                << "   rel " << dEps << nl
+                << "        mu   model " << q[13] << "  ode " << q[17]
+                << "   rel " << dMu << nl
+                << "        J    model " << q[14] << "  ode " << q[6]
+                << "   rel " << dJ << nl
+                << "        L    model " << q[15] << "  ode " << q[11]
+                << "   rel " << dL << nl
+                << "        (the line whose rel is O(dt) IS the defect;"
+                   " lines that agree are eliminated)" << endl;
+        }
     }
 
     return tEqn;

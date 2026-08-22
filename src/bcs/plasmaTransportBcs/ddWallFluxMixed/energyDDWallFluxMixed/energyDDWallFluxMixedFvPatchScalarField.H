@@ -65,6 +65,28 @@ protected:
     //  there is no rigid calculation to make automatically.
     scalar secondaryElectronEnergy_;
 
+    //- The ENERGY's transport coefficients, not the electron's.
+
+    virtual tmp<scalarField> patchMobility(const driftDiffusion&) const;
+
+    virtual tmp<scalarField> patchDiffusivity(const driftDiffusion&) const;
+
+
+    //- Fetch a coefficient published by localEnergyEnergyModel.
+
+    tmp<scalarField> energyCoefficient
+
+    (
+
+        const word& fieldName,
+
+        const driftDiffusion& ddModel,
+
+        const bool isMobility
+
+    ) const;
+
+
     virtual tmp<scalarField> calcAbsorptionVelocity
     (
         const dimensionedScalar& m,

@@ -131,6 +131,22 @@ private:
     volScalarField muEf_;      // particle mobility
     volScalarField muEpsf_;    // energy mobility
     volScalarField DEf_;       // energy diffusivity
+
+    //- The EFFECTIVE energy diffusivity actually used by the energy equation,
+    //  registered as `DEps` so boundary conditions can look it up instead of
+    //  reconstructing it.
+    //
+    //  It is NOT a fixed multiple of the electron diffusivity. When
+    //  `energyMobility`/`energyDiffusivity` are tabulated (muEpsN/DEpsN from
+    //  the EEDF) this IS the tabulated coefficient and the factor is 1; the
+    //  5/3 only ever applies as the MAXWELLIAN FALLBACK when they are not
+    //  tabulated. Anything downstream that assumes 5/3 is wrong exactly in the
+    //  case the solver is meant for.
+    volScalarField DEpsEff_;
+
+    //- The EFFECTIVE energy mobility, registered as `muEps`, for the same
+    //  reason and with the same caveat as DEpsEff_.
+    volScalarField muEpsEff_;
     volScalarField PlossN_;
 
     //- SOURCE SENSITIVITY dS/deps, Hagelaar's linearisation. Implicit in how
