@@ -1176,6 +1176,128 @@ int main()
             << " about 4x." << endl;
     }
 
+    // ---- CASE 14: CAN rho REPLACE omega AS THE deltaT GOVERNOR? ----------
+    //
+    // THE PROBLEM. plasmaTimeControl governs deltaT on `relaxMargin_`, the
+    // Aitken min(omega). Anderson has no omega, so that governor would
+    // silently stop governing the moment Anderson were enabled -- and the log
+    // would still print a margin, which is worse than printing nothing.
+    //
+    // rho = max ||r_k||/||r_{k-1}|| over the step is defined for ANY scheme.
+    // But "defined" is not "carries the signal", and that has to be measured.
+    //
+    // WHY HERE AND NOT ON THE STREAMER. On the CFD the only available check is
+    // whether rho agrees with OMEGA -- one opinion against another. Here the
+    // loop gain is set directly, so GROUND TRUTH is known: the step either
+    // reached tol within the budget or it did not. That makes this the
+    // stronger test as well as the one that runs in a second rather than an
+    // hour.
+    //
+    // Loop gain stands in for deltaT: it is what grows as deltaT grows.
+    {
+        const label n = 100;
+        const label budget = 20;
+        const scalar ratio = 1.3/1.1;
+
+        Info<< nl << "CASE 14  can rho govern deltaT where omega does?" << nl
+            << "        loop gain stands in for deltaT; budget " << budget
+            << " correctors/step" << endl;
+        Info<< "        gain      omega_min     rho_max   converged?" << endl;
+
+        DynamicList<scalar> omegas, rhos;
+        DynamicList<bool> converged;
+
+        for (label gi = 0; gi < 12; ++gi)
+        {
+            const scalar G = 0.02*Foam::pow(1.6, scalar(gi));
+            const scalar gab = Foam::sqrt(G*ratio);
+            const scalar gba = Foam::sqrt(G/ratio);
+
+            scalarField a(n, 1.0), b(n, 1.0);
+            aitkenRelaxation rJ("gov", 1.0, wMinBound, wMaxBound);
+            rJ.reset();
+
+            scalar wMin = 1.0, rhoMax = 0.0, rPrev = -1.0;
+            bool conv = false;
+
+            for (label k = 0; k < budget; ++k)
+            {
+                scalarField rj(2*n);
+                forAll(a, c) { rj[c]     = ( gab*b[c]) - a[c]; }
+                forAll(b, c) { rj[n + c] = (-gba*a[c]) - b[c]; }
+
+                // rho FIRST, exactly as plasmaOuterRelaxation::applyJoint does
+                scalar rN = 0;
+                forAll(rj, c) { rN += rj[c]*rj[c]; }
+                rN = Foam::sqrt(rN);
+                if (rPrev > VSMALL) { rhoMax = max(rhoMax, rN/rPrev); }
+                rPrev = rN;
+
+                const scalar w = rJ.omega(rj);
+                wMin = min(wMin, w);
+
+                forAll(a, c) { a[c] += w*rj[c];     }
+                forAll(b, c) { b[c] += w*rj[n + c]; }
+
+                scalar nrm = 0;
+                forAll(a, c) { nrm = max(nrm, max(mag(a[c]), mag(b[c]))); }
+                if (nrm < tol) { conv = true; break; }
+                if (nrm > 1e12) break;
+            }
+
+            omegas.append(wMin);
+            rhos.append(rhoMax);
+            converged.append(conv);
+
+            Info<< "        " << G << "\t" << wMin << "\t" << rhoMax
+                << "\t" << (conv ? "yes" : "NO") << endl;
+        }
+
+        // SEPARATION, not correlation. A governor needs a THRESHOLD that tells
+        // the two populations apart; a correlation that does not separate them
+        // is useless. Best achievable accuracy is reported for each, together
+        // with the majority-class baseline -- the score a constant "always
+        // says no" classifier would get, which is how a useless threshold can
+        // still look good.
+        const label N = omegas.size();
+        label nConv = 0;
+        forAll(converged, i) { if (converged[i]) ++nConv; }
+        const scalar baseline =
+            max(scalar(nConv), scalar(N - nConv))/scalar(N);
+
+        auto bestAcc = [&](const DynamicList<scalar>& v, const bool below)
+        {
+            scalar best = 0;
+            forAll(v, t)
+            {
+                label hit = 0;
+                forAll(v, i)
+                {
+                    // `below`: predict converged when v < threshold (rho);
+                    // otherwise predict converged when v >= threshold (omega).
+                    const bool pred = below ? (v[i] < v[t]) : (v[i] >= v[t]);
+                    if (pred == converged[i]) ++hit;
+                }
+                best = max(best, scalar(hit)/scalar(N));
+            }
+            return best;
+        };
+
+        Info<< nl << "        separating CONVERGED from NOT, over " << N
+            << " gains:" << nl
+            << "          majority-class baseline : " << baseline << nl
+            << "          best omega threshold    : " << bestAcc(omegas, false)
+            << nl
+            << "          best rho threshold      : " << bestAcc(rhos, true)
+            << endl;
+        Info<< "        -> rho can govern only if it separates AT LEAST as well"
+            << " as omega AND" << nl
+            << "           beats the baseline. Equal-to-baseline means the"
+            << " threshold is doing" << nl
+            << "           nothing and the apparent skill is the class"
+            << " imbalance." << endl;
+    }
+
     Info<< nl << "=== end ===" << nl << endl;
     return 0;
 }

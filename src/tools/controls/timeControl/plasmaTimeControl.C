@@ -988,9 +988,17 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     // prints the data to answer it.
     if (relaxContraction_ > 0)
     {
+        // NOTE THE THRESHOLD. rho >= 1 means the residual GREW, which is a
+        // fact worth flagging -- but it is NOT the level a governor should key
+        // on, and the earlier wording ("did NOT contract") invited exactly
+        // that reading. MEASURED in testAitken CASE 14 against ground truth:
+        // the outer loop stops converging within a 20-corrector budget at
+        // rho ~ 0.38, while rho only reaches 1.0 at a loop gain SEVEN TIMES
+        // stiffer. A step must contract fast enough to FINISH, not merely
+        // contract, so a governor keyed at 1 would be far too permissive.
         Info<< "    rho [contraction]:        max " << relaxContraction_
             << (relaxContraction_ >= 1.0
-                    ? "   <--  did NOT contract" : "")
+                    ? "   <--  residual GREW" : "")
             << "   (diagnostic; omega still governs)" << nl;
     }
 
