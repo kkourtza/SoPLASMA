@@ -172,6 +172,23 @@ class plasmaOuterRelaxation
         scalar rNormPrev_;
         scalar contractionMaxStep_;
 
+        //- How many FURTHER steps stay on Anderson after an escalation.
+        //
+        //  The escalation trigger is a failed Aitken step, which costs a full
+        //  maxCorrectors attempt to detect. MEASURED on the fast LMEA bed: 12
+        //  escalations, 11 of which converged at the SAME deltaT that Aitken
+        //  had just failed at -- a 92% success rate -- but 260 correctors were
+        //  burned detecting them, making the scheme a net loss on wall clock.
+        //
+        //  Stiffness is temporally correlated, so a step that needed Anderson
+        //  is a good predictor that the next few will too. Staying escalated
+        //  amortises one detection over several steps instead of re-paying it.
+        //  0 restores the pay-per-step behaviour.
+        label andersonStickySteps_;
+
+        //- Last time index at which Anderson was in use, for the sticky window.
+        label lastEscalatedIndex_;
+
         //- Time index this step was escalated to Anderson at, or -1.
         //
         //  Keyed on the INDEX rather than a bool that has to be reset:

@@ -104,6 +104,9 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
     // -- and 4 rests on ONE case. Sweep it before trusting it on a new problem.
     andersonDepth_(oc.getOrDefault<label>("andersonDepth", 4)),
     andersonBeta_(oc.getOrDefault<scalar>("andersonBeta", 1.0)),
+    // Sticky window. 5 is a starting point, not a measured optimum.
+    andersonStickySteps_(oc.getOrDefault<label>("andersonStickySteps", 5)),
+    lastEscalatedIndex_(-1000000),
     anderson_("joint", andersonDepth_, andersonBeta_),
     timeIndex_(-1),
     omega_(1.0),
@@ -311,9 +314,20 @@ Foam::word Foam::plasmaOuterRelaxation::effectiveScheme() const
 {
     if (scheme_ != "adaptive") return scheme_;
 
-    return (escalatedTimeIndex_ == mesh_.time().timeIndex())
-         ? word("anderson")
-         : word("aitken");
+    const label ti = mesh_.time().timeIndex();
+
+    // Escalated for THIS step, or still inside the sticky window opened by a
+    // recent one. The window is what makes the detection cost amortise: without
+    // it every hard step pays a full failed Aitken attempt to be recognised.
+    if (escalatedTimeIndex_ == ti) return word("anderson");
+
+    if (andersonStickySteps_ > 0
+     && ti - lastEscalatedIndex_ <= andersonStickySteps_)
+    {
+        return word("anderson");
+    }
+
+    return word("aitken");
 }
 
 
@@ -329,11 +343,24 @@ bool Foam::plasmaOuterRelaxation::escalateForRetry()
     if (escalatedTimeIndex_ == ti) return false;
 
     escalatedTimeIndex_ = ti;
+    lastEscalatedIndex_ = ti;
 
     Info<< "  outer loop did not converge -- ESCALATING to Anderson (depth "
         << andersonDepth_ << ") and re-running" << nl
         << "    at the SAME deltaT. If it fails again the step is shortened as"
-           " usual." << endl;
+           " usual." << nl;
+
+    if (andersonStickySteps_ > 0)
+    {
+        Info<< "    Staying on Anderson for the next " << andersonStickySteps_
+            << " step(s): stiffness is temporally correlated, and" << nl
+            << "    re-detecting it costs a full failed attempt each time."
+            << endl;
+    }
+    else
+    {
+        Info<< endl;
+    }
 
     return true;
 }
