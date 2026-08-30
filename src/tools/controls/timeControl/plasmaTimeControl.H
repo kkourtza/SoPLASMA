@@ -445,7 +445,13 @@ public:
         //  INDEX is deliberately left alone -- every per-step cache in the
         //  solver is keyed on it, and oldTime() rotates on it, so holding it
         //  fixed is what makes a retry land on the same start state.
-        void prepareRetry();
+        //- Re-run the discarded step.
+        //
+        //  `keepDeltaT` re-runs at the SAME deltaT instead of halving, for the
+        //  adaptive scheme's one escalation to Anderson. Nothing else about
+        //  the retry changes; a second failure comes back here with
+        //  keepDeltaT false and takes the usual ladder.
+        void prepareRetry(const bool keepDeltaT = false);
 
         //- Is deltaT sitting on the floor, so that halving it again would
         //  achieve nothing? Retrying costs a full solve, so there is no point

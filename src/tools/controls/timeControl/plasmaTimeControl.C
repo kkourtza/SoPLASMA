@@ -1537,7 +1537,7 @@ bool plasmaTimeControl::stepRejected() const
 }
 
 
-void plasmaTimeControl::prepareRetry()
+void plasmaTimeControl::prepareRetry(const bool keepDeltaT)
 {
     const label ti = runTime_.timeIndex();
     if (ti != outerRetryTimeIndex_)
@@ -1552,23 +1552,36 @@ void plasmaTimeControl::prepareRetry()
     // Never descend through the floor: stepRejected() already refuses to
     // retry AT it, and this keeps the last admissible rung on it rather than
     // below it.
-    const scalar dtNew = max(0.5*dtOld, minDeltaT_);
+    // KEEP deltaT for the adaptive scheme's escalation to Anderson: the point
+    // is to try a STRONGER SOLVER at the same step before conceding that the
+    // step is too long. Halving as well would confound the two and make the
+    // escalation impossible to attribute.
+    //
+    // The failure memory is deliberately NOT armed here either. dtFailCeiling_
+    // and noGrowthNextStep_ record "this deltaT is beyond what the coupling can
+    // do", and that verdict has not been reached yet -- a different solver is
+    // still to be tried at it. Arming them on an escalation would throttle
+    // deltaT for a failure that was subsequently converted into a success.
+    const scalar dtNew = keepDeltaT ? dtOld : max(0.5*dtOld, minDeltaT_);
 
-    if (dtNew > 0.5*dtOld)
+    if (!keepDeltaT)
     {
-        ++floorHits_;
-    }
+        if (dtNew > 0.5*dtOld)
+        {
+            ++floorHits_;
+        }
 
-    // Remember the scale that failed, so the controller stops climbing back
-    // into it every few steps, and forbid growth on the next step.
-    if (retryCeilingFactor_ > 0)
-    {
-        const scalar ceiling = retryCeilingFactor_*dtOld;
-        dtFailCeiling_ = (dtFailCeiling_ > 0)
-                       ? min(dtFailCeiling_, ceiling)
-                       : ceiling;
+        // Remember the scale that failed, so the controller stops climbing
+        // back into it every few steps, and forbid growth on the next step.
+        if (retryCeilingFactor_ > 0)
+        {
+            const scalar ceiling = retryCeilingFactor_*dtOld;
+            dtFailCeiling_ = (dtFailCeiling_ > 0)
+                           ? min(dtFailCeiling_, ceiling)
+                           : ceiling;
+        }
+        noGrowthNextStep_ = true;
     }
-    noGrowthNextStep_ = true;
 
     // Land the clock on the shortened step, measured from the CAPTURED start
     // of this step rather than from anything reconstructed out of the current
@@ -1577,11 +1590,20 @@ void plasmaTimeControl::prepareRetry()
     runTime_.setDeltaT(dtNew);
     runTime_.setTime(tStepStart_ + dtNew, ti);
 
-    Info<< "  outer loop did not converge -- DISCARDING this step and"
-        << " re-running it" << nl
-        << "    retry " << outerRetries_ << " of " << outerMaxRetries_
-        << ", deltaT " << dtOld << " -> " << dtNew
-        << ", t = " << runTime_.value() << endl;
+    if (keepDeltaT)
+    {
+        Info<< "    retry " << outerRetries_ << " of " << outerMaxRetries_
+            << ", deltaT UNCHANGED at " << dtNew
+            << ", t = " << runTime_.value() << endl;
+    }
+    else
+    {
+        Info<< "  outer loop did not converge -- DISCARDING this step and"
+            << " re-running it" << nl
+            << "    retry " << outerRetries_ << " of " << outerMaxRetries_
+            << ", deltaT " << dtOld << " -> " << dtNew
+            << ", t = " << runTime_.value() << endl;
+    }
 
     // The step is being redone, so the verdict from the attempt just thrown
     // away must not also shrink the NEXT step in adjustDeltaT().

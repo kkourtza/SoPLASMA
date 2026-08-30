@@ -111,17 +111,49 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
     omegaMaxStep_(0.0),
     nRelaxed_(0),
     rNormPrev_(0),
-    contractionMaxStep_(0)
+    contractionMaxStep_(0),
+    escalatedTimeIndex_(-1)
 {
-    if (scheme_ != "aitken" && scheme_ != "anderson")
+    if (scheme_ != "aitken" && scheme_ != "anderson" && scheme_ != "adaptive")
     {
         FatalErrorInFunction
             << "outerCoupling/outerScheme = `" << scheme_
             << "` is not recognised." << nl
-            << "    Use aitken | anderson." << exit(FatalError);
+            << "    Use aitken | anderson | adaptive." << exit(FatalError);
     }
 
     if (!active_) return;
+
+    if (scheme_ == "adaptive")
+    {
+        WarningInFunction
+            << "outerScheme `adaptive` MEASURED WORSE than both alternatives"
+               " on the only case tried." << nl << nl
+            << "    Aitken normally, escalating to Anderson (depth "
+            << andersonDepth_ << ") on a RETRIED step at the" << nl
+            << "    same deltaT. The mechanism works -- it reached the target"
+               " in the FEWEST steps" << nl
+            << "    of any scheme -- but each escalation is preceded by a"
+               " complete FAILED Aitken" << nl
+            << "    attempt at maxCorrectors, and that detection cost exceeds"
+               " the saving." << nl << nl
+            << "    Measured, fast LMEA bed, total correctors INCLUDING"
+               " discarded attempts:" << nl
+            << "        aitken     49 steps,  597 correctors, 76.0 s" << nl
+            << "        anderson   39 steps,  431 correctors, 57.7 s" << nl
+            << "        adaptive   31 steps,  624 correctors, 92.9 s" << nl << nl
+            << "    The premise -- that Aitken is cheaper on the easy steps and"
+               " Anderson should be" << nl
+            << "    spent only where needed -- is FALSE on that bed: Aitken is"
+               " dearer overall"  << nl
+            << "    (597 vs 431) because it fails four times as often. Prefer"
+               " `anderson`." << nl
+            << "    Kept because a cheaper trigger (escalate mid-step, or stay"
+               " escalated for" << nl
+            << "    several steps) might change this, and because"
+               " `retryStep` is required either way."
+            << endl;
+    }
 
     if (scheme_ == "anderson")
     {
@@ -275,6 +307,38 @@ void Foam::plasmaOuterRelaxation::contribute(volScalarField& f)
 }
 
 
+Foam::word Foam::plasmaOuterRelaxation::effectiveScheme() const
+{
+    if (scheme_ != "adaptive") return scheme_;
+
+    return (escalatedTimeIndex_ == mesh_.time().timeIndex())
+         ? word("anderson")
+         : word("aitken");
+}
+
+
+bool Foam::plasmaOuterRelaxation::escalateForRetry()
+{
+    if (!active_ || scheme_ != "adaptive") return false;
+
+    const label ti = mesh_.time().timeIndex();
+
+    // Already escalated and it failed anyway: Anderson could not converge this
+    // step either, so stop trying a different solver and let the retry ladder
+    // shorten the step, which is the mechanism that always works.
+    if (escalatedTimeIndex_ == ti) return false;
+
+    escalatedTimeIndex_ = ti;
+
+    Info<< "  outer loop did not converge -- ESCALATING to Anderson (depth "
+        << andersonDepth_ << ") and re-running" << nl
+        << "    at the SAME deltaT. If it fails again the step is shortened as"
+           " usual." << endl;
+
+    return true;
+}
+
+
 void Foam::plasmaOuterRelaxation::applyJoint()
 {
     // Concatenate the residuals into ONE vector. The unstable mode lives in
@@ -339,7 +403,7 @@ void Foam::plasmaOuterRelaxation::applyJoint()
     // corrector both schemes take the solve unchanged.
     const bool finalIter = mesh_.data().isFinalIteration();
 
-    if (scheme_ == "anderson" && !finalIter)
+    if (effectiveScheme() == "anderson" && !finalIter)
     {
         // Anderson works on the WHOLE joint vector, so gather prev into one
         // contiguous x, let it update in place, and scatter back. rj is

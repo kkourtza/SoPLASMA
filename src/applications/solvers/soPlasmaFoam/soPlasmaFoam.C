@@ -444,13 +444,25 @@ int main(int argc, char *argv[])
             // The relaxation coordinator must forget the abandoned attempt's
             // iterate history too, or the retry starts from a residual that
             // describes a step that was thrown away.
+            //
+            // It also gets the chance to ESCALATE. Under `outerScheme
+            // adaptive` the first retry of a step switches to Anderson and
+            // re-runs at the SAME deltaT: try a stronger solver before
+            // conceding the step is too long. A second failure returns
+            // escalated == false and the retry ladder shortens the step as
+            // usual, so the mechanism that always works is never bypassed.
+            bool escalated = false;
             {
                 plasmaOuterRelaxation* r =
                     plasmaOuterRelaxation::lookup(gasMesh());
-                if (r) { r->discardStep(); }
+                if (r)
+                {
+                    r->discardStep();
+                    escalated = r->escalateForRetry();
+                }
             }
-            timeControl.prepareRetry();
-            continue;                       // solve this step again, smaller
+            timeControl.prepareRetry(escalated);
+            continue;                  // solve this step again
         }
 
         // Accepting a step the outer loop never converged: either the retries

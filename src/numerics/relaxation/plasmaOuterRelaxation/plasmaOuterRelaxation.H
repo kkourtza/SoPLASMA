@@ -95,9 +95,31 @@ class plasmaOuterRelaxation
         //- The joint estimator
         aitkenRelaxation aitken_;
 
-        //- `aitken` (default) or `anderson`. Which scheme drives the joint
-        //  outer-loop update. See the constructor for why the default did not
-        //  change when Anderson measured 30x better on the unit bed.
+        //- `aitken` (default), `anderson`, or `adaptive`.
+        //
+        //  ADAPTIVE runs Aitken normally and ESCALATES TO ANDERSON on a
+        //  retried step, at the SAME deltaT, before the retry ladder is
+        //  allowed to halve.
+        //
+        //  Why that trigger and not a predictive one: testAitken CASE 16
+        //  measured NO LEAD in any available signal -- omega, rho and the
+        //  corrector count all look the same on the last converging step and
+        //  the first failing one -- so a step cannot be known to be hard until
+        //  it fails. Under `retryStep` a failed step is already discarded and
+        //  re-run, so the FAILURE ITSELF is the trigger and no prediction is
+        //  needed.
+        //
+        //  Why it should pay: on the fast LMEA bed Anderson m = 4 rejected 3
+        //  steps where Aitken rejected 12, at the same tolerance. Anderson's
+        //  measured value is rescuing steps Aitken cannot converge, not
+        //  running the easy ones faster -- correctors per step were 9.73 for
+        //  Aitken against ~10.5 for every Anderson arm. Adaptive spends
+        //  Anderson only where it demonstrably helps.
+        //
+        //  Switching at a STEP BOUNDARY on a discarded step is sound; switching
+        //  mid-step would not be, because Anderson's differences would describe
+        //  an Aitken-relaxed map rather than the one it is extrapolating.
+        //  discardStep() clears the history in any case.
         word scheme_;
 
         //- Anderson history depth. 4 by default -- measured, not guessed, and
@@ -149,6 +171,17 @@ class plasmaOuterRelaxation
         //  assertion.
         scalar rNormPrev_;
         scalar contractionMaxStep_;
+
+        //- Time index this step was escalated to Anderson at, or -1.
+        //
+        //  Keyed on the INDEX rather than a bool that has to be reset:
+        //  prepareRetry() re-runs the same step with runTime_.setTime(..., ti),
+        //  which KEEPS the index, so the escalation survives exactly the retry
+        //  it was made for and lapses by itself on the next step. A bool would
+        //  need clearing in newStepCheck() -- which discardStep() forces to
+        //  re-fire by setting timeIndex_ = -1, so it would clear the escalation
+        //  immediately and the feature would never engage.
+        label escalatedTimeIndex_;
 
 
 
@@ -242,8 +275,20 @@ public:
             return omegaMinStep_;
         }
 
-        //- Which scheme is driving the joint update
+        //- Which scheme the case asked for
         const word& scheme() const { return scheme_; }
+
+        //- The scheme actually driving THIS corrector. Under `adaptive` that
+        //  is Aitken until the step has been escalated, Anderson after.
+        word effectiveScheme() const;
+
+        //- Escalate this step to Anderson for its retry. Returns true if the
+        //  escalation happened, which is the caller's signal to re-run at the
+        //  SAME deltaT instead of halving. False when the scheme is not
+        //  adaptive, or when this step has already been escalated -- a second
+        //  failure means Anderson could not converge it either, and then the
+        //  retry ladder should shorten the step as usual.
+        bool escalateForRetry();
 
         //- Worst joint-residual contraction ratio this step, ||r_k||/||r_k-1||.
         //  Below 1 the outer loop contracted; at or above 1 it did not.
