@@ -87,6 +87,31 @@ protected:
     ) const;
 
 
+    //- ALWAYS the electron. This condition exists only for the
+
+
+    //  electron-energy field, so the species is not something the
+
+
+    //  user should have to state -- and the base class's inference
+
+
+    //  (strip a leading "n_") gets it WRONG for `nEps_e`, failing
+
+
+    //  with "nEps_e not found in table" and a list of species.
+
+
+    //  An explicit `species` entry still wins, for a case that
+
+
+    //  names its electron something unusual.
+
+
+    virtual word resolveSpeciesName() const;
+
+
+
     virtual tmp<scalarField> calcAbsorptionVelocity
     (
         const dimensionedScalar& m,

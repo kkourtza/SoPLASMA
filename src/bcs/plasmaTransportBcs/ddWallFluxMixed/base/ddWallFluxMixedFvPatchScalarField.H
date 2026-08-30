@@ -87,8 +87,14 @@ protected:
         word speciesNameOverride_;
 
         //- The species this condition acts for: the override when set,
-        //  otherwise inferred from the field name.
-        word resolveSpeciesName() const;
+        //  otherwise inferred from the field name by stripping a leading "n_".
+        //
+        //  VIRTUAL, because that inference is wrong for any field not named
+        //  `n_<species>`. The energy condition sits on `nEps_e`, which does
+        //  NOT start with "n_" ("nE"), so the base returns "nEps_e" and the
+        //  species lookup fails with a list of species names and no hint that
+        //  the fix is to set `species`. See the energy override.
+        virtual word resolveSpeciesName() const;
 
         //- Latch so the "approaching the singularity" warning is printed
         //  once per patch, not once per corrector per time step.

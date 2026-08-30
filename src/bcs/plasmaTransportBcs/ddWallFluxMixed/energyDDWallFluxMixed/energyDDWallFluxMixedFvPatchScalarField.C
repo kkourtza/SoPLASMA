@@ -23,6 +23,28 @@ addToPatchFieldRunTimeSelection
 
 // * * * * * * * * * * * * Protected Member Functions  * * * * * * * * * * * //
 
+word energyDDWallFluxMixedFvPatchScalarField::resolveSpeciesName() const
+{
+    // An explicit `species` entry wins: a case may name its electron something
+    // other than the registry's electronSpeciesID.
+    const word base(ddWallFluxMixedFvPatchScalarField::resolveSpeciesName());
+    if (base != this->internalField().name())
+    {
+        return base;                    // the user set `species`
+    }
+
+    // Otherwise the electron, by construction: this condition is only ever
+    // applied to the electron-energy field. The base class would return the
+    // FIELD name here -- "nEps_e" does not start with "n_" -- which is then
+    // looked up as a species and fails.
+    const auto& transport =
+        db().lookupObject<plasmaTransport>(plasmaTransport::typeName);
+
+    const plasmaSpecies& speciesDB = transport.species();
+    return speciesDB.speciesName(speciesDB.electronSpeciesID());
+}
+
+
 tmp<scalarField>
 energyDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
 (

@@ -5,6 +5,7 @@
   License: GNU General Public License v3 or later
 \*---------------------------------------------------------------------------*/
 
+#include "mappedPatchBase.H"
 #include "plasmaDischargeCurrent.H"
 #include "electromagneticsModel.H"
 #include "plasmaConstants.H"
@@ -90,6 +91,44 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
                 << "dischargeCurrent/groundedPatches names `" << p
                 << "`, which is not a patch of any region." << nl
                 << "    Available: " << allPatches << nl
+                << exit(FatalError);
+        }
+    }
+
+    // A REGION INTERFACE CANNOT BE A GROUNDED PATCH.
+    //
+    // computeWeightingField() solves a Laplace problem with the grounded
+    // patches forced to fixedValue, REPLACING whatever condition is there. On a
+    // coupled interface that destroys the coupling, and the neighbour side's
+    // coupledElectricPotential then aborts in refCast with
+    //   "Attempt to cast type fixedValue to type coupledElectricPotential"
+    // -- from inside THIS constructor, with an error that reads like a Poisson
+    // problem and says nothing about groundedPatches. Measured 2026-08-30 on a
+    // needle-DBD case; only the stack trace identified it.
+    //
+    // Checked on the PATCH TYPE rather than the field's boundary type, because
+    // the interface is a mappedWall whatever condition sits on it, and the
+    // check must work before any field has been constructed.
+    for (const word& pName : groundedPatches_)
+    {
+        const label pi = mesh_.boundaryMesh().findPatchID(pName);
+
+        if (pi >= 0 && isA<mappedPatchBase>(mesh_.boundaryMesh()[pi]))
+        {
+            FatalErrorInFunction
+                << "dischargeCurrent/groundedPatches names `" << pName
+                << "`, which is a REGION INTERFACE (mappedWall)." << nl << nl
+                << "    The weighting field is solved with the grounded patches"
+                   " forced to fixedValue," << nl
+                << "    which replaces the interface coupling and makes the"
+                   " neighbour side abort." << nl << nl
+                << "    Name a real electrode. If the true ground sits behind a"
+                   " dielectric -- a DBD --" << nl
+                << "    then it is in another region and the single-region"
+                   " weighting solve cannot" << nl
+                << "    reach it: set `dischargeCurrent/enabled false` rather"
+                   " than pointing this" << nl
+                << "    somewhere that merely runs."
                 << exit(FatalError);
         }
     }
