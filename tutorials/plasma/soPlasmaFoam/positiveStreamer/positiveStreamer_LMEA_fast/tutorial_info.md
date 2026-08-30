@@ -22,6 +22,34 @@ physically converged** and must never be quoted as physics. Use
 `positiveStreamer_fixedMesh` (LFA) or the production LMEA cases for anything
 about the discharge.
 
+### The limitation that matters most, and it is sharper than "not converged"
+
+**Mean energy is essentially UNIFORM here, so anything threshold-dependent is
+untestable on this bed.** Measured at t = 5e-10:
+
+| bed | cell | cells | `meanE` range | ratio | wall |
+|---|---|---|---|---|---|
+| this bed | 96 um | 16 900 | 1.398 – 1.478 eV | **1.1** | 75 s |
+| 2 refine levels | 24 um | 81 640 | 1.266 – 1.566 eV | **1.2** | 435 s |
+| production | 3 um | 1 146 466 | 0.411 – 7.759 eV | **18.9** | ~1 h |
+
+Any question about inelastic thresholds, table lookups far from the mean, or
+cold-cell behaviour **cannot be asked here** — there are no cold cells and no
+hot ones.
+
+**And it does not improve with modest refinement.** The 24 um bed ionises
+*harder* than production (peak `n_e` 3.29e17 against 7.15e16) and still tops out
+at 1.57 eV, because 24 um cannot resolve the space-charge layer that enhances
+the field at the head. Without a sharp head there is no high-energy region: it
+ionises broadly at moderate energy instead. The dynamic range comes from the
+head, and the head needs the full 3 um.
+
+**There is therefore no useful intermediate bed.** Use this one for outer-loop
+coupling, relaxation, acceleration and step-rejection behaviour, which it
+reproduces faithfully (`omega` down to 0.158). Use the production case for
+anything that depends on the energy distribution. Do not split the difference —
+measured 2026-08-30, it does not work.
+
 What *is* faithful here is the **coupling**, because the Picard gain between
 `n_e` and `nEps_e` is set by the time step and the local rates, not by the cell
 size. Verified rather than assumed — measured over the full run to 5e-10:

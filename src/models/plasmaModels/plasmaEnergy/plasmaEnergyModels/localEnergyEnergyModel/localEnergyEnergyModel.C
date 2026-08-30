@@ -159,10 +159,18 @@ localEnergyEnergyModel::localEnergyEnergyModel
         mesh,
         dimensionedScalar("zero", dimensionSet(0, 3, -1, 0, 0, 0, 0), 0.0)
     ),
+    // WRITTEN, because a claim about it cannot otherwise be checked.
+    //
+    // This is the outer loop's self-damping coefficient, -dS/d(n_eps). The
+    // Option 4 Jacobian notes record that it "was MEASURED going to ~0 in cold
+    // cells, because P_loss sits below every inelastic threshold there" -- i.e.
+    // exactly where the Picard coupling would be left undamped. That is a
+    // testable statement about a field, and it was NO_WRITE, so it could not
+    // be tested on any run that had already happened.
     dSdEps_
     (
         IOobject("dSdEps_lmea", mesh.time().timeName(), mesh,
-                 IOobject::NO_READ, IOobject::NO_WRITE),
+                 IOobject::NO_READ, IOobject::AUTO_WRITE),
         mesh,
         dimensionedScalar("zero", dimless/dimTime, 0.0)
     )
