@@ -12,6 +12,7 @@ cd "$SoPLASMA" || exit 1
 ./check-no-running-solvers.sh || exit 1
 
 mkdir -p buildlogs
+failed=0
 
 # Dependency order matters for the libraries; the applications come last.
 BUILD_DIRS=(
@@ -51,7 +52,7 @@ for d in "${BUILD_DIRS[@]}"; do
   if [ -d "$d" ]; then
     ( cd "$d" && { [ -x ./Allwmake ] && ./Allwmake || wmake libso || wmake; } ) \
       > "$SoPLASMA/buildlogs/$n.log" 2>&1 \
-      && echo "OK   $n" || echo "FAIL $n"
+      && echo "OK   $n" || { echo "FAIL $n"; failed=1; }
   fi
 done
 
@@ -86,6 +87,17 @@ if [ "$missing" -ne 0 ]; then
   echo "BUILD-INCOMPLETE: an application is in neither list. Add it to"
   echo "  BUILD_DIRS, or to SKIP_DIRS with the reason. A binary that is never"
   echo "  rebuilt will segfault against a changed library ABI without warning."
+  exit 1
+fi
+
+# A COMPONENT THAT FAILED MUST NOT LOOK LIKE A COMPLETE BUILD.
+#
+# This script printed "BUILD-COMPLETE" even when a component reported FAIL, and
+# a whole session was spent grepping for that string as the build check. That is
+# how you end up running a solver against a stale library and debugging the
+# wrong thing.
+if [ "$failed" -ne 0 ]; then
+  echo "BUILD-FAILED: at least one component did not build. See buildlogs/."
   exit 1
 fi
 

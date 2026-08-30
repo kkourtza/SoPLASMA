@@ -115,6 +115,10 @@ protected:
     //- Pointer to spatially varying background density (not owned)
     const volScalarField* backgroundDensityFieldPtr_;
 
+        //- Latch for the "no background gas" note, so it is said once per run
+        //  rather than once per corrector. See updateDerivedFields().
+        mutable bool noGasReported_ = false;
+
     //- A ptr list for the dielectric regions
     PtrList<dielectricRegion> dielectrics_;
 
