@@ -32,6 +32,31 @@ makePatchTypeField
 
 // * * * * * * * * * * * * Protected Member Functions  * * * * * * * * * * * //
 
+dimensionedScalar
+electronDDWallFluxMixedFvPatchScalarField::defaultTValue() const
+{
+    // 1 eV. Electrons arriving at a wall are not thermalised with the gas --
+    // using T_gas (300 K, 0.026 eV) understates the thermal velocity by a
+    // factor of ~6 -- and an LFA case has no T_e field to follow because the
+    // default `gasTemperature` energy model registers none. 1-2 eV is the
+    // usual quoted range; 1 eV is the conservative end.
+    //
+    // Reported, not silent: a wall temperature nobody chose should not go
+    // unannounced.
+    const scalar T1eV =
+        constant::plasma::eCharge.value()
+       /constant::plasma::kappaBoltzmann.value();
+
+    Info<< "    " << patch().name() << "/" << this->internalField().name()
+        << ": no `T` or `TeV` given, using the default wall electron"
+           " temperature 1 eV (" << T1eV << " K)." << nl
+        << "      Set `TeV <eV>` to change it, or `T <fieldName>` to follow a"
+           " field." << endl;
+
+    return dimensionedScalar("T", dimTemperature, T1eV);
+}
+
+
 tmp<scalarField> 
 electronDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
 (
@@ -90,6 +115,8 @@ electronDDWallFluxMixedFvPatchScalarField
     enableSurfaceCharging_(false),
     includeDriftFlux_(false),
     enableSEE_(false),
+    seeReport_(false),
+    seeInertReported_(false),
     defaultSEEC_(0.0),
     speciesSEEC_(dictionary::null),
     seec_(0),
@@ -110,6 +137,8 @@ electronDDWallFluxMixedFvPatchScalarField
             (dict.lookupOrDefault<bool>("enableSurfaceCharging", false)),
     includeDriftFlux_(dict.lookupOrDefault<bool>("includeDriftFlux", false)),
     enableSEE_(dict.lookupOrDefault<bool>("enableSEE", false)),
+    seeReport_(dict.lookupOrDefault<bool>("seeReport", false)),
+    seeInertReported_(false),
     defaultSEEC_(dict.lookupOrDefault<scalar>("defaultSEEC", 0.05)),
     speciesSEEC_(dict.subOrEmptyDict("speciesSEEC")),
     seec_(0), 
@@ -130,6 +159,8 @@ electronDDWallFluxMixedFvPatchScalarField
     enableSurfaceCharging_(ptf.enableSurfaceCharging_),
     includeDriftFlux_(ptf.includeDriftFlux_),
     enableSEE_(ptf.enableSEE_),
+    seeReport_(ptf.seeReport_),
+    seeInertReported_(false),
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     seec_(ptf.seec_),
@@ -147,6 +178,8 @@ electronDDWallFluxMixedFvPatchScalarField
     enableSurfaceCharging_(ptf.enableSurfaceCharging_),
     includeDriftFlux_(ptf.includeDriftFlux_),
     enableSEE_(ptf.enableSEE_),
+    seeReport_(ptf.seeReport_),
+    seeInertReported_(false),
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     seec_(ptf.seec_),
@@ -165,6 +198,8 @@ electronDDWallFluxMixedFvPatchScalarField
     enableSurfaceCharging_(ptf.enableSurfaceCharging_),
     includeDriftFlux_(ptf.includeDriftFlux_),
     enableSEE_(ptf.enableSEE_),
+    seeReport_(ptf.seeReport_),
+    seeInertReported_(false),
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     seec_(ptf.seec_),
@@ -229,6 +264,45 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
 
     const plasmaSpecies& speciesDB = transport.species();
 
+    // SEE NEEDS AN ION FLUX, AND AN IMMOBILE ION HAS NONE.
+    //
+    // `particleFlux_<species>` is registered only for mobileSpeciesIDs, and
+    // `immobile::nEqn()` is `fvm::ddt(n)` alone -- no div, no laplacian -- so
+    // an immobile ion has no transport equation, no wall flux, and no field
+    // here to find. Every lookup below then fails, totalSEE stays 0, and
+    // `enableSEE true` does NOTHING. Measured on the shipped streamer case,
+    // whose ions are all `transportModel immobile`: 0 emitted at BOTH
+    // electrodes. Announced once, because a setting that silently does nothing
+    // is worse than one that is rejected.
+    label nFlux = 0;
+    for (const label specI : speciesDB.positiveIonSpeciesIDs())
+    {
+        if (p.boundaryMesh().mesh().foundObject<surfaceScalarField>
+            ("particleFlux_" + speciesDB.speciesName(specI)))
+        {
+            ++nFlux;
+        }
+    }
+
+    if (nFlux == 0 && !seeInertReported_)
+    {
+        seeInertReported_ = true;
+
+        WarningInFunction
+            << "`enableSEE true` on patch " << p.name()
+            << ", but NO positive ion has a wall flux," << nl
+            << "    so no secondary electrons can be emitted and the setting"
+               " has no effect." << nl
+            << "    Cause: the positive ions are `transportModel immobile`,"
+               " which solves ddt only" << nl
+            << "    (no transport, hence no wall flux). Secondary emission"
+               " requires the ions to be" << nl
+            << "    transported -- `driftDiffusion` -- which is a physics and"
+               " cost decision, not a" << nl
+            << "    switch. Set `enableSEE false` to say so deliberately."
+            << endl;
+    }
+
     for (const label specI : speciesDB.positiveIonSpeciesIDs())
     {
         const word fluxName =
@@ -252,6 +326,38 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
     const driftDiffusion& ddModelD = refCast<const driftDiffusion>(baseModelD);
     const tmp<scalarField> tDf(this->patchDiffusivity(ddModelD));
     const scalarField& Df = tDf();
+
+    if (seeReport_)
+    {
+        // BOTH SIGNS of the raw flux are printed, because max(0,phi) is what
+        // drives emission: a patch whose phi is negative everywhere MUST report
+        // zero emission. Emission is expected at the CATHODE (positive ions
+        // accelerated into it) and NOT at the anode (they are repelled), so a
+        // non-zero anode total localises the defect instead of inferring it.
+        Info<< "    SEE[" << p.name() << "] emitted "
+            << gSum(totalSEE*magSf) << " 1/s (patch sum)" << endl;
+
+        for (const label specI : speciesDB.positiveIonSpeciesIDs())
+        {
+            const word fluxName =
+                "particleFlux_" + speciesDB.speciesName(specI);
+
+            if (!p.boundaryMesh().mesh().foundObject<surfaceScalarField>
+                 (fluxName))
+            {
+                continue;
+            }
+
+            const fvsPatchScalarField& phiR =
+                p.lookupPatchField<surfaceScalarField, scalar>(fluxName);
+
+            const scalarField fn(phiR/magSf);
+            Info<< "      " << speciesDB.speciesName(specI)
+                << ": phi/|Sf| min " << gMin(fn) << " max " << gMax(fn)
+                << " ; positive part " << gSum(max(fn, scalar(0))*magSf)
+                << "  (positive = INTO the wall, so it emits)" << endl;
+        }
+    }
 
     // Guarded on the diffusivity's OWN scale. D is zero until the transport
     // models are first corrected, and `+ VSMALL` (1e-300) turns that into an

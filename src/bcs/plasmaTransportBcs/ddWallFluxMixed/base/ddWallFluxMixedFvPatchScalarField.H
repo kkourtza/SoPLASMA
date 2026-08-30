@@ -90,6 +90,15 @@ protected:
         //  otherwise inferred from the field name.
         word resolveSpeciesName() const;
 
+        //- Latch so the "approaching the singularity" warning is printed
+        //  once per patch, not once per corrector per time step.
+        mutable bool nearSingularReported_ = false;
+
+        //- Wall temperature to use when the case names no field. eV is the
+        //  natural unit for electrons, so the electron conditions default to
+        //  1 eV; anything carrying a real temperature must say so.
+        virtual dimensionedScalar defaultTValue() const;
+
         //- Transport coefficients this condition builds its wall flux from.
         //
         //  VIRTUAL because the field being solved decides them. A density

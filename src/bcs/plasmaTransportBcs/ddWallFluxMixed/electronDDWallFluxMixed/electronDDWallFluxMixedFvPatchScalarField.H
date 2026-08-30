@@ -95,6 +95,22 @@ protected:
         //- Switch to enable secondary electron emission
         Switch enableSEE_;
 
+        //- Diagnostic: print, per patch, the ion flux that drives secondary
+        //  emission and the emission it produces. Emission is expected at the
+        //  CATHODE (positive ions are accelerated into it) and NOT at the
+        //  anode (they are repelled), so a non-zero anode total is a finding,
+        //  not a detail. Default off.
+        Switch seeReport_;
+
+        //- Latch so the "SEE cannot fire" warning is printed once, not once
+        //  per corrector per patch.
+        mutable bool seeInertReported_;
+
+        //- 1 eV when the case names no temperature field. Electron walls are
+        //  not at the gas temperature, and an LFA case running the
+        //  `gasTemperature` energy model registers no T_e to follow.
+        virtual dimensionedScalar defaultTValue() const;
+
         //- Default SEE coefficient
         scalar defaultSEEC_;
 
