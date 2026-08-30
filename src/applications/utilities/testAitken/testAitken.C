@@ -960,6 +960,222 @@ int main()
             << "           clamp that switched itself off." << endl;
     }
 
+    // ---- CASE 12: Anderson on a LOCALISED / disparate-magnitude field ----
+    //
+    // CASES 10 and 11 are spatially uniform: every cell has the same gain, so a
+    // single global correction fits every cell exactly. A streamer is not like
+    // that. CASE 2 and CASE 6 exist because it matters -- global Aitken needs
+    // 8-9 correctors on a localised problem against 2 on a uniform one.
+    //
+    // Anderson's correction is also global (one gamma for the whole vector),
+    // so the same objection applies to it and has to be tested rather than
+    // assumed. Two beds, both from the cases above:
+    //   (a) 10 unstable cells in 1000 quiet ones;
+    //   (b) the same, but with magnitudes spanning 1e5 .. 1e19, the unstable
+    //       cells NOT being the largest -- a real n_e field, where the front
+    //       oscillates and the peak does not.
+    // (b) is the one that punishes an unscaled inner product: a residual sum
+    // dominated by 1e19 cells cannot see a 1e5 cell misbehaving.
+    {
+        const label n = 1000;
+        const label nBad = 10;
+
+        for (label bed = 0; bed < 2; ++bed)
+        {
+            scalarField g(n, 0.05);
+            for (label c = 0; c < nBad; ++c) { g[n/2 + c] = 1.2; }
+
+            // (b) gives each cell its own magnitude; the unstable ones sit in
+            // the middle of the range, not at the top.
+            scalarField scaleF(n, 1.0);
+            if (bed == 1)
+            {
+                forAll(scaleF, c)
+                {
+                    scaleF[c] = Foam::pow(10.0, 5.0 + 14.0*scalar(c)/scalar(n-1));
+                }
+                for (label c = 0; c < nBad; ++c) { scaleF[n/2 + c] = 1e9; }
+            }
+
+            Info<< nl << "CASE 12" << (bed ? "b  localised AND magnitudes 1e5..1e19"
+                                            : "a  localised: 10 of 1000 cells at g = 1.2")
+                << endl;
+
+            // reference: global Aitken
+            {
+                scalar wF = 1, wMin = 1;
+                const label its = runGlobal
+                (
+                    g, maxIt, tol, wF, wMin, 1.0, wMinBound, wMaxBound
+                );
+                report("global Aitken ", its, wF, wMin, 1.0/(1.0 + 1.2));
+            }
+
+            for (label m = 2; m <= 4; ++m)
+            {
+                scalarField x(n);
+                forAll(x, c) { x[c] = scaleF[c]; }
+
+                andersonRelaxation aa("loc", m, 1.0);
+                aa.reset();
+                label its = -2;
+
+                for (label k = 0; k < maxIt; ++k)
+                {
+                    scalarField r(n);
+                    forAll(r, c) { r[c] = (-g[c]*x[c]) - x[c]; }
+
+                    aa.correct(x, r);
+
+                    // RELATIVE convergence, per cell, against that cell's own
+                    // scale: an absolute norm on a field spanning 1e14 in
+                    // magnitude measures only the largest cells.
+                    scalar nrm = 0;
+                    forAll(x, c) { nrm = max(nrm, mag(x[c])/scaleF[c]); }
+                    if (nrm < tol) { its = k + 1; break; }
+                    if (nrm > 1e12) { its = -1; break; }
+                }
+
+                Info<< "  Anderson m = " << m << "  : ";
+                if (its == -1)      Info<< "DIVERGED";
+                else if (its == -2) Info<< "not converged in " << maxIt;
+                else                Info<< its << " correctors";
+                Info<< "   fallbacks: step " << aa.nFallbackStep()
+                    << ", solve " << aa.nFallbackSolve() << endl;
+            }
+        }
+        Info<< "        -> a global correction cannot fit cells with DIFFERENT"
+            << " gains exactly, so" << nl
+            << "           some iteration is expected here. Failing (b) while"
+            << " passing (a) would" << nl
+            << "           mean the inner products are dominated by magnitude"
+            << " and the method is" << nl
+            << "           blind to where the trouble actually is." << endl;
+    }
+
+    // ---- CASE 13: HOW FAR CAN THE GAIN GO? -------------------------------
+    //
+    // THE QUESTION THIS ANSWERS: if Anderson replaces Aitken, how much larger
+    // can deltaT be? The Picard loop gain grows with deltaT, so the largest
+    // gain each method can still converge at, within a realistic corrector
+    // budget, IS the deltaT headroom in the coupling's own units.
+    //
+    // Measured on the two-field cycle, budget 20 correctors per step, which is
+    // the shipped maxCorrectors. A method that "converges" only by taking 200
+    // correctors is of no use to a solver that allows 20.
+    {
+        const label n = 100;
+        const label budget = 20;
+
+        Info<< nl << "CASE 13  largest loop gain still converged within "
+            << budget << " correctors" << nl
+            << "        (the coupling gain grows with deltaT, so this IS the"
+            << " deltaT headroom)" << endl;
+
+        // PARAMETRISE BY THE LOOP GAIN, KEEPING THE SHAPE OF CASE 10.
+        //
+        // A first version set gab = gain, gba = 1, which is a DEGENERATE
+        // structure: it reported Anderson m = 1 converging at every gain up to
+        // 200, flatly contradicting CASE 10 where m = 1 fails at gain 1.43, and
+        // joint Aitken failing at gain 0.1 where CASE 7 has it converging at
+        // 1.43. Both contradictions came from the bed, not the methods.
+        //
+        // Here gab*gba = G and gab/gba = 1.3/1.1, so the map is CASE 10's with
+        // only its gain changed -- the one variable this sweep is about.
+        auto converges = [&](const scalar G, const label m) -> bool
+        {
+            const scalar ratio = 1.3/1.1;
+            const scalar gab = Foam::sqrt(G*ratio);
+            const scalar gba = Foam::sqrt(G/ratio);
+            scalarField x(2*n, 1.0);
+            andersonRelaxation aa("sweep", m, 1.0);
+            aitkenRelaxation rJ("sweep", 1.0, wMinBound, wMaxBound);
+            aa.reset(); rJ.reset();
+
+            for (label k = 0; k < budget; ++k)
+            {
+                scalarField r(2*n);
+                forAll(r, c)
+                {
+                    r[c] = (c < n)
+                        ? ( gab*x[n + c]) - x[c]
+                        : (-gba*x[c - n]) - x[c];
+                }
+
+                if (m == 0)
+                {
+                    const scalar w = rJ.omega(r);
+                    forAll(x, c) { x[c] += w*r[c]; }
+                }
+                else
+                {
+                    aa.correct(x, r);
+                }
+
+                scalar nrm = 0;
+                forAll(x, c) { nrm = max(nrm, mag(x[c])); }
+                if (nrm < tol) return true;
+                if (nrm > 1e12) return false;
+            }
+            return false;
+        };
+
+        // The bisection assumes convergence is monotone in G: true at the
+        // bottom, false at the top. Both ends are CHECKED, because a bisection
+        // on a predicate that is false at the bottom or true at the top
+        // returns the bracket end and looks like a result.
+        // Wide enough to bracket BOTH methods: Aitken is slow enough that its
+        // limit falls far below 1 within a 20-corrector budget, and Anderson's
+        // is far above it. A bracket that fails to contain the answer reports
+        // "nothing measured" rather than silently returning the bracket end.
+        const scalar Glo = 1e-3, Ghi = 1e6;
+
+        for (label m = 0; m <= 4; ++m)
+        {
+            const char* nm = (m == 0) ? "joint Aitken  " : "Anderson      ";
+
+            Info<< "  " << nm;
+            if (m) Info<< "m = " << m << "  : "; else Info<< "  : ";
+
+            if (!converges(Glo, m))
+            {
+                Info<< "does not converge even at gain " << Glo
+                    << " -- no bracket, nothing measured" << endl;
+                continue;
+            }
+            if (converges(Ghi, m))
+            {
+                Info<< "still converges at gain " << Ghi
+                    << " -- limit is above the bracket, nothing measured"
+                    << endl;
+                continue;
+            }
+
+            scalar lo = Glo, hi = Ghi;
+            for (label it = 0; it < 40; ++it)
+            {
+                const scalar mid = 0.5*(lo + hi);
+                if (converges(mid, m)) lo = mid; else hi = mid;
+            }
+            Info<< "largest loop gain " << lo << endl;
+        }
+        Info<< "        -> READ THIS WITH ITS CAVEAT. The map here is LINEAR,"
+            << " and Anderson is" << nl
+            << "           essentially exact on linear problems, so a limit"
+            << " above the bracket is" << nl
+            << "           EXPECTED and does NOT extrapolate to the solver."
+            << " CASE 11's clamped" << nl
+            << "           variant is the realistic bound: there the advantage"
+            << " is real but small" << nl
+            << "           (8 correctors, and non-monotone in m)." << nl
+            << "           For deltaT: the coupling governed 23% of steps on"
+            << " the streamer runs," << nl
+            << "           so that is the addressable share; the transport"
+            << " Courant number then" << nl
+            << "           becomes binding, and its median headroom there was"
+            << " about 4x." << endl;
+    }
+
     Info<< nl << "=== end ===" << nl << endl;
     return 0;
 }
