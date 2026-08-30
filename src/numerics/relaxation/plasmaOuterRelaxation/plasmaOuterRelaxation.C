@@ -337,10 +337,20 @@ bool Foam::plasmaOuterRelaxation::escalateForRetry()
 
     const label ti = mesh_.time().timeIndex();
 
-    // Already escalated and it failed anyway: Anderson could not converge this
-    // step either, so stop trying a different solver and let the retry ladder
-    // shorten the step, which is the mechanism that always works.
-    if (escalatedTimeIndex_ == ti) return false;
+    // NOTHING TO ESCALATE TO. If Anderson is ALREADY driving this step -- this
+    // step was escalated, or a recent one was and the sticky window still
+    // covers it -- then the failure happened UNDER Anderson, and re-running at
+    // the same deltaT with the same solver cannot do better. Let the retry
+    // ladder shorten the step, which is the mechanism that always works.
+    //
+    // MEASURED before this guard existed: with andersonStickySteps 1000 the
+    // first escalation was at step 19 and the window then covered the whole
+    // run, yet steps 24, 28, 29 and 30 "escalated" again -- four guaranteed
+    // wasted retries at maxCorrectors each. It also renewed the window every
+    // time, which is why windows of 5, 20 and 1000 produced BIT-IDENTICAL runs
+    // (32 steps, 521 correctors, 76.2 s) and looked like a knob that did
+    // nothing.
+    if (effectiveScheme() == "anderson") return false;
 
     escalatedTimeIndex_ = ti;
     lastEscalatedIndex_ = ti;
