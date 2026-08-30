@@ -281,8 +281,12 @@ Foam::plasmaChemistry::plasmaChemistry
         //     runs unattended over a million cells. seulex reaches higher
         //     order by extrapolation, but pays with several factorisations per
         //     step, and the extra order buys little here because the accuracy
-        //     that matters is set by the splitting (first order, see
-        //     docs/numerics-chemistry-coupling.md), not by the substep.
+        //     that matters is set by the OUTER coupling, not by the substep --
+        //     measured directly: `odetight` tightens this integrator's own
+        //     tolerance and moves the observed temporal order NOT AT ALL
+        //     (Finding 5, docs/numerics-chemistry-coupling.md).
+        //     (This said "set by the splitting (first order)" until Finding 5.
+        //     The splitting is no longer first order: p = 1.945.)
         //
         //   LINEAR INVARIANTS.  Charge conservation is a linear invariant of
         //     the reaction set. In exact arithmetic any linearly-implicit

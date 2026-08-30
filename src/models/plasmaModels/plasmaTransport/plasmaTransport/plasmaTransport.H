@@ -189,8 +189,16 @@ protected:
     autoPtr<plasmaChemistry> chem_;
 
     //  none          sources in the equations, electron-impact only (legacy)
-    //  ode           whole mechanism, MEAN rate from a stiff ODE over the
-    //                step. Lie composition: robust, first order.
+    //  ode           whole mechanism, stiff ODE over the step, handing back
+    //                the INSTANTANEOUS rate at the integrated end state in
+    //                P/L form. SECOND ORDER: p = 1.945 (peak n_e) / 1.961
+    //                (sum), measured 2026-08-18.
+    //                (Described here as "MEAN rate ... Lie composition, first
+    //                order" until Finding 5 in
+    //                docs/numerics-chemistry-coupling.md. The first-order
+    //                error was never the splitting nor the integrator
+    //                tolerance -- `odetight` moves p not at all -- it was the
+    //                rate reconstruction handed back to BDF2.)
     //  implicitRate  whole mechanism, INSTANTANEOUS rate at the current
     //                iterate, loss implicit. Second order with BDF2, because
     //                that is the right-hand side BDF2 asks for.
@@ -351,10 +359,17 @@ protected:
     //  claims. At 1e6 a trace species sitting at 1e7 and driven to 1e9 in one
     //  step registers a relative change of 100 and flags its cell, even where
     //  n_e is 1e20 and that species cannot affect anything. Measured on the
-    //  1.15M-cell streamer: the change test flagged 100% of cells from step 3
-    //  onward while `L*dt` flagged 5-7%, so `adaptive` was running the stiff
-    //  ODE path over the whole domain -- first order everywhere, which is what
-    //  the temporal-order sweep was seeing.
+    //  1.15M-cell streamer (2026-08-17): the change test flagged 100% of cells
+    //  from step 3 onward while `L*dt` flagged 5-7%, so `adaptive` ran the
+    //  stiff ODE path over the whole domain.
+    //
+    //  SUPERSEDED IN PART, and the part that lapsed is the one that mattered.
+    //  When this was written, routing a cell to the ODE cost an ORDER, so 100%
+    //  flagging made the whole solver first order. Since Finding 5
+    //  (docs/numerics-chemistry-coupling.md, 2026-08-18) the ODE path is
+    //  SECOND order, p = 1.945, so flagging every cell now costs only COST --
+    //  integrating ~100% of cells stiffly where `adaptiveError` needs ~3.3%.
+    //  It is an EFFICIENCY defect, not an accuracy or order one.
     //
     //  A floor is a blunt instrument: the right value depends on the case's own
     //  densities, which is why the error-estimating variant exists. Exposed so
@@ -377,7 +392,8 @@ protected:
     //  MEASURED, on the 1.15M-cell streamer at Co 1.5 (2026-08-18):
     //
     //    f = 0     100% of cells flagged from step 3 on -- `adaptive` is the
-    //              first-order stiff path over the whole mesh
+    //              stiff path over the whole mesh -- a COST, not an order
+    //              penalty; see the supersession note above
     //    f = 1e-3  ~83% flagged, and only 0.03% at step 2
     //
     //  So 1e-3 is a strict improvement and the right value to reach for first,
