@@ -142,9 +142,24 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
                " the saving." << nl << nl
             << "    Measured, fast LMEA bed, total correctors INCLUDING"
                " discarded attempts:" << nl
-            << "        aitken     49 steps,  597 correctors, 76.0 s" << nl
-            << "        anderson   39 steps,  431 correctors, 57.7 s" << nl
-            << "        adaptive   31 steps,  624 correctors, 92.9 s" << nl << nl
+            << "        aitken               49 steps,  597 correctors,"
+               " 76.0 s" << nl
+            << "        anderson             39 steps,  431 correctors,"
+               " 57.7 s" << nl
+            << "        adaptive, sticky 0   31 steps,  624 correctors,"
+               " 92.9 s" << nl
+            << "        adaptive, sticky 5   33 steps,  489 correctors,"
+               " 70.7 s" << nl
+            << "        adaptive, sticky inf 33 steps,  448 correctors,"
+               " 63.8 s" << nl << nl
+            << "    The optimum window is INFINITE -- there is no phase in"
+               " which returning to" << nl
+            << "    Aitken pays. `sticky inf` is pure Anderson with an Aitken"
+               " warm-up, and it" << nl
+            << "    still loses to plain `anderson` because it pays one full"
+               " failed attempt to" << nl
+            << "    discover what a dictionary key could have stated."
+            << nl << nl
             << "    The premise -- that Aitken is cheaper on the easy steps and"
                " Anderson should be" << nl
             << "    spent only where needed -- is FALSE on that bed: Aitken is"
