@@ -1678,10 +1678,16 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // far below dt, where linearising around the current state is not enough;
     // the run reports which situation it is in (see the convergence check
     // below) rather than leaving it to judgement.
-    // DEFAULT: adaptive -- per cell, the accurate path where it is valid and
-    // the robust one where it is not, so neither accuracy nor robustness is
-    // traded for the other across a domain where the stiffness varies by
-    // orders of magnitude.
+    // DEFAULT: adaptiveError (changed from `adaptive` on 2026-08-21; the line
+    // below is the authority, this comment is not). Per cell, the accurate
+    // path where it is valid and the robust one where it is not, so neither
+    // accuracy nor robustness is traded for the other across a domain where
+    // the stiffness varies by orders of magnitude.
+    //
+    // `adaptiveError` estimates the linearisation error rather than screening
+    // on a relative-change threshold: measured p = 1.936 and the same answer as
+    // `adaptive` to five significant figures, while integrating ~3.3% of cells
+    // instead of 100%. See docs/validation-solvers.md.
     // ---- WHICH reactions (physics) and HOW they are integrated (numerics) --
     //
     // Two keys, because they are two decisions. The old single key
