@@ -67,5 +67,13 @@ outerCoupling
     // What to do when the cap is exhausted unconverged. `reduceDeltaT` halves
     // the step and is applied alongside the Courant and dielectric limits, so
     // the smallest limit still wins.
-    onNonConvergence  reduceDeltaT;   // reduceDeltaT | warn | fatal
+    // retryStep | reduceDeltaT | warn | fatal.
+    //
+    // The DEFAULT is `retryStep`: a non-converged step is discarded and
+    // re-run with a shorter deltaT, so unconverged state never enters the
+    // solution history. It retries by SHORTENING deltaT, so it needs
+    // `adjustTimeStep true` -- and this tutorial runs at FIXED deltaT.
+    // Hence `reduceDeltaT` here, chosen deliberately: at fixed deltaT there
+    // is nothing to shorten, and a non-converged step is accepted.
+    onNonConvergence  reduceDeltaT;
 }

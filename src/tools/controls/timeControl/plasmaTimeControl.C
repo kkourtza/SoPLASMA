@@ -48,7 +48,7 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     outerChaseConvergence_(true),
     outerMaxCorrectors_(20),
     outerTolerance_(1e-8),
-    outerOnNonConvergence_("reduceDeltaT"),
+    outerOnNonConvergence_("retryStep"),
     outerHitCap_(false),
     outerItersUsed_(0),
     outerReportCounter_(0)
@@ -248,8 +248,39 @@ void plasmaTimeControl::read()
                 oc.getOrDefault<label>("maxCorrectors", 20);
             outerTolerance_ =
                 oc.getOrDefault<scalar>("tolerance", 1e-8);
-            outerOnNonConvergence_ =
-                oc.getOrDefault<word>("onNonConvergence", "reduceDeltaT");
+            // DEFAULT: retryStep. `reduceDeltaT` ACCEPTS a non-converged
+            // step into the history and only shortens the NEXT one, so the
+            // unconverged state stays in the solution for good. Measured on
+            // the streamer case: 11% of steps banked at Co 1.5, 16% at Co
+            // 2.5, and the banked steps seeded a spurious quasineutral layer
+            // at the active electrode that then self-sustained. Never banking
+            // is the robust default; a user who wants the old behaviour asks
+            // for it by name.
+            //
+            // The retry works by SHORTENING deltaT, so it needs
+            // adjustTimeStep. A fixed-deltaT case cannot retry, and turning
+            // that into a fatal error for a default nobody chose would break
+            // working cases -- so the default (and only the default) falls
+            // back. An EXPLICIT `retryStep` with adjustTimeStep off is still
+            // fatal, below: that one the user did ask for.
+            if (oc.found("onNonConvergence"))
+            {
+                outerOnNonConvergence_ = oc.get<word>("onNonConvergence");
+            }
+            else if (adjustTimeStep_)
+            {
+                outerOnNonConvergence_ = "retryStep";
+            }
+            else
+            {
+                outerOnNonConvergence_ = "reduceDeltaT";
+
+                Info<< "    outerCoupling/onNonConvergence: defaulting to"
+                       " `reduceDeltaT` because adjustTimeStep is off" << nl
+                    << "      (the default `retryStep` retries by shortening"
+                       " deltaT). Non-converged steps will be ACCEPTED."
+                    << endl;
+            }
             outerMaxRetries_ =
                 oc.getOrDefault<label>("maxRetries", 5);
 
