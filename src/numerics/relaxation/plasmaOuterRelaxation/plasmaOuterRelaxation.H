@@ -100,7 +100,9 @@ class plasmaOuterRelaxation
         //  change when Anderson measured 30x better on the unit bed.
         word scheme_;
 
-        //- Anderson history depth. 2 is the measured optimum, not a guess:
+        //- Anderson history depth. 4 by default -- measured, not guessed, and
+        //  NOT the unit bed's answer; see the constructor for the numbers.
+        //  Legacy note on why 2 is the floor rather than the default:
         //  the n_e/nEps_e oscillation is a COMPLEX CONJUGATE PAIR, so a real
         //  Krylov method needs a 2-dimensional subspace and m = 1 cannot
         //  converge it at all (testAitken CASE 10). Deeper windows span more

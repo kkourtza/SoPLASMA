@@ -88,7 +88,21 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
     // chemistry, a Poisson solve and spatially varying coefficients. A default
     // is a promise, and this one has not been earned yet.
     scheme_(oc.getOrDefault<word>("outerScheme", "aitken")),
-    andersonDepth_(oc.getOrDefault<label>("andersonDepth", 2)),
+    // DEPTH 4, not the unit bed's 2. The synthetic two-field cycle has ONE
+    // oscillatory pair, so a 2-dimensional Krylov space spans it exactly and
+    // deeper windows only span more of the density clamp's active-set changes.
+    // A real residual carries many more modes. MEASURED on the fast LMEA bed,
+    // one variable, against joint Aitken at 49 steps / 477 correctors:
+    //     m = 2   51 steps, 537 correctors   -- WORSE than Aitken
+    //     m = 4   39 steps, 411 correctors   -- -20% steps, -24% wall clock
+    //     m = 8   49 steps, 532 correctors   -- level with Aitken
+    // Shipping 2 as the default would hand anyone who enables Anderson the one
+    // setting measured worse than not enabling it.
+    //
+    // The optimum is NON-MONOTONE and problem-dependent -- the same pattern
+    // appears on the clamped unit bed (m = 2,3,4,5 -> 8, 11, 27, 8 correctors)
+    // -- and 4 rests on ONE case. Sweep it before trusting it on a new problem.
+    andersonDepth_(oc.getOrDefault<label>("andersonDepth", 4)),
     andersonBeta_(oc.getOrDefault<scalar>("andersonBeta", 1.0)),
     anderson_("joint", andersonDepth_, andersonBeta_),
     timeIndex_(-1),
