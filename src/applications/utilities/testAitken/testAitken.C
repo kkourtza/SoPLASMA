@@ -1490,6 +1490,316 @@ int main()
             << " signal." << endl;
     }
 
+    // ---- CASE 16: IS `correctors used` A ROBUST GOVERNOR SIGNAL? ---------
+    //
+    // omega and rho are both PROXIES for "is this step about to fail to
+    // converge". The corrector count IS that quantity, is already tracked by
+    // plasmaTimeControl::noteOuterLoop(), and is method-agnostic by
+    // construction -- which is what omega is not (Anderson has none) and rho is
+    // not (CASE 15: blind on a clamped field).
+    //
+    // But it is only usable if it degrades SMOOTHLY. Today the controller reacts
+    // at used == cap, a cliff: deltaT then oscillates across it, paying a
+    // discarded step each time. A pre-emptive governor needs LEAD -- the count
+    // must rise before the failure, not with it.
+    //
+    // FOUR WAYS IT COULD FAIL, each measured here rather than assumed:
+    //   1. no lead: the count sits low then jumps to the cap;
+    //   2. tolerance dependence: a user tightening `tolerance` raises the count
+    //      everywhere, so a fixed used/cap threshold throttles deltaT for no
+    //      stability reason;
+    //   3. cap dependence: with maxCorrectors 5 the signal has five levels;
+    //   4. scheme dependence: Anderson converges in ~3 until it does not, which
+    //      would be a cliff by construction.
+    {
+        const label n = 100;
+        const scalar ratio = 1.3/1.1;
+
+        Info<< nl << "CASE 16  is `correctors used` a robust governor signal?"
+            << endl;
+
+        // Returns correctors used (== budget if it never converged), and sets
+        // `conv`. Covers both schemes and both beds.
+        auto runStep = [&]
+        (
+            const scalar G, const label m, const bool clamped,
+            const label budget, const scalar ctol, bool& conv
+        ) -> label
+        {
+            const scalar gab = Foam::sqrt(G*ratio);
+            const scalar gba = Foam::sqrt(G/ratio);
+            const scalar floorVal = 0.35;
+
+            scalarField x(2*n, clamped ? 3.0 : 1.0);
+            scalarField xStar(2*n, clamped ? 1.0 : 0.0);
+            if (clamped)
+            {
+                forAll(xStar, c) { if ((c % 2) == 0) xStar[c] = 0.10; }
+            }
+
+            andersonRelaxation aa("g", m, 1.0);
+            aitkenRelaxation rJ("g", 1.0, wMinBound, wMaxBound);
+            aa.reset(); rJ.reset();
+            conv = false;
+
+            for (label k = 0; k < budget; ++k)
+            {
+                scalarField r(2*n);
+                forAll(r, c)
+                {
+                    r[c] = (c < n)
+                        ? (xStar[c] + gab*(x[n+c] - xStar[n+c])) - x[c]
+                        : (xStar[c] - gba*(x[c-n] - xStar[c-n])) - x[c];
+                }
+
+                const scalarField xOld(x);
+
+                if (m == 0)
+                {
+                    const scalar w = rJ.omega(r);
+                    forAll(x, c) { x[c] += w*r[c]; }
+                }
+                else
+                {
+                    aa.correct(x, r);
+                }
+
+                if (clamped)
+                {
+                    forAll(x, c) { x[c] = max(x[c], floorVal); }
+                }
+
+                scalar nrm = 0;
+                forAll(x, c)
+                {
+                    nrm = clamped ? max(nrm, mag(x[c] - xOld[c]))
+                                  : max(nrm, mag(x[c]));
+                }
+                if (nrm < ctol) { conv = true; return k + 1; }
+                if (nrm > 1e12) { return budget; }
+            }
+            return budget;
+        };
+
+        // --- 1 and 4: LEAD, for both schemes and both beds -----------------
+        //
+        // THE METRIC: correctors used at the LAST stiffness that still
+        // converged, as a fraction of the budget. Near 1 means the count only
+        // rises as it fails -- a cliff, no lead, and nothing to govern on.
+        // Well below 1 means a threshold placed there catches the failure
+        // before it happens.
+        Info<< nl << "        LEAD: correctors at the last converging"
+            << " stiffness, /budget 20" << endl;
+
+        for (label variant = 0; variant < 4; ++variant)
+        {
+            const label m = (variant % 2) ? 2 : 0;      // Aitken | Anderson
+            const bool clamped = (variant / 2) == 1;
+
+            label lastUsed = -1;
+            scalar lastG = 0;
+            label firstFailUsed = -1;
+
+            for (label gi = 0; gi < 16; ++gi)
+            {
+                const scalar G = 0.02*Foam::pow(1.5, scalar(gi));
+                bool conv = false;
+                const label used = runStep(G, m, clamped, 20, tol, conv);
+                if (conv) { lastUsed = used; lastG = G; }
+                else if (firstFailUsed < 0) { firstFailUsed = used; }
+            }
+
+            Info<< "          " << (m ? "Anderson m=2" : "Aitken      ")
+                << (clamped ? " clamped: " : " linear : ");
+            if (lastUsed < 0)
+            {
+                Info<< "never converged -- no lead measurable" << endl;
+            }
+            else
+            {
+                Info<< "last converged at G " << lastG << " using "
+                    << lastUsed << "/20 (" << scalar(lastUsed)/20.0 << ")";
+                if (firstFailUsed >= 0)
+                {
+                    Info<< ", first failure used " << firstFailUsed << "/20";
+                }
+                Info<< endl;
+            }
+        }
+
+        // --- 2: TOLERANCE DEPENDENCE --------------------------------------
+        //
+        // If the count at the stability boundary moves with `tolerance`, a
+        // FIXED used/cap threshold is not a stability signal at all -- it is
+        // partly a measure of how tight the user set the criterion.
+        Info<< nl << "        TOLERANCE DEPENDENCE (Aitken, linear bed):"
+            << endl;
+        for (label ti = 0; ti < 3; ++ti)
+        {
+            const scalar ctol = Foam::pow(10.0, -6.0 - 2.0*scalar(ti));
+            label lastUsed = -1;
+            for (label gi = 0; gi < 16; ++gi)
+            {
+                const scalar G = 0.02*Foam::pow(1.5, scalar(gi));
+                bool conv = false;
+                const label used = runStep(G, 0, false, 20, ctol, conv);
+                if (conv) lastUsed = used;
+            }
+            Info<< "          tolerance " << ctol << " : last converging step"
+                << " used " << lastUsed << "/20" << endl;
+        }
+
+        // --- 3: CAP DEPENDENCE --------------------------------------------
+        Info<< nl << "        CAP DEPENDENCE (Aitken, linear bed):" << endl;
+        for (label ci = 0; ci < 3; ++ci)
+        {
+            const label budget = (ci == 0) ? 5 : (ci == 1) ? 20 : 50;
+            label lastUsed = -1;
+            for (label gi = 0; gi < 16; ++gi)
+            {
+                const scalar G = 0.02*Foam::pow(1.5, scalar(gi));
+                bool conv = false;
+                const label used = runStep(G, 0, false, budget, tol, conv);
+                if (conv) lastUsed = used;
+            }
+            Info<< "          cap " << budget << " : last converging step used "
+                << lastUsed << "/" << budget << " ("
+                << scalar(lastUsed)/scalar(budget) << ")" << endl;
+        }
+
+        Info<< nl << "        -> ROBUST requires: lead well below 1.0 on ALL"
+            << " four variants, a" << nl
+            << "           used/cap fraction that does NOT move with tolerance,"
+            << " and one that" << nl
+            << "           does not move with the cap. Any of those failing"
+            << " means a fixed" << nl
+            << "           threshold is not portable and the signal needs"
+            << " normalising." << endl;
+    }
+
+    // ---- CASE 17: does ANY signal have lead UNDER ANDERSON? --------------
+    //
+    // CASE 16 killed `correctors used`: no lead on any variant, opposite
+    // signatures for the two schemes, and it moves with both tolerance and the
+    // cap. The proxies looked better because they are CONTINUOUS -- omega ran
+    // 0.97 -> 0.12 and masked rho 0.15 -> 0.38 -> 35 across the sweep, which is
+    // real lead.
+    //
+    // But that was measured under AITKEN. The worry is structural: a method
+    // that either works or does not gives a cliff in every diagnostic, because
+    // right up to the boundary it is converging comfortably. If masked rho is
+    // flat under Anderson then NO pre-emptive signal exists, and the honest
+    // architecture is that retryStep handles it -- the margin governor being a
+    // device for Aitken's graceful-but-slow degradation, not a universal need.
+    //
+    // This measures rho (over unclamped cells) at the last converging and the
+    // first failing stiffness, for both schemes.
+    {
+        const label n = 100;
+        const scalar ratio = 1.3/1.1;
+        const scalar floorVal = 0.35;
+
+        Info<< nl << "CASE 17  does masked rho keep its lead under Anderson?"
+            << endl;
+        Info<< "        scheme          rho at last converged -> at first"
+            << " failure" << endl;
+
+        for (label variant = 0; variant < 4; ++variant)
+        {
+            const label m = (variant % 2) ? 2 : 0;
+            const bool clamped = (variant / 2) == 1;
+
+            scalar rhoLastOK = -1, rhoFirstBad = -1;
+
+            for (label gi = 0; gi < 16; ++gi)
+            {
+                const scalar G = 0.02*Foam::pow(1.5, scalar(gi));
+                const scalar gab = Foam::sqrt(G*ratio);
+                const scalar gba = Foam::sqrt(G/ratio);
+
+                scalarField x(2*n, clamped ? 3.0 : 1.0);
+                scalarField xStar(2*n, clamped ? 1.0 : 0.0);
+                if (clamped)
+                {
+                    forAll(xStar, c) { if ((c % 2) == 0) xStar[c] = 0.10; }
+                }
+
+                andersonRelaxation aa("g", m, 1.0);
+                aitkenRelaxation rJ("g", 1.0, wMinBound, wMaxBound);
+                aa.reset(); rJ.reset();
+
+                scalar rhoMax = 0, rPrev = -1;
+                bool conv = false;
+
+                for (label k = 0; k < 20; ++k)
+                {
+                    scalarField r(2*n);
+                    forAll(r, c)
+                    {
+                        r[c] = (c < n)
+                            ? (xStar[c] + gab*(x[n+c] - xStar[n+c])) - x[c]
+                            : (xStar[c] - gba*(x[c-n] - xStar[c-n])) - x[c];
+                    }
+
+                    // masked: skip cells sitting on the clamp (CASE 15)
+                    scalar rN = 0;
+                    forAll(r, c)
+                    {
+                        if (clamped && x[c] <= floorVal*(1 + SMALL)) continue;
+                        rN += r[c]*r[c];
+                    }
+                    rN = Foam::sqrt(rN);
+                    if (rPrev > VSMALL) { rhoMax = max(rhoMax, rN/rPrev); }
+                    rPrev = rN;
+
+                    const scalarField xOld(x);
+                    if (m == 0)
+                    {
+                        const scalar w = rJ.omega(r);
+                        forAll(x, c) { x[c] += w*r[c]; }
+                    }
+                    else
+                    {
+                        aa.correct(x, r);
+                    }
+                    if (clamped)
+                    {
+                        forAll(x, c) { x[c] = max(x[c], floorVal); }
+                    }
+
+                    scalar nrm = 0;
+                    forAll(x, c)
+                    {
+                        nrm = clamped ? max(nrm, mag(x[c] - xOld[c]))
+                                      : max(nrm, mag(x[c]));
+                    }
+                    if (nrm < tol) { conv = true; break; }
+                    if (nrm > 1e12) break;
+                }
+
+                if (conv) { rhoLastOK = rhoMax; }
+                else if (rhoFirstBad < 0) { rhoFirstBad = rhoMax; }
+            }
+
+            Info<< "          " << (m ? "Anderson m=2" : "Aitken      ")
+                << (clamped ? " clamped: " : " linear : ")
+                << rhoLastOK << "  ->  " << rhoFirstBad;
+            if (rhoLastOK > 0 && rhoFirstBad > 0)
+            {
+                const scalar sep = rhoFirstBad/rhoLastOK;
+                Info<< "   separation x" << sep
+                    << (sep > 1.3 ? "  (LEAD)" : "  (no useful lead)");
+            }
+            Info<< endl;
+        }
+        Info<< "        -> a separation near 1 means the diagnostic looks the"
+            << " same on the last" << nl
+            << "           good step and the first bad one: no warning, and"
+            << " retryStep -- not a" << nl
+            << "           pre-emptive governor -- is the right mechanism for"
+            << " that scheme." << endl;
+    }
+
     Info<< nl << "=== end ===" << nl << endl;
     return 0;
 }
