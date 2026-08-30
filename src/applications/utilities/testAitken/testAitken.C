@@ -1298,6 +1298,198 @@ int main()
             << " imbalance." << endl;
     }
 
+    // ---- CASE 15: the rho THRESHOLD on the beds that look like the solver -
+    //
+    // CASE 14 established that rho CAN carry the governor signal and put the
+    // threshold at ~0.38 -- on a LINEAR, spatially uniform map. Neither
+    // property holds in the solver: densities are clamped (a projection, so
+    // the map is not differentiable at the active set) and the unstable cells
+    // are a few in a quiet domain, spanning many decades in magnitude.
+    //
+    // A threshold fitted on the linear bed and shipped would be a number
+    // derived from a problem the solver does not solve. This measures it on
+    // the two beds that resemble it, and takes the MOST CONSERVATIVE.
+    {
+        const label budget = 20;
+        const scalar ratio = 1.3/1.1;
+
+        Info<< nl << "CASE 15  the rho threshold on non-smooth and localised"
+            << " beds" << nl
+            << "        (CASE 14's 0.38 came from a linear uniform map; the"
+            << " solver is neither)" << endl;
+
+        // bed 2 repeats bed 0 with rho computed over the cells NOT sitting on
+        // the clamp -- the test of WHY bed 0 fails, and the candidate fix.
+        for (label bed = 0; bed < 3; ++bed)
+        {
+            const label n = 100;
+            DynamicList<scalar> omegas, rhos;
+            DynamicList<bool> converged;
+
+            const char* bedName =
+                (bed == 0) ? "CLAMPED (projection active at the fixed point)"
+              : (bed == 1) ? "LOCALISED (10 of 1000 cells unstable, 1e5..1e19)"
+              :              "CLAMPED, rho over the UNCLAMPED cells only";
+
+            Info<< nl << "        bed " << bedName << nl
+                << "        stiffness  omega_min    rho_max   converged?"
+                << endl;
+
+            for (label gi = 0; gi < 12; ++gi)
+            {
+                const scalar G = 0.02*Foam::pow(1.6, scalar(gi));
+
+                scalar wMin = 1.0, rhoMax = 0.0, rPrev = -1.0;
+                bool conv = false;
+
+                if (bed == 0 || bed == 2)
+                {
+                    // Clamped two-field cycle, floor active AT the answer for
+                    // half the cells -- the realistic case, since most of a
+                    // streamer domain sits on the density floor.
+                    const scalar gab = Foam::sqrt(G*ratio);
+                    const scalar gba = Foam::sqrt(G/ratio);
+                    const scalar floorVal = 0.35;
+
+                    scalarField x(2*n, 3.0);
+                    scalarField xStar(2*n, 1.0);
+                    forAll(xStar, c) { if ((c % 2) == 0) xStar[c] = 0.10; }
+
+                    aitkenRelaxation rJ("g", 1.0, wMinBound, wMaxBound);
+                    rJ.reset();
+
+                    for (label k = 0; k < budget; ++k)
+                    {
+                        scalarField r(2*n);
+                        forAll(r, c)
+                        {
+                            r[c] = (c < n)
+                                ? (xStar[c] + gab*(x[n+c] - xStar[n+c])) - x[c]
+                                : (xStar[c] - gba*(x[c-n] - xStar[c-n])) - x[c];
+                        }
+
+                        // THE HYPOTHESIS UNDER TEST. A cell pinned on the
+                        // floor has a residual that does not change from one
+                        // corrector to the next: x is frozen, so r = xStar - x
+                        // is constant. Summed into the norm, those frozen
+                        // terms swamp the cells that are still moving and pin
+                        // the ratio at exactly 1. bed 2 excludes them.
+                        scalar rN = 0;
+                        forAll(r, c)
+                        {
+                            if (bed == 2 && x[c] <= floorVal*(1 + SMALL))
+                            {
+                                continue;           // on the clamp
+                            }
+                            rN += r[c]*r[c];
+                        }
+                        rN = Foam::sqrt(rN);
+                        if (rPrev > VSMALL) { rhoMax = max(rhoMax, rN/rPrev); }
+                        rPrev = rN;
+
+                        const scalar w = rJ.omega(r);
+                        wMin = min(wMin, w);
+
+                        const scalarField xOld(x);
+                        forAll(x, c) { x[c] += w*r[c]; }
+                        forAll(x, c) { x[c] = max(x[c], floorVal); }
+
+                        scalar nrm = 0;
+                        forAll(x, c) { nrm = max(nrm, mag(x[c] - xOld[c])); }
+                        if (nrm < tol) { conv = true; break; }
+                        if (nrm > 1e12) break;
+                    }
+                }
+                else
+                {
+                    // Localised single field: 10 unstable cells of 1000, the
+                    // unstable ones NOT the largest in magnitude.
+                    const label nc = 1000, nBad = 10;
+                    scalarField g(nc, 0.05);
+                    for (label c = 0; c < nBad; ++c) { g[nc/2 + c] = G; }
+
+                    scalarField scaleF(nc, 1.0);
+                    forAll(scaleF, c)
+                    {
+                        scaleF[c] =
+                            Foam::pow(10.0, 5.0 + 14.0*scalar(c)/scalar(nc-1));
+                    }
+                    for (label c = 0; c < nBad; ++c) { scaleF[nc/2 + c] = 1e9; }
+
+                    scalarField x(scaleF);
+                    aitkenRelaxation rJ("g", 1.0, wMinBound, wMaxBound);
+                    rJ.reset();
+
+                    for (label k = 0; k < budget; ++k)
+                    {
+                        scalarField r(nc);
+                        forAll(r, c) { r[c] = (-g[c]*x[c]) - x[c]; }
+
+                        scalar rN = 0;
+                        forAll(r, c) { rN += r[c]*r[c]; }
+                        rN = Foam::sqrt(rN);
+                        if (rPrev > VSMALL) { rhoMax = max(rhoMax, rN/rPrev); }
+                        rPrev = rN;
+
+                        const scalar w = rJ.omega(r);
+                        wMin = min(wMin, w);
+                        forAll(x, c) { x[c] += w*r[c]; }
+
+                        scalar nrm = 0;
+                        forAll(x, c) { nrm = max(nrm, mag(x[c])/scaleF[c]); }
+                        if (nrm < tol) { conv = true; break; }
+                        if (nrm > 1e12) break;
+                    }
+                }
+
+                omegas.append(wMin);
+                rhos.append(rhoMax);
+                converged.append(conv);
+
+                Info<< "        " << G << "\t" << wMin << "\t" << rhoMax
+                    << "\t" << (conv ? "yes" : "NO") << endl;
+            }
+
+            // The LARGEST rho among converged steps and the SMALLEST among
+            // non-converged. If the first is below the second the two
+            // populations are separable and any threshold between them works;
+            // if they overlap, rho cannot govern this bed and that is the
+            // finding.
+            scalar maxConv = -1, minFail = GREAT;
+            label nConv = 0;
+            forAll(converged, i)
+            {
+                if (converged[i]) { maxConv = max(maxConv, rhos[i]); ++nConv; }
+                else              { minFail = min(minFail, rhos[i]); }
+            }
+
+            Info<< "          converged: " << nConv << " of " << rhos.size()
+                << endl;
+            if (nConv == 0 || nConv == rhos.size())
+            {
+                Info<< "          no contrast on this bed -- nothing measured"
+                    << endl;
+            }
+            else if (maxConv < minFail)
+            {
+                Info<< "          SEPARABLE: rho <= " << maxConv
+                    << " converged, rho >= " << minFail << " did not" << nl
+                    << "          -> any threshold in (" << maxConv << ", "
+                    << minFail << "); conservative choice " << maxConv << endl;
+            }
+            else
+            {
+                Info<< "          OVERLAP: converged up to rho " << maxConv
+                    << " but failures start at " << minFail << nl
+                    << "          -> rho alone cannot govern this bed" << endl;
+            }
+        }
+        Info<< nl << "        -> ship the MOST CONSERVATIVE threshold across"
+            << " beds, not CASE 14's," << nl
+            << "           and if any bed OVERLAPS, rho needs a companion"
+            << " signal." << endl;
+    }
+
     Info<< nl << "=== end ===" << nl << endl;
     return 0;
 }
