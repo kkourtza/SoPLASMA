@@ -1,6 +1,8 @@
 #include "plasmaOuterRelaxation.H"
 #include "fvMesh.H"
 #include "Time.H"
+#include "Pstream.H"
+#include "PstreamReduceOps.H"
 
 namespace Foam
 {
@@ -84,7 +86,9 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
     omega_(1.0),
     omegaMinStep_(1.0),
     omegaMaxStep_(0.0),
-    nRelaxed_(0)
+    nRelaxed_(0),
+    rNormPrev_(0),
+    contractionMaxStep_(0)
 {}
 
 
@@ -169,6 +173,10 @@ void Foam::plasmaOuterRelaxation::newStepCheck()
     nRelaxed_ = 0;
     contributed_ = false;
     nContributed_ = 0;
+
+    // A residual norm may no more be carried across a step than a residual.
+    rNormPrev_ = 0;
+    contractionMaxStep_ = 0;
 }
 
 
@@ -221,6 +229,28 @@ void Foam::plasmaOuterRelaxation::applyJoint()
         forAll(p, c) { rj[off + c] = p[c] - q[c]; }
         off += p.size();
     }
+
+    // CONTRACTION, measured before anything else touches omega.
+    //
+    // rho = ||r_k|| / ||r_{k-1}||: below 1 the outer loop is contracting, at
+    // or above 1 it is not. Unlike omega this is defined for ANY relaxation
+    // scheme -- including Anderson, which has no omega -- so it is the signal
+    // a time-step governor can keep using across a change of scheme.
+    //
+    // Collective, over VALUES, exactly as the Aitken reductions are, so every
+    // rank sees the same number.
+    scalar rNorm = sumSqr(rj);
+    reduce(rNorm, sumOp<scalar>());
+    rNorm = Foam::sqrt(rNorm);
+
+    if (rNormPrev_ > VSMALL)
+    {
+        // The WORST ratio over the step, because one corrector that fails to
+        // contract is what a governor needs to see; an average over a step
+        // that recovered would hide it.
+        contractionMaxStep_ = max(contractionMaxStep_, rNorm/rNormPrev_);
+    }
+    rNormPrev_ = rNorm;
 
     omega_ = aitken_.omega(rj);
 
@@ -293,6 +323,12 @@ void Foam::plasmaOuterRelaxation::discardStep()
     omegaMaxStep_ = 0.0;
     nRelaxed_ = 0;
     timeIndex_ = -1;
+
+    // THE STEP-DISCARD INVARIANT. These are per-pass accumulators like every
+    // other diagnostic here: without this the discarded attempt's contraction
+    // would be reported alongside, and eventually govern, the kept one.
+    rNormPrev_ = 0;
+    contractionMaxStep_ = 0;
 }
 
 // ************************************************************************* //

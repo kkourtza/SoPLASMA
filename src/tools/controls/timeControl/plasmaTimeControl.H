@@ -269,6 +269,13 @@ private:
         //  relaxation is off, so neither threshold below can bind.
         scalar relaxMargin_ = 1.0;
 
+        //- Worst joint-residual contraction ratio over the last step,
+        //  max ||r_k||/||r_{k-1}||. DIAGNOSTIC ONLY at present: it is here to
+        //  be compared with relaxMargin_ before either is trusted to govern
+        //  deltaT. Unlike omega it is defined for a scheme that does not damp,
+        //  which is what Anderson acceleration needs.
+        scalar relaxContraction_ = 0.0;
+
         //- Largest factor this step, reported beside the minimum
         scalar relaxOmegaMax_ = 1.0;
 

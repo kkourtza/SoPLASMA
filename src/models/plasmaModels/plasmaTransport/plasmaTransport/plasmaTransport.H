@@ -815,6 +815,14 @@ public:
             return relax_ ? relax_->margin() : 1.0;
         }
 
+        //- Worst joint-residual contraction ratio over the last step. 0 when
+        //  nothing was measured, which the reporter distinguishes from a real
+        //  contraction of 0. See plasmaOuterRelaxation::contraction().
+        scalar relaxationContraction() const
+        {
+            return relax_ ? relax_->contraction() : 0.0;
+        }
+
         //- Largest joint relaxation factor over the last step. Reported beside
         //  the minimum so "omega sat near 0.5 all step" is distinguishable
         //  from "omega swung from 1.0 to 0.18" -- those describe different

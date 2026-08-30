@@ -745,6 +745,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     // integrator and never reach the corrector cap, so that verdict may never
     // arrive. omega is available every corrector.
     relaxMargin_ = transport.relaxationMargin();
+    relaxContraction_ = transport.relaxationContraction();
     relaxOmegaMax_ = transport.relaxationOmegaMax();
     relaxMarginBound_ = false;
     if (relaxMargin_ < relaxMarginShrink_)
@@ -969,6 +970,28 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     else
     {
         Info<< "    omega [coupling margin]:  min 1  (nothing damped)" << nl;
+    }
+
+    // CONTRACTION, reported beside omega and NOT yet governing anything.
+    //
+    // rho = max over the step of ||r_k||/||r_{k-1}||. Below 1 the outer loop
+    // contracted; at or above 1 it did not. It is here to be COMPARED with
+    // omega on real runs before either is trusted to drive deltaT.
+    //
+    // The two are not interchangeable. omega says how hard the relaxation had
+    // to damp, which only means anything for a scheme that damps -- Anderson
+    // acceleration has no omega, and a governor keyed on omega would silently
+    // stop governing the moment it were enabled. rho asks what the governor
+    // actually wants to know, and is defined for any scheme.
+    //
+    // Which one should drive the governor is a question for measurement. This
+    // prints the data to answer it.
+    if (relaxContraction_ > 0)
+    {
+        Info<< "    rho [contraction]:        max " << relaxContraction_
+            << (relaxContraction_ >= 1.0
+                    ? "   <--  did NOT contract" : "")
+            << "   (diagnostic; omega still governs)" << nl;
     }
 
     // OUTER-LOOP HALVING, reported beside the other constraints.

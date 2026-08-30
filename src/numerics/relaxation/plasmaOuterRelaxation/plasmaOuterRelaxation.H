@@ -105,6 +105,29 @@ class plasmaOuterRelaxation
         //- Correctors relaxed since the last reset
         label nRelaxed_;
 
+        //- 2-norm of the joint residual at the previous corrector, and the
+        //  WORST contraction ratio ||r_k||/||r_{k-1}|| seen this step.
+        //
+        //  WHY, ALONGSIDE omega. omega answers "how hard did the relaxation
+        //  have to damp", which is meaningful only for a method that damps.
+        //  Anderson acceleration does not damp -- it cancels the offending
+        //  mode -- so it has no omega at all, and a time-step governor keyed
+        //  on omega would silently stop governing the moment it were enabled.
+        //
+        //  The contraction ratio asks the question the governor actually
+        //  wants: IS THE OUTER LOOP CONTRACTING, AND HOW FAST. It is defined
+        //  for any method, including none, so it can carry the governor across
+        //  a change of relaxation scheme.
+        //
+        //  It is NOT a drop-in replacement for omega and is currently reported
+        //  only. rho is measured on the RELAXED iteration, so a small rho with
+        //  a small omega means "contracting only because it is being damped
+        //  hard" -- the pair says more than either alone, and which of them
+        //  should drive the governor is a question for measurement, not for
+        //  assertion.
+        scalar rNormPrev_;
+        scalar contractionMaxStep_;
+
 
 
 
@@ -181,6 +204,15 @@ public:
         //  and is what is returned when the class is inactive, so a case that
         //  does not use it imposes no time-step limit.
         scalar margin() const { return active_ ? omegaMinStep_ : 1.0; }
+
+        //- Worst joint-residual contraction ratio this step, ||r_k||/||r_k-1||.
+        //  Below 1 the outer loop contracted; at or above 1 it did not.
+        //  Returns 0 when nothing was measured (fewer than two correctors, or
+        //  inactive), which the reporter distinguishes from a real 0.
+        scalar contraction() const
+        {
+            return active_ ? contractionMaxStep_ : 0.0;
+        }
 
         scalar omega() const { return omega_; }
 
