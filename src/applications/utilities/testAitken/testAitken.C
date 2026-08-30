@@ -37,6 +37,7 @@ Description
 \*---------------------------------------------------------------------------*/
 
 #include "aitkenRelaxation.H"
+#include "andersonRelaxation.H"
 #include "IOstreams.H"
 #include "scalarField.H"
 #include <cmath>
@@ -708,6 +709,255 @@ int main()
             << " per-corrector omega is" << nl
             << "           itself destabilising and should be frozen"
             << " within a step." << endl;
+    }
+
+    // ---- CASE 10: ANDERSON vs JOINT AITKEN on the CASE 7 cycle -----------
+    //
+    // CASE 7 is the regime that matters: the two-field period-2 cycle, which
+    // is what n_e / nEps_e do above the critical deltaT. The best SCALAR
+    // policy there is joint Aitken at 91 correctors -- damping buys stability
+    // by slowing every mode, including the ones that were already fine.
+    //
+    // Anderson builds the next iterate from a least-squares combination of the
+    // last m residuals, so it can CANCEL the offending mode instead. This
+    //
+    // HOW MANY VECTORS DOES IT NEED? The coupled map has Jacobian
+    //     [  0    gab ]
+    //     [ -gba   0  ]
+    // whose eigenvalues are +/- i sqrt(gab gba) = +/- 1.196i -- a COMPLEX
+    // CONJUGATE PAIR, not a single mode. A real Krylov method cannot represent
+    // half of a conjugate pair, so m = 1 CANNOT converge here; m = 2 is the
+    // true minimum, terminating in about m+1 correctors as GMRES does on a
+    // 2-dimensional Krylov space.
+    //
+    // Stated precisely because the first version of this comment asserted "one
+    // active mode, so m = 1 should terminate", and the very first run
+    // contradicted it. ONE OSCILLATORY MODE IS TWO EIGENVALUES.
+    //
+    // Reported alongside: how often the safeguards fired. An acceleration that
+    // only converges because it silently fell back to plain relaxation has not
+    // accelerated anything, and the counters are the only way to tell.
+    {
+        const label n = 200;
+        const scalar gab = 1.3, gba = 1.1;
+
+        Info<< nl << "CASE 10  Anderson vs joint Aitken on the CASE 7 cycle"
+            << nl << "        (a <- +" << gab << " b,  b <- -" << gba
+            << " a; loop gain " << gab*gba
+            << ", eigenvalues +/- 1.196i)" << endl;
+
+        // --- reference: joint Aitken, as CASE 7 measures it
+        {
+            scalarField a(n, 1.0), b(n, 1.0);
+            aitkenRelaxation rJ("joint", 1.0, wMinBound, wMaxBound);
+            rJ.reset();
+            label its = -2;
+
+            for (label k = 0; k < maxIt; ++k)
+            {
+                scalarField rj(2*n);
+                forAll(a, c) { rj[c]     = ( gab*b[c]) - a[c]; }
+                forAll(b, c) { rj[n + c] = (-gba*a[c]) - b[c]; }
+
+                const scalar w = rJ.omega(rj);
+                forAll(a, c) { a[c] += w*rj[c];     }
+                forAll(b, c) { b[c] += w*rj[n + c]; }
+
+                scalar nrm = 0;
+                forAll(a, c) { nrm = max(nrm, max(mag(a[c]), mag(b[c]))); }
+                if (nrm < tol) { its = k + 1; break; }
+                if (nrm > 1e12) { its = -1; break; }
+            }
+            Info<< "  joint Aitken   : ";
+            if (its == -1)      Info<< "DIVERGED";
+            else if (its == -2) Info<< "not converged in " << maxIt;
+            else                Info<< its << " correctors";
+            Info<< endl;
+        }
+
+        // --- Anderson, m = 1 .. 5
+        for (label m = 1; m <= 5; ++m)
+        {
+            scalarField x(2*n, 1.0);
+            andersonRelaxation aa("joint", m, 1.0);
+            aa.reset();
+            label its = -2;
+
+            for (label k = 0; k < maxIt; ++k)
+            {
+                scalarField r(2*n);
+                forAll(r, c)
+                {
+                    r[c] = (c < n)
+                        ? ( gab*x[n + c]) - x[c]
+                        : (-gba*x[c - n]) - x[c];
+                }
+
+                aa.correct(x, r);
+
+                scalar nrm = 0;
+                forAll(x, c) { nrm = max(nrm, mag(x[c])); }
+                if (nrm < tol) { its = k + 1; break; }
+                if (nrm > 1e12) { its = -1; break; }
+            }
+
+            Info<< "  Anderson m = " << m << "  : ";
+            if (its == -1)      Info<< "DIVERGED";
+            else if (its == -2) Info<< "not converged in " << maxIt;
+            else                Info<< its << " correctors";
+            Info<< "   fallbacks: step " << aa.nFallbackStep()
+                << ", solve " << aa.nFallbackSolve()
+                << "   max depth used " << aa.mUsedMax() << endl;
+        }
+        Info<< "        -> the oscillatory mode is a COMPLEX CONJUGATE PAIR,"
+            << " so m = 1 cannot" << nl
+            << "           represent it; m = 2 is the minimum and ~m+1"
+            << " correctors is GMRES" << nl
+            << "           behaviour. Fallbacks above zero would mean the"
+            << " safeguards, not the" << nl
+            << "           method, are doing the converging." << endl;
+    }
+
+    // ---- CASE 11: does Anderson survive a NON-SMOOTH iteration? ----------
+    //
+    // The honest counter-test. Anderson's extrapolation assumes the map is
+    // (locally) linear, and this solver's is not: densities are clamped to a
+    // floor, which is a projection, and CASE 5 already records that Aitken's
+    // linear extrapolation is invalid across it. Anderson is MORE aggressive
+    // than Aitken, so if the clamp is going to break something it breaks this.
+    //
+    // A method that wins CASE 10 and blows up here is not ready for the CFD,
+    // and the step limiter is exactly what should catch it. This case measures
+    // whether it does.
+    {
+        const label n = 200;
+        const scalar gab = 1.3, gba = 1.1;
+        const scalar floorVal = 0.35;    // the clamp, active near the answer
+
+        Info<< nl << "CASE 11  the same cycle with a CLAMP inside the iteration"
+            << nl << "        (x floored at " << floorVal
+            << "; fixed point 1, so the clamp is active on the way in)" << endl;
+
+        for (label mode = 0; mode < 6; ++mode)
+        {
+            const label m = mode;        // 0 = plain relaxation, else Anderson
+            scalarField x(2*n, 3.0);
+            andersonRelaxation aa("clamped", m, 1.0);
+            aa.reset();
+            label its = -2;
+
+            for (label k = 0; k < maxIt; ++k)
+            {
+                // fixed point at x = 1 in both blocks
+                scalarField r(2*n);
+                forAll(r, c)
+                {
+                    r[c] = (c < n)
+                        ? (1.0 + gab*(x[n + c] - 1.0)) - x[c]
+                        : (1.0 - gba*(x[c - n] - 1.0)) - x[c];
+                }
+
+                aa.correct(x, r);
+
+                // THE NON-SMOOTHNESS: a hard floor, as the solver applies to
+                // every density.
+                forAll(x, c) { x[c] = max(x[c], floorVal); }
+
+                scalar nrm = 0;
+                forAll(x, c) { nrm = max(nrm, mag(x[c] - 1.0)); }
+                if (nrm < tol) { its = k + 1; break; }
+                if (nrm > 1e12) { its = -1; break; }
+            }
+
+            if (m == 0) Info<< "  plain (m = 0)  : ";
+            else        Info<< "  Anderson m = " << m << "  : ";
+            if (its == -1)      Info<< "DIVERGED";
+            else if (its == -2) Info<< "not converged in " << maxIt;
+            else                Info<< its << " correctors";
+            Info<< "   fallbacks: step " << aa.nFallbackStep()
+                << ", solve " << aa.nFallbackSolve() << endl;
+        }
+        Info<< "        -> DIVERGED here would disqualify Anderson for the"
+            << " solver regardless of" << nl
+            << "           CASE 10. A rising `step` fallback count is the"
+            << " limiter working." << endl;
+
+        // --- THE HARDER VARIANT: the clamp is ACTIVE AT THE ANSWER ---------
+        //
+        // Above, the fixed point is 1 and the floor is 0.35, so the clamp is
+        // crossed on the way in and INACTIVE once inside the basin -- which
+        // flatters the method. The solver's situation is the opposite: most of
+        // a streamer domain sits ON the density floor at convergence, so the
+        // projection is active AT the fixed point for those cells, and the map
+        // is non-differentiable exactly where the iteration has to stop.
+        //
+        // Half the cells are given a fixed point BELOW the floor, so their
+        // converged value is the floor itself and the active set is part of the
+        // answer.
+        Info<< nl << "         clamp ACTIVE AT the fixed point"
+            << " (half the cells converge ON the floor)" << endl;
+
+        for (label mode = 0; mode < 6; ++mode)
+        {
+            const label m = mode;
+            scalarField x(2*n, 3.0);
+
+            // per-cell target: below the floor for half of them
+            scalarField xStar(2*n, 1.0);
+            forAll(xStar, c) { if ((c % 2) == 0) xStar[c] = 0.10; }
+
+            andersonRelaxation aa("clampedActive", m, 1.0);
+            aa.reset();
+            label its = -2;
+
+            for (label k = 0; k < maxIt; ++k)
+            {
+                scalarField r(2*n);
+                forAll(r, c)
+                {
+                    r[c] = (c < n)
+                        ? (xStar[c] + gab*(x[n + c] - xStar[n + c])) - x[c]
+                        : (xStar[c] - gba*(x[c - n] - xStar[c - n])) - x[c];
+                }
+
+                // MEASURE THE STEP, NOT THE DISTANCE TO A GUESSED ANSWER.
+                //
+                // The first version of this case scored convergence against
+                // max(xStar, floor). That is NOT a fixed point of the clamped
+                // map -- P(G(x)) = x is a complementarity problem whose
+                // solution is not the projection of the unclamped answer -- so
+                // it recorded "not converged" for EVERY method including plain
+                // relaxation, which is the tell that the target was wrong
+                // rather than the methods.
+                //
+                // The stagnation of the iterate needs no analytic answer and is
+                // exactly what the solver's own outer loop tests.
+                const scalarField xOld(x);
+
+                aa.correct(x, r);
+                forAll(x, c) { x[c] = max(x[c], floorVal); }
+
+                scalar nrm = 0;
+                forAll(x, c) { nrm = max(nrm, mag(x[c] - xOld[c])); }
+                if (nrm < tol) { its = k + 1; break; }
+                if (nrm > 1e12) { its = -1; break; }
+            }
+
+            if (m == 0) Info<< "  plain (m = 0)  : ";
+            else        Info<< "  Anderson m = " << m << "  : ";
+            if (its == -1)      Info<< "DIVERGED";
+            else if (its == -2) Info<< "not converged in " << maxIt;
+            else                Info<< its << " correctors";
+            Info<< "   fallbacks: step " << aa.nFallbackStep()
+                << ", solve " << aa.nFallbackSolve() << endl;
+        }
+        Info<< "        -> this is the realistic one: the active set is part of"
+            << " the answer, so the" << nl
+            << "           map is non-differentiable AT the fixed point."
+            << " Anderson failing HERE" << nl
+            << "           but passing above would mean the earlier result was"
+            << " an artefact of a" << nl
+            << "           clamp that switched itself off." << endl;
     }
 
     Info<< nl << "=== end ===" << nl << endl;

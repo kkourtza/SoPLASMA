@@ -1,4 +1,5 @@
 relaxation/aitkenRelaxation/aitkenRelaxation.C
+relaxation/andersonRelaxation/andersonRelaxation.C
 relaxation/plasmaOuterRelaxation/plasmaOuterRelaxation.C
 
 schemes/fvm/ScharfetterGummel/ScharfetterGummel.C
