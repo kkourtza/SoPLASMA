@@ -47,6 +47,7 @@ SourceFiles
 #define plasmaOuterRelaxation_H
 
 #include "aitkenRelaxation.H"
+#include "andersonRelaxation.H"
 #include "volFields.H"
 #include "regIOobject.H"
 
@@ -93,6 +94,25 @@ class plasmaOuterRelaxation
 
         //- The joint estimator
         aitkenRelaxation aitken_;
+
+        //- `aitken` (default) or `anderson`. Which scheme drives the joint
+        //  outer-loop update. See the constructor for why the default did not
+        //  change when Anderson measured 30x better on the unit bed.
+        word scheme_;
+
+        //- Anderson history depth. 2 is the measured optimum, not a guess:
+        //  the n_e/nEps_e oscillation is a COMPLEX CONJUGATE PAIR, so a real
+        //  Krylov method needs a 2-dimensional subspace and m = 1 cannot
+        //  converge it at all (testAitken CASE 10). Deeper windows span more
+        //  active-set changes of the density clamp, over which the linear
+        //  model does not hold, and measured WORSE: on the clamped bed m = 2
+        //  took 8 correctors, m = 4 took 27 with six solve fallbacks.
+        label andersonDepth_;
+
+        //- Mixing factor on the residual; 1 is pure Anderson.
+        scalar andersonBeta_;
+
+        andersonRelaxation anderson_;
 
         //- Time index the history was last reset at
         label timeIndex_;
@@ -203,7 +223,25 @@ public:
         //- Smallest joint factor this step. 1 means nothing needed damping,
         //  and is what is returned when the class is inactive, so a case that
         //  does not use it imposes no time-step limit.
-        scalar margin() const { return active_ ? omegaMinStep_ : 1.0; }
+        //- The time-step controller's coupling stability margin.
+        //
+        //  Under ANDERSON this deliberately returns 1, i.e. no limit. omega
+        //  answers "how hard did the relaxation have to damp", which is
+        //  meaningless for a scheme that does not damp -- Anderson cancels the
+        //  mode instead. MEASURED, testAitken CASE 17: Anderson m = 2
+        //  converged at EVERY stiffness swept, on both the linear and the
+        //  clamped bed, so there is no boundary for a pre-emptive governor to
+        //  pre-empt. It fails as a cliff, and `retryStep` is what handles a
+        //  cliff. Inventing a substitute governor would throttle deltaT for no
+        //  reason; see the start-up note.
+        scalar margin() const
+        {
+            if (!active_ || scheme_ == "anderson") return 1.0;
+            return omegaMinStep_;
+        }
+
+        //- Which scheme is driving the joint update
+        const word& scheme() const { return scheme_; }
 
         //- Worst joint-residual contraction ratio this step, ||r_k||/||r_k-1||.
         //  Below 1 the outer loop contracted; at or above 1 it did not.

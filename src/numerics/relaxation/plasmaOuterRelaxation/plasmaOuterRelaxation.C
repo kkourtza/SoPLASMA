@@ -82,6 +82,15 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
         // unlimited run survived 15 steps.
         descentLimit_
     ),
+    // DEFAULT STAYS `aitken` even though Anderson measured 30x better on the
+    // unit bed (testAitken CASE 10: 91 correctors -> 3). That result is on
+    // synthetic problems; it has not yet been shown on a case with real
+    // chemistry, a Poisson solve and spatially varying coefficients. A default
+    // is a promise, and this one has not been earned yet.
+    scheme_(oc.getOrDefault<word>("outerScheme", "aitken")),
+    andersonDepth_(oc.getOrDefault<label>("andersonDepth", 2)),
+    andersonBeta_(oc.getOrDefault<scalar>("andersonBeta", 1.0)),
+    anderson_("joint", andersonDepth_, andersonBeta_),
     timeIndex_(-1),
     omega_(1.0),
     omegaMinStep_(1.0),
@@ -89,7 +98,46 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
     nRelaxed_(0),
     rNormPrev_(0),
     contractionMaxStep_(0)
-{}
+{
+    if (scheme_ != "aitken" && scheme_ != "anderson")
+    {
+        FatalErrorInFunction
+            << "outerCoupling/outerScheme = `" << scheme_
+            << "` is not recognised." << nl
+            << "    Use aitken | anderson." << exit(FatalError);
+    }
+
+    if (!active_) return;
+
+    if (scheme_ == "anderson")
+    {
+        if (andersonDepth_ < 2)
+        {
+            FatalErrorInFunction
+                << "outerCoupling/andersonDepth = " << andersonDepth_
+                << " cannot converge this coupling." << nl
+                << "    The n_e/nEps_e oscillation is a COMPLEX CONJUGATE"
+                   " PAIR, and a real Krylov" << nl
+                << "    method cannot represent half of one. Measured"
+                   " (testAitken CASE 10): m = 1" << nl
+                << "    does not converge at all where m = 2 takes 3"
+                   " correctors. Use 2 or more." << exit(FatalError);
+        }
+
+        Info<< "plasmaOuterRelaxation: ANDERSON acceleration, depth "
+            << andersonDepth_ << ", beta " << andersonBeta_ << nl
+            << "    The deltaT coupling-margin governor is DISABLED under"
+               " Anderson, deliberately:" << nl
+            << "    Anderson does not damp, so it has no omega, and it"
+               " converged at every" << nl
+            << "    stiffness swept on both the smooth and the clamped unit"
+               " bed. It fails as a" << nl
+            << "    CLIFF, and `onNonConvergence retryStep` is the mechanism"
+               " for that -- make" << nl
+            << "    sure it is on. `rho [contraction]` remains the reported"
+               " diagnostic." << endl;
+    }
+}
 
 
 // * * * * * * * * * * * * * * * *  Selectors  * * * * * * * * * * * * * * * //
@@ -168,6 +216,7 @@ void Foam::plasmaOuterRelaxation::newStepCheck()
     // holds the accepted solution of the previous step, which is exactly where
     // this step's Picard iteration starts.
     aitken_.reset();
+    anderson_.reset();
     omegaMinStep_ = 1.0;
     omegaMaxStep_ = 0.0;
     nRelaxed_ = 0;
@@ -252,8 +301,6 @@ void Foam::plasmaOuterRelaxation::applyJoint()
     }
     rNormPrev_ = rNorm;
 
-    omega_ = aitken_.omega(rj);
-
     // NO RELAXATION ON THE FINAL OUTER CORRECTOR.
     //
     // The accepted iterate of a time step must be what the equations actually
@@ -272,10 +319,54 @@ void Foam::plasmaOuterRelaxation::applyJoint()
     //
     // At a genuinely converged fixed point r -> 0 and this changes nothing;
     // it matters exactly when the loop stops early, which is the normal case.
-    if (mesh_.data().isFinalIteration())
+    // THE SAME RULE BINDS ANDERSON. Its update is also a blend -- of the
+    // history rather than of two iterates -- so accepting it as the step's
+    // answer biases the result exactly as a relaxed iterate does. On the final
+    // corrector both schemes take the solve unchanged.
+    const bool finalIter = mesh_.data().isFinalIteration();
+
+    if (scheme_ == "anderson" && !finalIter)
     {
+        // Anderson works on the WHOLE joint vector, so gather prev into one
+        // contiguous x, let it update in place, and scatter back. rj is
+        // already the joint residual r = pending - prev evaluated at x.
+        scalarField x(nTot);
+        label o = 0;
+        forAll(fields_, i)
+        {
+            const scalarField& q = prev_[i];
+            forAll(q, c) { x[o + c] = q[c]; }
+            o += q.size();
+        }
+
+        anderson_.correct(x, rj);
+
+        o = 0;
+        forAll(fields_, i)
+        {
+            volScalarField& f = fields_[i];
+            scalarField& fi = f.primitiveFieldRef();
+            forAll(fi, c) { fi[c] = x[o + c]; }
+            o += fi.size();
+
+            f.correctBoundaryConditions();
+            prev_[i] = f.primitiveField();
+        }
+
+        // omega has no meaning here; report 1 so the margin reads "nothing
+        // damped" rather than a stale number from a scheme that is not running.
         omega_ = 1.0;
+        omegaMinStep_ = min(omegaMinStep_, omega_);
+        omegaMaxStep_ = max(omegaMaxStep_, omega_);
+        ++nRelaxed_;
+
+        contributed_ = false;
+        nContributed_ = 0;
+        return;
     }
+
+    omega_ = finalIter ? 1.0 : aitken_.omega(rj);
+
     omegaMinStep_ = min(omegaMinStep_, omega_);
     omegaMaxStep_ = max(omegaMaxStep_, omega_);
     ++nRelaxed_;
@@ -312,6 +403,12 @@ void Foam::plasmaOuterRelaxation::discardStep()
     // Re-seed from the fields as they stand AFTER the restore, and force the
     // next contribute() to treat this as a fresh step.
     aitken_.reset();
+
+    // THE STEP-DISCARD INVARIANT applies to Anderson's history exactly as to
+    // Aitken's: a difference taken across a discarded attempt describes a step
+    // that no longer exists.
+    anderson_.reset();
+
     forAll(fields_, i)
     {
         prev_[i] = fields_[i].primitiveField();
