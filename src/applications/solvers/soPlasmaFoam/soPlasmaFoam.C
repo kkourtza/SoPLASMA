@@ -407,6 +407,37 @@ int main(int argc, char *argv[])
 
         if (timeControl.stepRejected())
         {
+            // ================= THE STEP-DISCARD INVARIANT =================
+            //
+            // EVERY piece of solution state must be idempotent WITHIN a
+            // timestep: this step is about to be thrown away and re-run, and
+            // the answer must not depend on the attempt being discarded.
+            //
+            // Anything added to this solver in future must satisfy it one of
+            // three ways:
+            //   * recomputed from oldTime() each pass, and restored here on
+            //     rejection -- REQUIRED for anything carrying fvm::ddt
+            //     (species densities, T_gas, n_eps today);
+            //   * baselined so a re-run recomputes instead of accumulating
+            //     (e_vib does `ev = ev_start + ...`, never `ev += ...`;
+            //     surfCharge resets from its own oldTime before accumulating);
+            //   * keyed on timeIndex, for caches.
+            // Per-pass counters must be ZEROED, or the discarded attempt is
+            // counted alongside the kept one.
+            //
+            // THIS IS NOT THEORETICAL. n_eps was missed when retryStep was
+            // written -- it lives in plasmaEnergy, not plasmaTransport -- so a
+            // retried LMEA step re-solved with n_e at t^n and n_eps at the
+            // DISCARDED t^{n+1}, and meanE = n_eps/n_e mixed two instants.
+            // Measured: SIGFPE at step 6 after ONE discard. It survived
+            // review because all four retryStep validation beds are LFA and
+            // never exercised an electron-energy equation.
+            //
+            // A new energy model that forgets to override discardStep() fails
+            // SILENTLY -- the base is a no-op. Test against a case that
+            // actually retries (co1.5-forceretry forces it with
+            // maxCorrectors 3).
+            // ==============================================================
             transport.discardStep();
             if (energy) energy->discardStep();
 

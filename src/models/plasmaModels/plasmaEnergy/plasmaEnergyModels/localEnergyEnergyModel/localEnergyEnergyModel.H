@@ -241,7 +241,6 @@ private:
     //- Refresh meanE_ and T_ from n_eps and n_e.
     void updateDerived();
 
-
 public:
 
     //- Runtime type information
@@ -266,6 +265,11 @@ public:
         //- The electron energy equation. Unlike every other energy model,
         //  this returns a REAL matrix: that is what LMEA is.
         virtual tmp<fvScalarMatrix> eEqn() const override;
+
+        //- Roll n_eps back to oldTime() when a step is discarded, and refresh
+        //  everything derived from it. Without this a retried step restarts
+        //  from n_e at t^n and n_eps at the thrown-away t^{n+1}.
+        virtual void discardStep() override;
 
         virtual bool isUniform() const override { return false; }
         virtual bool isConstant() const override { return false; }

@@ -1494,6 +1494,34 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
 }
 
 
+void localEnergyEnergyModel::discardStep()
+{
+    // THE STEP IS BEING THROWN AWAY, so n_eps must go back with the species.
+    //
+    // plasmaTransport::discardStep() restores every number density to
+    // oldTime(), but n_eps lives here, and nothing restored it. A retried
+    // step therefore re-solved with n_e at t^n and n_eps at the DISCARDED
+    // t^{n+1}, and the ratio meanE = n_eps/n_e was formed from two different
+    // instants. Measured: SIGFPE on the first discard of an LMEA run
+    // (`retry-iso`, step 6, one discard, zero non-convergences).
+    //
+    // retryStep was developed and validated on LFA cases only -- none of the
+    // four co1.5-retry* beds declares an energyModel -- so this path had never
+    // been exercised with an electron-energy equation.
+    nEps_ == nEps_.oldTime();
+    nEps_.correctBoundaryConditions();
+
+    // Everything downstream of n_eps -- meanE, T_e, the clamp counters -- is
+    // derived, so it must be rebuilt rather than left describing the attempt
+    // that was discarded.
+    updateDerived();
+
+    // Per-pass diagnostics, for the same reason plasmaTransport zeroes its
+    // own: the discarded attempt must not be counted alongside the kept one.
+    clampedSteps_ = 0;
+}
+
+
 tmp<volScalarField> localEnergyEnergyModel::T() const
 {
     return T_;

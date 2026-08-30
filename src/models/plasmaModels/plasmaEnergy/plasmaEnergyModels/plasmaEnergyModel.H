@@ -150,6 +150,18 @@ public:
         //  alone was measured to floor the factor without converging.
         virtual volScalarField* nEpsPtr() { return nullptr; }
 
+        //- Throw away the step just solved and return to oldTime().
+        //
+        //  A model that SOLVES a transported field must restore it here, or a
+        //  retried step re-solves from a mixed state: plasmaTransport rolls
+        //  the species back to t^n while this model's field is still at the
+        //  discarded t^{n+1}. Under LMEA that mismatch is formed into
+        //  meanE = nEps_e/n_e, and it SIGFPE'd on the first discard.
+        //
+        //  Default no-op: a model with no transported state of its own
+        //  (isothermal, gasTemperature, localField) has nothing to undo.
+        virtual void discardStep() {}
+
         //- Return the energy equation (Matrix)
         virtual tmp<fvScalarMatrix> eEqn() const = 0;
 

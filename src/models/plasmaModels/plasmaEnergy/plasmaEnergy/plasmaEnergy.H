@@ -240,6 +240,15 @@ public:
         //  recomputes it with the shorter deltaT.
         void discardStep()
         {
+            // THE ENERGY MODELS FIRST, AND UNCONDITIONALLY. An LMEA case need
+            // not solve the gas energy at all, and the old early-return on
+            // solveGasEnergy_ meant such a case discarded NOTHING -- n_eps
+            // stayed at the thrown-away step. Each model knows what it owns.
+            forAll(energyModels_, i)
+            {
+                energyModels_[i].discardStep();
+            }
+
             if (!solveGasEnergy_ || !TgasFieldPtr_) return;
             volScalarField& T = *TgasFieldPtr_;
             T == T.oldTime();
