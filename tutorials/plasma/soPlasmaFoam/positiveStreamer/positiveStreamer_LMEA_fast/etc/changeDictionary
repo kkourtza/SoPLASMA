@@ -1,0 +1,348 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      changeDictionaryDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+ePotential
+{
+    internalField   uniform 0;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            fixedValue;
+            value           uniform 0;
+        }
+
+        active_electrode
+        {
+            // Ramped, not a step. The benchmark specifies a constant 18.75 kV
+            // from t=0; ramping withholds part of the applied field over the
+            // first ~94 ps, so early-time behaviour is NOT directly comparable
+            // with the reference. Kept deliberately: a step change puts a very
+            // large field transient on the electrode in the first timesteps.
+            type            uniformFixedValue;
+            uniformValue    table ((0 0) (9.375000e-11 18750));
+            value           uniform 0;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+surfCharge
+{
+    internalField   uniform 0;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            fixedValue;
+            value           uniform 0;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+            value           uniform 0;
+        }
+    }
+}
+
+n_e
+{
+    internalField   uniform 1e13;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            inletOutlet;
+            phi             particleFlux_e;
+            inletValue      uniform 1e13;
+            value  $internalField;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+n_N2p
+{
+    // Background positive charge is split between the ions in proportion to
+    // the gas: 7.9e12 + 2.1e12 = 1e13 = n_e, so the undisturbed gas is
+    // quasi-neutral and matches the clamp floors exactly. A mismatch here
+    // would be clamped away on step 1, as a jump rather than as an error.
+    internalField   uniform 7.9e12;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            zeroGradient;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+n_O2p
+{
+    internalField   uniform 2.1e12;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            zeroGradient;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+n_Om
+{
+    internalField   uniform 1e5;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            zeroGradient;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+
+n_O2m
+{
+    internalField   uniform 1e5;
+
+    boundaryField
+    {
+        ".*"
+        {
+            type            zeroGradient;
+        }
+
+        axis 
+        {
+            type            empty;
+        }
+
+        wedge_0 
+        {
+            type            wedge;
+        }
+
+        wedge_1 
+        {
+            type            wedge;
+        }
+
+        grounded_electrode
+        {
+            type            zeroGradient;
+        }
+
+        active_electrode
+        {
+            type            zeroGradient;
+        }
+
+        far
+        {
+            type            zeroGradient;
+        }
+
+        "procBoundary.*"
+        {
+            type            processor;
+        }
+    }
+}
+

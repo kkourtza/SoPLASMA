@@ -1,0 +1,89 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    constant;
+    object      plasmaProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+plasmaTimeControl
+{
+    adjustTimeStep                  $adjustTimeStep;
+
+    // OFF for the Option 4 gate: the stiff integrator must supply the
+    // stability the limiter was buying by shrinking dt ~12x.
+    limitEnergyRelaxation           false;
+
+    limitDielectricRelaxationRatio  $limitDielectricRelaxationRatio;
+    printDielectricRelaxationRatio  $printDielectricRelaxationRatio;
+    maxDielectricRelaxationRatio    $maxDielectricRelaxationRatio;
+    
+    limitSpeciesCo                  $limitSpeciesCo;
+    printSpeciesCo                  $printSpeciesCo;
+    maxSpeciesConvectiveCo          $maxSpeciesCo;
+    maxSpeciesDiffusiveCo           $maxSpeciesCo;
+    
+    limitChemistryCo                $limitChemistryCo;
+    printChemistryCo                $printChemistryCo;
+    maxChemistryCo                  $maxChemistryCo;
+
+    limitVoltageRiseRate            $limitVoltageRiseRate;
+    printVoltageRiseRate            $printVoltageRiseRate;
+    maxVoltageRiseRate              $maxVoltageRiseRate;
+    voltagePatchName                "active_electrode";
+}
+
+// Convergence of the OUTER (Poisson <-> species) loop.
+//
+// Within a timestep the field and the densities are lagged relative to each
+// other. Converging that loop is what makes the scheme second order: with a
+// single corrector it is FIRST order whatever ddtSchemes says, because no
+// amount of ddt accuracy repairs a lag. Measured on the shipped benchmark:
+// p = 0.87 at one corrector, p = 1.94 converged.
+//
+// So temporal order is not selected, it is ACHIEVED -- and the run reports
+// which it got rather than promising one.
+outerCoupling
+{
+    // converged -> chase the coupling residual, second order
+    // lagged    -> one corrector, deliberately first order, for scoping runs
+    target            converged;
+
+    // The coupling residual to reach. MUST be comfortably above the
+    // linear-solver tolerance (>= 10x); the solver refuses otherwise. An outer
+    // tolerance at the inner solver's own convergence floor can never be met,
+    // so the loop silently runs to maxCorrectors every step -- a fixed
+    // iteration count wearing the name of a convergence test.
+    tolerance         1e-8;
+
+    // A CAP, not a target: the loop exits as soon as the residual is met.
+    maxCorrectors     20;
+
+    // What to do when the cap is exhausted unconverged. `reduceDeltaT` halves
+    // the step and is applied alongside the Courant and dielectric limits, so
+    // the smallest limit still wins.
+    onNonConvergence  retryStep;   // discard a non-converged step instead of accepting it
+}
+
+// Sato's equation: external circuit current. See
+// docs/discharge-current-sato-plan.md
+dischargeCurrent
+{
+    enabled         true;
+    drivenPatch     active_electrode;
+    groundedPatches (grounded_electrode);
+    perSpecies      true;
+    writeInterval   1;      // every step: one scalar, and a ns pulse is
+                            // destroyed by sampling at the field cadence
+    printInterval   10;
+    crossCheck      true;   // electrode surface integral, plan 5.2
+}

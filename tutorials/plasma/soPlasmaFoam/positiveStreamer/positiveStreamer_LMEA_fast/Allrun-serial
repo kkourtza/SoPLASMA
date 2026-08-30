@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# Fast LMEA bed. Target: the whole thing in well under two minutes, so an
+# electron-energy question can be asked without booking an hour on the 1.15M
+# cell streamer (~70 s PER TIME STEP).
+#
+# No topoSet/refineMesh chain: this is the bare 130x130 block. See
+# system/blockMeshDict for why that is deliberate, and for what it costs.
+cd "${0%/*}" || exit 1
+./Allclean
+touch case.foam
+. "$WM_PROJECT_DIR/bin/tools/RunFunctions"
+
+blockMesh > log.blockMesh 2>&1 || { echo "blockMesh FAILED"; exit 1; }
+extrudeMesh > log.extrudeMesh 2>&1 || { echo "extrudeMesh FAILED"; exit 1; }
+
+# Native OpenFOAM solvers; swap in fvSolution-petsc for the PETSc path.
+cp system/fvSolution-foam system/fvSolution 2>/dev/null || true
+
+mkdir -p 0 && cp -r 0.orig/* 0/
+plasmaCreateSpeciesFields > log.plasmaCreateSpeciesFields 2>&1 \
+    || { echo "plasmaCreateSpeciesFields FAILED"; exit 1; }
+
+cp etc/changeDictionary system/changeDictionaryDict
+changeDictionary > log.changeDictionary 2>&1
+
+python3 initGaussianSeed.py > log.initGaussianSeed 2>&1 || true
+
+soPlasmaFoam > log.soPlasmaFoam 2>&1
+rc=$?
+echo "soPlasmaFoam exit $rc, $(grep -c '^Time = ' log.soPlasmaFoam) steps"
+exit $rc

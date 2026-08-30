@@ -1,0 +1,94 @@
+FoamFile { version 2.0; format ascii; class dictionary; object plasmaTransportProperties; }
+
+chemistry
+{
+    // Reuse the EEDF tables in tableDir instead of re-solving the
+    // Boltzmann sweep at every launch. The tables on disk are checked
+    // against constant/plasmaTables/sweep.stamp before this is set.
+    generateTables  no;
+    mechanism       "constant/air_plasma.foam";
+    tableDir        "constant/plasmaTables";
+
+    // OPTION 4: integrate the electron ENERGY with the species in the per-cell
+    // stiff solver, instead of sourcing it in localEnergyEnergyModel.
+    // `model` (default) keeps the old hand-rolled linearisation.
+    energySource    chemistry;
+
+    // LMEA: rate coefficients follow the local MEAN ENERGY, not the local
+    // field. Leaving these on reducedE while the transport coefficients use
+    // meanE is a HALF-LMEA -- ionisation responding to the field while
+    // transport responds to the energy -- and it ran away: the conduction
+    // current diverged from the LFA arm by 54x in 0.05 ns.
+    lookupVariable  meanE;
+    tableKey        meanE;
+    sourceModel     reactions;
+
+    // The archived validation ran BEFORE chemistrySolver existed; its log shows
+    // "22 electron-impact reactions" with heavy chemistry not evaluated. That is
+    // `none`. The current default is `adaptive`, so leaving the key out no
+    // longer reproduces the archive -- the default moved under the case.
+    // Split from the old single `chemistrySolver` key: `reactions` is a
+    // PHYSICS choice (which reactions exist), `solver` a NUMERICS one
+    // (how they are integrated).
+    reactions   all;
+    chemReportInterval 50;
+    // adaptiveError, not adaptive: on THIS case the step-change test in
+    // `adaptive` flags 100% of cells while max(L*dt) = 1.6e-4, i.e. the whole
+    // 1.15M-cell domain is integrated for no reason. Both measure p = 1.936
+    // and agree to five significant figures; only the routing differs.
+    solver      adaptiveError;
+    outOfBounds     extrapolate;
+    manifest        "constant/air_plasma.mech.json";
+    // never | interval | time | relativeChange
+    //
+    // A refresh RE-SOLVES the EEDF at the current composition and gas
+    // temperature and reloads the tables (~0.45 s for 200 E/N points). Default
+    // `never`: the tables are built once at start-up and are exact as long as
+    // the composition and temperature stay near what they were built at.
+    //
+    // Worth knowing before switching it on: a refresh only changes anything if
+    // the composition can actually move. With `include charged` no neutrals
+    // are transported, so the mixture is pinned at the mechanism's reference
+    // values and every refresh reproduces identical tables at full cost. It
+    // becomes meaningful with `include chargedAndExcited`, or once gas heating
+    // is solved.
+    //
+    // The sensitivity is real: at 100 Td, going from 79/21 air to a 50/50
+    // N2/O2 mixture changes k[EI_N2_ION_N2] by 1.80x and the mobility by 1.17x.
+    eedfRefresh     never;
+    // refreshInterval 20;      // with `interval`: every N timesteps
+    // refreshDeltaT   1e-10;   // with `time`: every N seconds
+
+    // Sweep settings for the in-process EEDF solve. Omit the block entirely
+    // and the defaults match what genMechTables would have produced.
+    boltzmann
+    {
+        ENmin           0.1;
+        // 2000 Td, not 500. The streamer HEAD field exceeds 500 Td once it
+        // organises, and above the table the rate coefficients are
+        // extrapolated -- a power law continued from the last tabulated
+        // interval, which is a guess exactly where the physics is deciding
+        // whether the streamer propagates.
+        // 10000 Td, not 2000. Under LMEA the lookup variable is the MEAN
+        // ENERGY and the clamp sits at 100 eV, but a 2000 Td sweep tops out
+        // at 29.85 eV -- so every coefficient between 29.85 and 100 eV was
+        // EXTRAPOLATED, not solved. Worst for the loss: PinelasticN
+        // saturates near the top of the old table (local log-log slope
+        // ~1.18), so extrapolating it UNDER-predicts the very sink that
+        // should arrest an energy runaway.
+        //
+        // 10000 Td reaches ~201 eV, past the clamp, so the whole admissible
+        // range is real Boltzmann data. nPoints rises with it to keep the
+        // resolution per decade: 261 over the wider range is ~52/decade,
+        // slightly BETTER than the 200 it replaces. Lookup is a binary
+        // search, so the longer table costs one extra comparison.
+        ENmax           10000;
+        nPoints         261;
+        Tgas            300;
+        // 1 bar = 0.9869 atm, matching the benchmark's N = 2.414e25 m^-3.
+        // This sets the density the three-body attachment tables are built
+        // at, so it must agree with `pressure` in plasmaSpeciesProperties.
+        pressureAtm     0.98692;
+        growthModel     temporal;
+    }
+}

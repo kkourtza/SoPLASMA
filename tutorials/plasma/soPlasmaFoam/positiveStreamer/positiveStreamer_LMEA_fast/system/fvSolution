@@ -1,0 +1,103 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSolution;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+solvers
+{
+    ePotential
+    {
+        solver          GAMG;
+	    smoother        GaussSeidel;
+        tolerance       $ePotentialTolerance;
+        relTol          0;
+        maxIter         2000;
+    }
+    ePotentialFinal
+    {
+        $ePotential;
+        relTol          0;
+    }
+
+    n_e
+    {
+        solver          PBiCGStab;
+        smoother        GaussSeidel;
+	    preconditioner  DILU;
+        tolerance       $neTolerance;
+        relTol          0;
+        maxIter         2000;
+    }
+
+    // Catch-all for every transported species. With `activeSpecies
+    // fromMechanism` the case does NOT know the species names in advance --
+    // they come from the mechanism -- so they cannot be listed here. A regex
+    // covers whatever the mechanism turns out to produce.
+    //
+    // A named entry above still wins over this, so a species that needs its
+    // own tolerances can have them.
+    // Matches the ...Final variants too: PIMPLE solves `n_<sp>Final` on the
+    // last outer corrector, and a missing entry for it is a fatal lookup, not
+    // a fallback.
+    "n_.*(Final)?"
+    {
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        preconditioner  DIC;
+        tolerance       $npIonTolerance;
+        relTol          0;
+        maxIter         2000;
+    }
+
+    // Gas temperature: symmetric conduction Laplacian with a large
+    // rho*c_v/dt diagonal, so PCG+DIC converges in a couple of iterations.
+    "(T_gas|T_gasFinal)"
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-12;
+        relTol          0;
+        maxIter         1000;
+    }
+}
+
+PIMPLE
+{
+    nOuterCorrectors    $nOuterCorrectors;
+    residualControl
+    {
+        ePotential
+        {
+            tolerance   $ePotentialTolerancePIMPLE;
+            relTol      0;
+        }
+        n_e
+        {
+            tolerance   $neTolerancePIMPLE;
+            relTol      0;
+        }
+        // Every other transported species, whatever the mechanism named it.
+        "n_.*"
+        {
+            tolerance   $npIonTolerancePIMPLE;
+            relTol      0;
+        }
+
+    }
+
+
+}
+
+// ************************************************************************* //

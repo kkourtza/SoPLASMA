@@ -1,0 +1,246 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      plasmaSpeciesProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * /
+#include "../configuration/config"
+
+// Derived from the mechanism rather than repeated here. The mechanism already
+// knows which species its reactions create; listing them again is how a case
+// ends up NOT transporting an ion the chemistry produces, which breaks charge
+// conservation silently. An explicit list still works and still wins.
+activeSpecies fromMechanism;
+
+mechanismSpecies
+{
+    mechanism   "constant/air_plasma.foam";
+
+    // charged | chargedAndExcited | all
+    //   charged            electron + ions. The minimum for a self-consistent
+    //                      discharge -- these carry the space charge.
+    //   chargedAndExcited  adds excited states and radicals; needed once
+    //                      stepwise ionisation or quenching matters, at one
+    //                      transport equation each.
+    //   all                also transports the background gas, which is held
+    //                      fixed by construction, so this is rarely wanted.
+    include     chargedAndExcited;
+    neutralTransport immobile;
+}
+
+backgroundGas
+{
+  name  "Air";
+  // numberDensity omitted: closed by the ideal gas law from
+  // pressure and the temperature stated below.
+  // 1 bar, not 1 atm: the benchmark this case reproduces states
+  // N = 2.414e25 m^-3 at 300 K, which is 1e5 Pa. Using 101325 Pa gives
+  // 2.446e25, a 1.3% denser gas -- small, but it shifts E/N and therefore
+  // every rate coefficient, so it is not the kind of difference to leave
+  // unexplained in a validation case.
+  pressure        1e5;
+  energy
+  {
+    solve   true;
+    T       300;
+    kappa   0.026;
+    pressure 1e5;
+  }
+}
+
+speciesProperties
+{
+  e
+  {
+    transportModel            driftDiffusion;
+    charge                    -1;
+    mass                      9.109e-31;
+
+    // 1e13, the benchmark's background density, not a numerical floor of 1e5.
+    //
+    // The background field is 62 Td, well below this mixture's 115-120 Td
+    // critical field, so the bulk is net-ATTACHING: left free, the background
+    // electrons decay and the seed is starved of the electrons a positive
+    // streamer needs drawn into its head. Holding them at the background value
+    // keeps that reservoir, which is what the benchmark assumes.
+    //
+    // IMPLICATION: a clamp is a source. Electrons are injected wherever
+    // attachment would have removed them, so this only conserves charge
+    // because the positive ions are clamped to the same total (below). Do not
+    // raise one without the other.
+    minNumberDensity          1e13;
+
+    // LMEA: transport the electron energy instead of taking the mean energy
+    // from the LFA table. The transport coefficients above now look up
+    // `meanE`, the field this model publishes, rather than `reducedE`.
+    energyModel               localEnergy;
+
+    energyModelCoeffs
+    {
+
+      // Diagnostics every 25th step: the LMEA per-term dump evaluates
+      // ddt/div/laplacian over the whole mesh once per CORRECTOR, which is
+      // negligible on the 40x40 order bed and is not on this one.
+      reportInterval          25;
+
+      // Particle coefficients: still needed, for the Joule term and the
+      // source sensitivity, which act on the ELECTRONS.
+      mobility
+      {
+        type                  fromMechanism;
+        quantity              muN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      diffusivity
+      {
+        type                  fromMechanism;
+        quantity              DLN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      // ENERGY coefficients: the real EEDF moments, not (5/3) x the particle
+      // values. Measured departure from the Maxwellian 5/3 on this air set is
+      // up to 35% in mobility and 60% in diffusion.
+      // Start from the LFA equilibrium so step 1 is consistent with the
+      // field that already exists at t=0.
+      // tabulated1D, NOT fromMechanism: meanEnergy is in eV and is NOT a
+      // reduced quantity, so the density division fromMechanism applies to
+      // muN/DLN would return ~4e-26 eV here. Same trap as the power-loss
+      // tables.
+      initialMeanEnergy
+      {
+        type                  tabulated1D;
+        file                  "constant/plasmaTables/meanEnergy_vs_reducedE";
+        lookupVariable        reducedE;
+      }
+
+      energyMobility
+      {
+        type                  fromMechanism;
+        quantity              muEpsN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      energyDiffusivity
+      {
+        type                  fromMechanism;
+        quantity              DEpsN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      // tabulated1D, NOT fromMechanism. fromMechanism DIVIDES BY THE GAS
+      // DENSITY -- correct for muN and DLN, whose tables hold reduced
+      // quantities -- but PelasticN and PinelasticN are ALREADY per density.
+      // Running them through fromMechanism returns P/N, i.e. a loss term
+      // 2.4e25 times too small: the electrons then heat with no sink and the
+      // mean energy climbs to the clamp, which is exactly what it did.
+      powerLoss
+      {
+        elastic
+        {
+          type                tabulated1D;
+          file                "constant/plasmaTables/PelasticN_vs_meanE";
+          lookupVariable      meanE;
+        }
+        inelastic
+        {
+          type                tabulated1D;
+          file                "constant/plasmaTables/PinelasticN_vs_meanE";
+          lookupVariable      meanE;
+        }
+      }
+    }
+
+    driftDiffusionCoeffs
+    {
+      fluxScheme                $driftDiffusionFluxScheme;
+
+      // Electron transport from the Boltzmann solver's own EEDF, so the
+      // electrons and the chemistry are described by the same cross sections.
+      //
+      // The alternative -- the powerLaw fit this case used to carry -- is still
+      // available and is kept below, commented, for comparison. It is not
+      // wrong, but it is INDEPENDENT of the mechanism: nothing detects it
+      // disagreeing with the rate coefficients the same run interpolates.
+      //
+      // Tables hold mu*N and D*N; the evaluator divides by the gas density, so
+      // the values follow density automatically. They were solved at ONE
+      // mixture and gas temperature, which is the same local-field assumption
+      // the rate coefficients already make.
+      mobility
+      {
+        type                    fromMechanism;
+        quantity                muN;
+        tableDir                "constant/plasmaTables";
+        lookupVariable          meanE;
+      }
+
+      diffusivity
+      {
+        type                    fromMechanism;
+        quantity                DLN;
+        tableDir                "constant/plasmaTables";
+        lookupVariable          meanE;
+      }
+
+      // Hand-fitted alternative, kept for comparison:
+      //   mobility    { type powerLaw; lookupVariable E; amplitude 2.398;    exponent -0.26; }
+      //   diffusivity { type powerLaw; lookupVariable E; amplitude 4.3628e-3; exponent 0.22; }
+    }
+  }
+
+  // Positive-ion floors sum to the ELECTRON floor, split by the mole fractions
+  // of the gas that produces them: 0.79 + 0.21 = 1.00 x 1e13. The undisturbed
+  // background is therefore quasi-neutral by construction, so clamping cannot
+  // manufacture net space charge -- which would drive a Poisson field out of
+  // nothing. Raise one of these three and you must raise the others.
+  //
+  // Negative ions keep the 1e5 floor: they are reaction products, not
+  // background, and floors on them would put net negative charge into
+  // undisturbed gas.
+  N2p
+  {
+    transportModel            immobile;
+    charge                    +1;
+    mass                      4.6495e-26;
+    minNumberDensity          7.9e12;
+  }
+
+  O2p
+  {
+    transportModel            immobile;
+    charge                    +1;
+    mass                      5.3137e-26;
+    minNumberDensity          2.1e12;
+  }
+
+  Om
+  {
+    transportModel            immobile;
+    charge                    -1;
+    mass                      2.6569e-26;
+    minNumberDensity          1e5;
+  }
+
+  O2m
+  {
+    transportModel            immobile;
+    charge                    -1;
+    mass                      5.3137e-26;
+    minNumberDensity          1e5;
+  }
+}
