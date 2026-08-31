@@ -423,6 +423,39 @@ private:
         //  Phase 3a REPORTS it and governs nothing.
         scalar rhoTarget_ = 0.0;
 
+        // PHASE 3b: CONTRACTION BACKOFF -- the robustness layer.
+        //
+        //  Accuracy (the PI controller on ||e||) sets deltaT from above;
+        //  this pulls it back when the outer loop is not contracting fast
+        //  enough to FINISH inside the corrector budget. Two measured
+        //  dimensionless signals, each with a DERIVED target, and no
+        //  bed-specific tuning -- which is the point, given that the Courant
+        //  cap, limitEnergyRelaxation and outerScheme were each measured to
+        //  need different values on different beds.
+
+        //- Enable the contraction backoff. Default OFF until measured.
+        Switch contractionBackoff_ = false;
+
+        //- Multiplicative decrease per triggering step. Multiplicative and not
+        //  proportional because rho is a THRESHOLD, not a linear response:
+        //  MEASURED on the ramp, rho went 0.189 -> 0.175 as deltaT DOUBLED and
+        //  then jumped to 2.005. There is nothing to invert, so the controller
+        //  walks deltaT down until rho drops back inside the target.
+        scalar contractionBackoffFactor_ = 0.8;
+
+        //- Consecutive steps above target before backing off.
+        //
+        //  DERIVED FROM THE MEASURED EXCURSION RATE, not picked. Below the
+        //  cliff, isolated excursions occur on 2/79 (ramp) and 1/34 (streamer)
+        //  steps, i.e. ~3%; above the cliff it is 39/39 and 30/30, i.e. 100%
+        //  persistent. So requiring 2 consecutive steps cuts the spurious rate
+        //  from ~3% to ~0.1% while costing at most one step of delay on a
+        //  genuine crossing.
+        label contractionBackoffSteps_ = 2;
+
+        //- Consecutive steps seen above target so far.
+        label rhoOverCount_ = 0;
+
         //- Largest factor this step, reported beside the minimum
         scalar relaxOmegaMax_ = 1.0;
 

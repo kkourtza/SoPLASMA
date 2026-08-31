@@ -275,6 +275,29 @@ void plasmaTimeControl::read()
                     << " would prevent it reaching the step it is asking for."
                     << endl;
             }
+
+            // PHASE 3b: CONTRACTION BACKOFF (robustness layer). Default OFF.
+            contractionBackoff_ =
+                dict_.lookupOrDefault<Switch>("contractionBackoff", false);
+            if (contractionBackoff_)
+            {
+                contractionBackoffFactor_ =
+                    dict_.lookupOrDefault<scalar>
+                    ("contractionBackoffFactor", 0.8);
+                contractionBackoffSteps_ =
+                    dict_.lookupOrDefault<label>("contractionBackoffSteps", 2);
+
+                Info<< "plasmaTimeControl: CONTRACTION BACKOFF is on (factor "
+                    << contractionBackoffFactor_ << " after "
+                    << contractionBackoffSteps_
+                    << " consecutive steps with rho above target)." << nl
+                    << "    The target is DERIVED from outerCoupling:"
+                    << " tolerance^(1/maxCorrectors). deltaT is pulled back"
+                    << " when the outer loop is not contracting fast enough to"
+                    << " FINISH inside the corrector budget." << nl
+                    << "    Requires the contraction signal, which is measured"
+                    << " for every model since 2026-09-01." << endl;
+            }
         }
 
 
@@ -760,6 +783,46 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
             dtLimiterName_ = name;
         }
     };
+
+    // PHASE 3b: CONTRACTION BACKOFF -- the ROBUSTNESS layer.
+    //
+    // relaxContraction_ is the PREVIOUS step's worst corrector ratio
+    // ||r_k||/||r_{k-1}||, and rhoTarget_ = tolerance^(1/maxCorrectors) is the
+    // rate needed to FINISH inside the budget. Above target the loop is not
+    // going to converge in time, so deltaT comes down.
+    //
+    // MULTIPLICATIVE, not proportional: rho is a threshold. Measured on the
+    // ramp, rho went 0.189 -> 0.175 as deltaT DOUBLED, then jumped to 2.005 --
+    // there is no ratio to invert, so walk deltaT down until rho recovers.
+    //
+    // PERSISTENCE requirement from the measured excursion rate: isolated
+    // excursions occur on ~3% of steps below the cliff (2/79 ramp, 1/34
+    // streamer) but 100% above it (39/39, 30/30). Two consecutive steps cuts
+    // spurious triggers to ~0.1% and costs at most one step of delay.
+    //
+    // This layer only ever REDUCES deltaT. Growth belongs to the accuracy
+    // controller: a well-contracting loop is not evidence that a bigger step
+    // would be accurate.
+    if (contractionBackoff_ && rhoTarget_ > 0 && relaxContraction_ > VSMALL)
+    {
+        if (relaxContraction_ > rhoTarget_)
+        {
+            ++rhoOverCount_;
+        }
+        else
+        {
+            rhoOverCount_ = 0;
+        }
+
+        if (rhoOverCount_ >= contractionBackoffSteps_)
+        {
+            bind
+            (
+                currentDeltaT*contractionBackoffFactor_,
+                "contraction backoff"
+            );
+        }
+    }
 
     // TEMPORAL-ERROR PI CONTROL (Phase 2a).
     //
