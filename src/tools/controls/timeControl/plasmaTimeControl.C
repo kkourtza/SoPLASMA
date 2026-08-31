@@ -12,6 +12,8 @@
 \*---------------------------------------------------------------------------*/
 
 #include "plasmaTimeControl.H"
+#include "fvcGrad.H"
+#include "fvcAverage.H"
 #include "plasmaTransport.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -34,6 +36,7 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     limitSpeciesCo_(false),
     printSpeciesCo_(false),
     maxSpeciesConvectiveCo_(1.0),
+    maxEnergyConvectiveCo_(1.0),
     maxSpeciesDiffusiveCo_(1.0),
     courantSpeciesName_("e"),
     limitChemistryCo_(false),
@@ -212,11 +215,26 @@ void plasmaTimeControl::read()
             maxSpeciesConvectiveCo_ =
                 dict_.lookupOrDefault<scalar>("maxSpeciesConvectiveCo", 1.0);
 
+            // DEFAULTS TO THE SPECIES VALUE, so omitting the key reproduces
+            // the previous shared-coefficient behaviour exactly. Read AFTER
+            // maxSpeciesConvectiveCo_ for that reason.
+            maxEnergyConvectiveCo_ =
+                dict_.lookupOrDefault<scalar>
+                (
+                    "maxEnergyConvectiveCo", maxSpeciesConvectiveCo_
+                );
+
             maxSpeciesDiffusiveCo_ =
                 dict_.lookupOrDefault<scalar>("maxSpeciesDiffusiveCo", 1.0);
 
             courantSpeciesName_ =
                 dict_.lookupOrDefault<word>("courantSpeciesName", "e");
+
+            // See the weighting block in adjustDeltaT() for what this does and
+            // why it is off by default.
+            speciesCoGradientWeighted_ =
+                dict_.lookupOrDefault<Switch>
+                ("speciesCoGradientWeighted", false);
         }
 
         // Read OUTSIDE the limitSpeciesCo_ block: the energy relaxation limit
@@ -511,6 +529,24 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     const scalar eps0 = constant::plasma::epsilon0.value();
     scalar newDeltaT = maxDeltaT_;
 
+    // WHICH constraint set deltaT. Reporting the Courant numbers and their caps
+    // does NOT answer that: a limiter can sit far from its cap and still be the
+    // binding one, and several constraints applied here are never printed.
+    // MEASURED on the needle-DBD bed: every printed limiter was at a fraction
+    // of its cap -- the tightest implying 9.6e-11 -- while deltaT was 1.42e-11,
+    // 6.8x smaller, and nothing in the report could account for it. Same defect
+    // as reporting a residual without naming the field it belongs to.
+    dtLimiterName_ = "maxDeltaT";
+
+    auto bind = [&](const scalar limit, const char* name)
+    {
+        if (limit < newDeltaT)
+        {
+            newDeltaT = limit;
+            dtLimiterName_ = name;
+        }
+    };
+
     scalar maxSigma = 0.0;
     scalar maxConvFluxRate  = 0.0;
     scalar maxDiffFluxRate  = 0.0;
@@ -531,7 +567,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
 
         if (limitDielectricRelaxationRatio_)
         {
-            newDeltaT = min(newDeltaT, dielectricLimit);
+            bind(dielectricLimit, "dielectric relaxation");
         }
         tSigma.clear();
     }
@@ -554,27 +590,109 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         (
             0.5 * sumConv / (nField * V + VSMALL)
         );
-        maxConvFluxRate = gMax(convRate);
-        if (limitSpeciesCo_)
+        // GRADIENT WEIGHTING, off by default.
+        //
+        // The plain criterion takes a domain-wide max of a per-cell drift rate.
+        // Density cancels (flux ~ n*v), so it is essentially v/dx EVERYWHERE --
+        // including where the solution is flat, and advecting a flat field is
+        // EXACT for any conservative scheme. The Courant number then limits
+        // deltaT to control an error that is identically zero.
+        //
+        // MEASURED on the needle-DBD bed during its quiescent phase, with n_e
+        // uniform at its 1e11 floor (max == min, verified): deltaT pinned at
+        // 13.3 ps by Co_conv = 0.92, while dV/step had 101x of headroom and
+        // Co_chem 11x. Nothing was happening and nothing could be resolved
+        // wrongly, yet transport set the step.
+        //
+        // The weight is the RELATIVE VARIATION across a cell,
+        //     w = |grad n| * L / max(n, floor),   L = 1/deltaCoeffs
+        // clipped to [0,1] so it can only ever RELAX the limit, never tighten
+        // it beyond the plain Courant number. w -> 0 on a flat field, O(1) at
+        // a front.
+        //
+        // GRADIENT, not density. A density floor -- the form chemCoScale_ takes
+        // for the chemistry -- would be wrong here: electrons at the background
+        // floor are the SEED for everything that follows, so they are not
+        // negligible in principle. They are negligible only while UNIFORM, and
+        // that is what this measures.
+        //
+        // DEFAULT OFF. This changes time-step selection for every case, and
+        // every validated result in this project was produced without it.
+        // One weight, used by BOTH limiters below. Unity when the weighting
+        // is off, so the plain criterion is recovered exactly.
+        scalarField coWeight(nField.size(), 1.0);
+
+        if (speciesCoGradientWeighted_)
         {
-            newDeltaT = min
+            const scalarField gradN(mag(fvc::grad(n))().primitiveField());
+
+            // Cell length from the reciprocal face-distance: the same length
+            // the flux rates are implicitly divided by.
+            const scalarField L
             (
-                newDeltaT,
-                maxSpeciesConvectiveCo_ / (maxConvFluxRate + VSMALL)
+                1.0/(fvc::average(mesh_.deltaCoeffs())().primitiveField()
+                     + VSMALL)
             );
 
-            // The ENERGY rides the same flux at 5/3 the speed, so it reaches
-            // the same Courant number at 3/5 of the step. Applied to the same
-            // cap rather than a separate one: a user who has chosen a
-            // convective Courant number has chosen it for the physics, and
-            // the energy equation should honour that choice rather than need
-            // a second key that can disagree with it.
+            const scalar nRef = gMax(nField);
+
+            coWeight = min
+            (
+                gradN*L/max(nField, scalar(1e-6)*nRef + VSMALL),
+                scalarField(nField.size(), 1.0)
+            );
+        }
+
+        maxConvFluxRate = gMax(convRate*coWeight);
+        if (limitSpeciesCo_)
+        {
+            bind(maxSpeciesConvectiveCo_/(maxConvFluxRate + VSMALL), "Co_conv");
+
+            // The ENERGY rides the same drift flux, so it reaches its Courant
+            // number sooner and binds first.
+            //
+            // SUPERSEDED 2026-08-31 in two places. This comment used to read
+            // "at 5/3 the speed ... applied to the same cap rather than a
+            // separate one: a user who has chosen a convective Courant number
+            // has chosen it for the physics".
+            //
+            //  (a) The 5/3 is NOT general. energyFactor is 5/3 only when the
+            //      energy coefficients are ANALYTIC; with `energyCoeffs`
+            //      tabulated (the normal case, and the case on the needle bed)
+            //      energyFactor is 1 and mu_eps comes from the TABLE, so the
+            //      ratio to mu_e is whatever the table says.
+            //  (b) The shared cap is no longer forced. maxEnergyConvectiveCo_
+            //      exists and DEFAULTS to maxSpeciesConvectiveCo_, so the old
+            //      behaviour is the default but is no longer mandatory. The
+            //      reason it had to become separable: measured on the needle
+            //      bed, the energy limit bound 34220 of 34238 steps pinned at
+            //      exactly 1.000x its cap while the species number sat at 0.36
+            //      of the SAME cap, so there was no knob that relaxed the
+            //      binding constraint without also relaxing a different one.
+            //
+            // What still holds from the old reasoning: a Courant number chosen
+            // for the physics SHOULD normally apply to whatever rides the same
+            // flux, which is why the default is still to share the value.
             if (energyRate_ > 0)
             {
-                newDeltaT = min
+                // THROUGH bind(), not a bare min(). A bare min() here set
+                // deltaT while leaving dtLimiterName_ holding whatever the
+                // species bind had just written, so the report named
+                // "Co_conv" -- printing the SPECIES value, which had slack --
+                // while THIS constraint was the one binding. MEASURED on the
+                // needle bed 2026-08-30: reported Co_conv 0.224 against a cap
+                // of 1.5, i.e. 6.7x of headroom, on a step this limiter set.
+                //
+                // It also explains why speciesCoGradientWeighted changed
+                // nothing there: energyRate_ is a VOLUMETRIC flux rate
+                // (mu_eps*phiE, no density in it), so the gradient weight
+                // cannot apply to it. Weighting cut the species rate 536x and
+                // this unweighted one simply took over as the binding limit,
+                // leaving deltaT identical to the last digit.
+                bind
                 (
-                    newDeltaT,
-                    maxSpeciesConvectiveCo_ / (energyRate_ + VSMALL)
+                    maxEnergyConvectiveCo_ / (energyRate_ + VSMALL),
+                    "Co_conv (energy)"
                 );
             }
         }
@@ -582,9 +700,10 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         // ENERGY RELAXATION LIMIT -- a SEPARATE constraint, deliberately
         // outside the limitSpeciesCo_ block and with its own coefficient.
         //
-        // The convective limit above shares maxSpeciesConvectiveCo_ because a
-        // Courant number chosen for the physics should apply to whatever rides
-        // the same flux. This one must NOT: it bounds dt against the stiff
+        // The convective limit above DEFAULTS to maxSpeciesConvectiveCo_ (see
+        // maxEnergyConvectiveCo_) because a Courant number chosen for the
+        // physics should normally apply to whatever rides the same flux. This
+        // one must NOT share it at all: it bounds dt against the stiff
         // source relaxation time tau_eps = n_eps/P_loss, where a coefficient
         // of order 1 is not merely inaccurate but unstable. MEASURED
         // 2026-08-21: dt/tau = 3.1 oscillated between the 100 eV clamp and
@@ -612,7 +731,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
                     << endl;
             }
 
-            newDeltaT = min(newDeltaT, dtRelax);
+            bind(dtRelax, "energy relaxation");
         }
 
         // Diffusive
@@ -625,15 +744,15 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         (
             0.5 * sumDiff / (nField * V + VSMALL)
         );
-        maxDiffFluxRate = gMax(diffRate);
+        // THE SAME WEIGHT, and the case for it here is stronger than for
+        // convection. The diffusive flux is -D grad(n), so on a flat field it
+        // is IDENTICALLY ZERO -- not merely exact, absent. The plain rate still
+        // measures D/dx^2 and limits deltaT for a flux that does not exist.
+        maxDiffFluxRate = gMax(diffRate*coWeight);
 
         if (limitSpeciesCo_)
         {
-            newDeltaT = min
-            (
-                newDeltaT,
-                maxSpeciesDiffusiveCo_ / (maxDiffFluxRate + VSMALL)
-            );
+            bind(maxSpeciesDiffusiveCo_/(maxDiffFluxRate + VSMALL), "Co_diff");
         }
     }
 
@@ -694,11 +813,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
 
         if (limitChemistryCo_)
         {
-            newDeltaT = min
-            (
-                newDeltaT,
-                maxChemistryCo_ / (maxKeff + VSMALL)
-            );
+            bind(maxChemistryCo_/(maxKeff + VSMALL), "Co_chem");
         }
     }
 
@@ -726,7 +841,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
             const scalar dtLimit =
                 maxVoltageRiseRate_ / (mag(voltageRiseRate) + VSMALL);
 
-            newDeltaT = min(newDeltaT, dtLimit);
+            bind(dtLimit, "voltage rise");
         }
 
         prevPatchVoltage_ = currentVoltage;
@@ -750,12 +865,12 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     relaxMarginBound_ = false;
     if (relaxMargin_ < relaxMarginShrink_)
     {
-        newDeltaT = min(newDeltaT, currentDeltaT*relaxMarginBackoff_);
+        bind(currentDeltaT*relaxMarginBackoff_, "coupling margin (backoff)");
         relaxMarginBound_ = true;
     }
     else if (relaxMargin_ < relaxMarginHold_)
     {
-        newDeltaT = min(newDeltaT, currentDeltaT);
+        bind(currentDeltaT, "coupling margin (hold)");
         relaxMarginBound_ = true;
     }
 
@@ -769,7 +884,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         // Halve. The coupling residual is not a smooth function of deltaT the
         // way a Courant number is -- there is no limit to solve for -- so this
         // backs off and lets the next step report whether that was enough.
-        newDeltaT = min(newDeltaT, 0.5*currentDeltaT);
+        bind(0.5*currentDeltaT, "outer loop not converged");
     }
 
     // Apply and clamp
@@ -786,7 +901,11 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
             }
             else
             {
-                newDeltaT = min(newDeltaT, currentDeltaT * 1.2);
+                if (currentDeltaT*1.2 < newDeltaT)
+                {
+                    newDeltaT = currentDeltaT*1.2;
+                    dtLimiterName_ = "growth cap (1.2x)";
+                }
             }
         }
         noGrowthNextStep_ = false;
@@ -795,7 +914,11 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         // and let that ceiling drift up only slowly. See dtFailCeiling_.
         if (dtFailCeiling_ > 0)
         {
-            newDeltaT = min(newDeltaT, dtFailCeiling_);
+            if (dtFailCeiling_ < newDeltaT)
+            {
+                newDeltaT = dtFailCeiling_;
+                dtLimiterName_ = "rejection memory";
+            }
             dtFailCeiling_ *= retryCeilingRelax_;
         }
 
@@ -808,6 +931,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         {
             ++floorHits_;
             newDeltaT = minDeltaT_;
+            dtLimiterName_ = "minDeltaT floor";
         }
 
         runTime_.setDeltaT(newDeltaT);
@@ -909,6 +1033,40 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
                 diffVal, lim, maxSpeciesDiffusiveCo_,
                 diffBinding
             ).c_str() << nl;
+
+        // THE ENERGY COURANT. Printed because it is applied (against this same
+        // cap) and was previously invisible: on the needle bed it was the
+        // binding limiter for every step of the decline phase while the report
+        // showed only the species number sitting at 15% of its cap. A limiter
+        // that sets deltaT and is never printed cannot be diagnosed from the
+        // log at all -- the user sees a step nothing in the report accounts
+        // for. Unlike the species numbers this one is a VOLUMETRIC rate and is
+        // therefore never gradient-weighted; see speciesCoGradientWeighted.
+        if (energyRate_ > 0)
+        {
+            const scalar enVal = energyRate_ * actualDeltaT;
+            Info<< "  " << fmtLine(
+                    "Co_conv (energy)",
+                    enVal, lim, maxEnergyConvectiveCo_,
+                    lim && enVal >= maxEnergyConvectiveCo_ * 0.99
+                ).c_str() << nl;
+        }
+    }
+
+    // THE ENERGY RELAXATION RATIO. On by default, and likewise unprinted until
+    // 2026-08-30. It has its own coefficient (0.2, not 1.0) because a value of
+    // order 1 here is unstable rather than merely inaccurate, so a reader who
+    // cannot see the number cannot tell a healthy run from one about to
+    // oscillate. See maxEnergyRelaxationRatio.
+    if (energyRelaxRate_ > 0 && (limitEnergyRelaxation_ || printSpeciesCo_))
+    {
+        const scalar rVal = energyRelaxRate_ * actualDeltaT;
+        const bool rLim = limitEnergyRelaxation_ && adjustTimeStep_;
+        Info<< "  " << fmtLine(
+                "Energy relax. ratio",
+                rVal, rLim, maxEnergyRelaxationRatio_,
+                rLim && rVal >= maxEnergyRelaxationRatio_ * 0.99
+            ).c_str() << nl;
     }
 
     if (limitChemistryCo_ || printChemistryCo_)
@@ -962,6 +1120,13 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     // Those want opposite fixes, so the number has to be visible.
     if (relaxMargin_ < 1.0 - SMALL || relaxMarginBound_)
     {
+    // THE BINDING CONSTRAINT, named. Everything else in this block reports a
+    // value against a cap; this says which one actually set deltaT. "Why is my
+    // timestep so small" is exactly this question, and the values alone cannot
+    // answer it -- a limiter can sit at a fraction of its cap and still bind,
+    // and several constraints applied in adjustDeltaT() never appear here.
+    Info<< "    deltaT set by:            " << dtLimiterName_ << nl;
+
         Info<< "    omega [coupling margin]:  min " << relaxMargin_
             << "  max " << relaxOmegaMax_
             << (relaxMarginBound_ ? "   <--  deltaT GOVERNED" : "")

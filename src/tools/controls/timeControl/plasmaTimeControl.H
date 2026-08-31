@@ -103,11 +103,49 @@ private:
             //- Maximum allowed convective Courant for the tracked species
             scalar maxSpeciesConvectiveCo_;
 
+            //- Maximum allowed convective Courant for the ENERGY equation.
+            //  Defaults to maxSpeciesConvectiveCo_ so an existing case is
+            //  bit-for-bit unchanged; it exists so the two CAN differ, because
+            //  they are not the same accuracy question.
+            //
+            //  WHY IT NEEDS TO BE SEPARATE (measured 2026-08-30, needle bed):
+            //  nEps rides the drift flux at mu_eps >~ mu_e, so sharing one
+            //  coefficient makes the ENERGY limit bind first -- it did so on
+            //  34220 of 34238 steps, pinned at exactly 1.000x its cap, while
+            //  the species number sat at 0.36 of the same cap. A user limited
+            //  by the energy Courant therefore had no knob that did not also
+            //  loosen the species limit.
+            //
+            //  THE PHYSICAL CEILING on this value is the energy relaxation
+            //  LENGTH, not stability (every transport term is implicit, so
+            //  this is an accuracy cap):
+            //      lambda_eps = v_drift * tau_eps
+            //  measured 1.70 um ~= 5 tip cells on that bed. A value near 5
+            //  steps one relaxation length per step; well past it the energy
+            //  layer at a sharp electrode is not resolved at all. Do not raise
+            //  this to "15" on the argument that the gas is inert without
+            //  checking lambda_eps/dx for the case in hand.
+            scalar maxEnergyConvectiveCo_;
+
             //- Maximum allowed diffusive Courant for the tracked species
             scalar maxSpeciesDiffusiveCo_;
 
             //- Name of the species to track for Courant limiting (default: "e")
             word courantSpeciesName_;
+
+            //- Weight the species Courant rate by the LOCAL RELATIVE VARIATION
+            //  of the density, so a flat field -- which any conservative scheme
+            //  advects exactly -- does not limit deltaT. Off by default: it
+            //  changes time-step selection for every case, and every validated
+            //  result here predates it. See adjustDeltaT() for the measurement
+            //  that motivated it.
+            Switch speciesCoGradientWeighted_ = false;
+
+            //- Name of the constraint that actually set deltaT on the last
+            //  adjustment. Printed with the limiter block, because the values
+            //  alone do not identify the binding one -- and several of the
+            //  constraints applied are not in that block at all.
+            word dtLimiterName_ = "none";
 
             //- Switch to limit by Chemistry (Source term)
             Switch limitChemistryCo_;
