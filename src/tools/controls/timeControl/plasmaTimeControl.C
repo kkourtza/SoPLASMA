@@ -1113,6 +1113,7 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     // arrive. omega is available every corrector.
     relaxMargin_ = transport.relaxationMargin();
     relaxContraction_ = transport.relaxationContraction();
+    relaxActive_ = transport.relaxationActive();
     relaxOmegaMax_ = transport.relaxationOmegaMax();
     relaxMarginBound_ = false;
     if (relaxMargin_ < relaxMarginShrink_)
@@ -1388,7 +1389,17 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     }
     else
     {
-        Info<< "    omega [coupling margin]:  min 1  (nothing damped)" << nl;
+        // DISTINGUISH INACTIVE FROM UNDAMPED. This line used to read "nothing
+        // damped" in both cases, which reads as an active relaxation finding
+        // nothing to damp. It hid that `adaptiveRelaxation` defaults to
+        // `hasLMEA` -- off for every LFA case -- and that `rho` was therefore
+        // never measured there.
+        Info<< "    omega [coupling margin]:  "
+            << (relaxActive_
+                    ? "min 1  (active, nothing damped)"
+                    : "n/a    (relaxation INACTIVE -- adaptiveRelaxation is off;"
+                      " it defaults to ON only under LMEA)")
+            << nl;
     }
 
     // THE BINDING CONSTRAINT, named. Everything else in this block reports a

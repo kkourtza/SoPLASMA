@@ -309,11 +309,17 @@ public:
 
         //- Worst joint-residual contraction ratio this step, ||r_k||/||r_k-1||.
         //  Below 1 the outer loop contracted; at or above 1 it did not.
-        //  Returns 0 when nothing was measured (fewer than two correctors, or
-        //  inactive), which the reporter distinguishes from a real 0.
+        //  Returns 0 when nothing was measured (fewer than two correctors),
+        //  which the reporter distinguishes from a real 0.
+        //
+        //  NO LONGER GATED ON `active_` (2026-09-01). It used to return 0
+        //  whenever the relaxation was inactive, which meant an LFA case --
+        //  where `active_` defaults to false via `hasLMEA` -- could never
+        //  measure its own contraction. The measurement is now taken whether or
+        //  not relaxation is APPLIED; see enrol() and applyJoint().
         scalar contraction() const
         {
-            return active_ ? contractionMaxStep_ : 0.0;
+            return contractionMaxStep_;
         }
 
         scalar omega() const { return omega_; }

@@ -246,7 +246,22 @@ Foam::label Foam::plasmaOuterRelaxation::find(const word& name) const
 
 void Foam::plasmaOuterRelaxation::enrol(volScalarField& f)
 {
-    if (!active_) return;
+    // NO `active_` GATE. Enrolling is pure bookkeeping -- it stores the field
+    // reference so the Picard residual can be FORMED. Applying relaxation is a
+    // separate decision, taken in applyJoint().
+    //
+    // WHY THIS CHANGED (2026-09-01): `active_` defaults to `hasLMEA`, i.e. OFF
+    // for every LFA case, and it gated the MEASUREMENT as well as the
+    // actuation. So `rho` -- the contraction factor, which the comment in
+    // applyJoint() correctly calls "the signal a time-step governor can keep
+    // using across a change of scheme" -- was never computed at all on an LFA
+    // bed. MEASURED: it printed ZERO times over 32 steps of the LFA streamer
+    // case while omega printed 23 times, and the omega line reads "min 1
+    // (nothing damped)", which looks like an active relaxation finding nothing
+    // to damp rather than an inactive one.
+    //
+    // A governor that silently does not exist for half the model space is worse
+    // than no governor. OBSERVATION MUST NOT BE GATED ON ACTUATION.
     if (find(f.name()) >= 0) return;        // already enrolled
 
     const label i = fields_.size();
@@ -295,8 +310,8 @@ void Foam::plasmaOuterRelaxation::newStepCheck()
 
 void Foam::plasmaOuterRelaxation::contribute(volScalarField& f)
 {
-    if (!active_) return;
-
+    // NO `active_` GATE, for the same reason as enrol(): this only records the
+    // iterate so the residual can be formed. See enrol().
     newStepCheck();
 
     const label i = find(f.name());
@@ -430,6 +445,24 @@ void Foam::plasmaOuterRelaxation::applyJoint()
         contractionMaxStep_ = max(contractionMaxStep_, rNorm/rNormPrev_);
     }
     rNormPrev_ = rNorm;
+
+    // MEASUREMENT DONE, ACTUATION STARTS HERE. Everything above observes the
+    // Picard residual; everything below MODIFIES the solution. An inactive
+    // relaxation must still observe -- see enrol() -- so the gate belongs here
+    // and nowhere earlier.
+    if (!active_)
+    {
+        // THE PER-CORRECTOR BOOKKEEPING MUST STILL BE CLEARED. It is
+        // measurement state, not actuation state: every other exit from this
+        // function resets it (see the branches below). Returning without the
+        // reset left `contributed_` set, and the next corrector tripped the
+        // "field contributed twice within one outer corrector" guard on the
+        // FIRST step -- which is exactly the invariant that guard exists to
+        // protect, and it caught this immediately.
+        contributed_ = false;
+        nContributed_ = 0;
+        return;
+    }
 
     // NO RELAXATION ON THE FINAL OUTER CORRECTOR.
     //

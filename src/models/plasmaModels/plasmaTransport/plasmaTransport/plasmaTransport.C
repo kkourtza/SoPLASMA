@@ -331,17 +331,29 @@ plasmaTransport::plasmaTransport
         // "1 field(s) in the joint residual" instead of 2.
         adaptiveRelax_ = relax_->active();
 
+        // ENROL UNCONDITIONALLY -- measurement, not actuation.
+        //
+        // Only the ELECTRON density takes part from this model. The other
+        // species are solved with a diagonal operator and have identically
+        // zero Picard residual -- enrolling them would pad the joint vector
+        // with zeros and dilute the estimate for no benefit.
+        //
+        // NOT gated on adaptiveRelax_ (2026-09-01). Enrolling only records the
+        // field so the Picard residual can be FORMED; whether damping is
+        // APPLIED is decided in plasmaOuterRelaxation::applyJoint(). The old
+        // gate meant `rho` -- the contraction factor a timestep governor needs,
+        // and the only such signal defined for EVERY scheme -- was never
+        // measured on any LFA case, because adaptiveRelaxation defaults to
+        // `hasLMEA`. Fixing only the callee was not enough: the gate was HERE
+        // as well, and the verification run still showed rho printing zero
+        // times until this call site was ungated too.
+        relax_->enrol
+        (
+            species_.numberDensity(species_.electronSpeciesID())
+        );
+
         if (adaptiveRelax_)
         {
-            // Only the ELECTRON density takes part from this model. The other
-            // species are solved with a diagonal operator and have identically
-            // zero Picard residual -- enrolling them would pad the joint
-            // vector with zeros and dilute the estimate for no benefit.
-            relax_->enrol
-            (
-                species_.numberDensity(species_.electronSpeciesID())
-            );
-
             // The SCHEME NAME, not a hardcoded string. It read " (Aitken)"
             // literally until 2026-08-31, so a run with
             // `outerScheme anderson` printed "Aitken" and there was no way to
@@ -370,6 +382,16 @@ plasmaTransport::plasmaTransport
                 << " omega 0.371, no floor" << nl
                 << "    min(omega) over a step is the coupling's stability"
                 << " margin and governs deltaT." << endl;
+        }
+
+        else
+        {
+            Info<< "plasmaTransport: outer-loop relaxation INACTIVE"
+                << " (adaptiveRelaxation off; it defaults to ON only under"
+                << " LMEA)." << nl
+                << "    rho [contraction] IS still measured -- it is the signal"
+                << " a timestep governor uses, and it must exist for every"
+                << " model, not just LMEA." << endl;
         }
     }
 }
@@ -1162,7 +1184,10 @@ S_iz_.correctBoundaryConditions();
     // enrolled field has contributed (the electron energy contributes from
     // plasmaEnergy), because the unstable mode is a property of the PAIR and
     // is invisible to either field's own residual.
-    if (relax_ && relax_->active())
+    // UNCONDITIONAL -- see the enrol() call in the constructor. contribute()
+    // records the iterate so the residual (and rho) can be formed; applying
+    // damping is decided inside applyJoint().
+    if (relax_)
     {
         relax_->contribute(species_.numberDensity(species_.electronSpeciesID()));
     }

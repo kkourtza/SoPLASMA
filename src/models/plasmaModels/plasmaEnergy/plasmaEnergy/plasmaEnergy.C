@@ -152,7 +152,10 @@ void Foam::plasmaEnergy::solveSpeciesEnergy()
             {
                 plasmaOuterRelaxation* r =
                     plasmaOuterRelaxation::lookup(mesh_);
-                if (r && r->active())
+                // NOT gated on active() -- contribute() only records the
+                // iterate so the joint residual (and rho) can be formed. See
+                // plasmaOuterRelaxation::enrol().
+                if (r)
                 {
                     volScalarField* ne = energyModels_[i].nEpsPtr();
                     if (ne) { r->contribute(*ne); }
@@ -459,7 +462,9 @@ plasmaEnergy::plasmaEnergy
         plasmaOuterRelaxation& r =
             plasmaOuterRelaxation::New(mesh_, oc, hasLMEA);
 
-        if (r.active())
+        // NOT gated on active() -- enrolling only records the field so the
+        // joint Picard residual (and rho) can be formed. See
+        // plasmaOuterRelaxation::enrol().
         {
             forAll(energyModels_, i)
             {

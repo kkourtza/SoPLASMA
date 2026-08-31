@@ -851,6 +851,18 @@ public:
             return relax_ ? relax_->contraction() : 0.0;
         }
 
+        //- Is the outer-loop relaxation APPLYING damping?
+        //
+        //  Needed so the report can tell "relaxation is on and found nothing to
+        //  damp" from "relaxation is not running". The old message said
+        //  "nothing damped" for BOTH, and the second reading is the one that
+        //  matters -- it hid the fact that `rho` was never measured on any LFA
+        //  case for as long as the gate existed.
+        bool relaxationActive() const
+        {
+            return relax_ ? relax_->active() : false;
+        }
+
         //- Largest joint relaxation factor over the last step. Reported beside
         //  the minimum so "omega sat near 0.5 all step" is distinguishable
         //  from "omega swung from 1.0 to 0.18" -- those describe different

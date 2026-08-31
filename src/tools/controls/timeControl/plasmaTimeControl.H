@@ -392,6 +392,10 @@ private:
         //  which is what Anderson acceleration needs.
         scalar relaxContraction_ = 0.0;
 
+        //- Is the relaxation APPLYING damping? Reported so an inactive
+        //  relaxation is not mistaken for an undamped active one.
+        bool relaxActive_ = false;
+
         //- PHASE 3a: the contraction target a governor should key on, DERIVED
         //  from the user's own outerCoupling settings rather than tuned:
         //
