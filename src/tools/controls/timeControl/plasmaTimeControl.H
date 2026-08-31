@@ -141,6 +141,46 @@ private:
             //  stretched.
             scalar errStepRatioDev_ = 0;
 
+            // PHASE 2a: PI CONTROL OF deltaT FROM THE ERROR ESTIMATE.
+            //  Default OFF. Requires reportTemporalError, which supplies the
+            //  norm this acts on.
+
+            //- Let the error estimate SET deltaT (Phase 2a: no rejection yet;
+            //  a step whose error overshoots is accepted and the controller
+            //  shrinks the next one. Outer-loop rejection still applies).
+            Switch errorControlDeltaT_ = false;
+
+            //- Target for the weighted norm. The norm is already normalised by
+            //  rtol/atol, so 1 means "at tolerance" and 1 is the natural target.
+            scalar errTarget_ = 1.0;
+
+            //- PI gains, as fractions of 1/(p+1). Defaults are the classic
+            //  PI.4.2 values of Gustafsson, Lundh & Soderlind (BIT 28 (1988)
+            //  270): kI = 0.3/(p+1), kP = 0.4/(p+1) with p = 2 for BDF2.
+            //  Pure integral control (kP = 0) is the elementary controller and
+            //  is what oscillates on stiff problems -- which is why PI exists.
+            scalar errKi_ = 0.3/3.0;
+            scalar errKp_ = 0.4/3.0;
+
+            //- Safety factor on the requested step.
+            scalar errSafety_ = 0.9;
+
+            //- Bounds on the per-step change the controller may ask for.
+            scalar errMaxGrow_ = 2.0;
+            scalar errMaxShrink_ = 0.5;
+
+            //- Steps to skip before controlling. The old-time chain is filled
+            //  with COPIES of the current field when created, so the first few
+            //  estimates are meaningless -- measured as 3.8e-3 decaying to
+            //  1.93e-3 over ~5 steps on the streamer bed.
+            label errWarmupSteps_ = 5;
+
+            //- Previous norm, for the P term. MUST be excluded from the
+            //  discard path question: it is only ever written in
+            //  measureTemporalError(), which runs after a step is ACCEPTED, so
+            //  a discarded attempt never reaches it.
+            scalar errNormPrev_ = -1;
+
             //- Maximum allowed convective Courant for the ENERGY equation.
             //  Defaults to maxSpeciesConvectiveCo_ so an existing case is
             //  bit-for-bit unchanged; it exists so the two CAN differ, because

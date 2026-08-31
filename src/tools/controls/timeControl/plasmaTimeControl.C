@@ -234,6 +234,47 @@ void plasmaTimeControl::read()
                 << errAtolDefault_ << ")." << nl
                 << "    Phase 1: measured and printed only -- it does NOT"
                 << " influence deltaT." << endl;
+
+            // PHASE 2a: PI CONTROL. Requires the estimate to exist.
+            errorControlDeltaT_ =
+                dict_.lookupOrDefault<Switch>("errorControlDeltaT", false);
+
+            if (errorControlDeltaT_)
+            {
+                errTarget_ = dict_.lookupOrDefault<scalar>("errorTarget", 1.0);
+                errKi_     = dict_.lookupOrDefault<scalar>("errorKi", 0.3/3.0);
+                errKp_     = dict_.lookupOrDefault<scalar>("errorKp", 0.4/3.0);
+                errSafety_ = dict_.lookupOrDefault<scalar>("errorSafety", 0.9);
+                errMaxGrow_ =
+                    dict_.lookupOrDefault<scalar>("errorMaxGrow", 2.0);
+                errMaxShrink_ =
+                    dict_.lookupOrDefault<scalar>("errorMaxShrink", 0.5);
+                errWarmupSteps_ =
+                    dict_.lookupOrDefault<label>("errorWarmupSteps", 5);
+
+                if (!adjustTimeStep_)
+                {
+                    FatalErrorInFunction
+                        << "errorControlDeltaT needs adjustTimeStep on: the"
+                        << " controller works by CHANGING deltaT." << nl
+                        << exit(FatalError);
+                }
+
+                Info<< "plasmaTimeControl: temporal-error PI CONTROL is on"
+                    << " (target " << errTarget_
+                    << ", kI " << errKi_ << ", kP " << errKp_
+                    << ", grow <= " << errMaxGrow_
+                    << ", warmup " << errWarmupSteps_ << " steps)." << nl
+                    << "    deltaT is set by the LOCAL TEMPORAL ERROR. The"
+                    << " Courant and stiffness limits still apply as CAPS and"
+                    << " should now rarely bind -- if one of them is still"
+                    << " naming itself in `deltaT set by`, the controller is"
+                    << " not in charge." << nl
+                    << "    The 1.2x/step growth cap is replaced by"
+                    << " errorMaxGrow: with a real controller the crude cap"
+                    << " would prevent it reaching the step it is asking for."
+                    << endl;
+            }
         }
 
 
@@ -674,6 +715,11 @@ void plasmaTimeControl::measureTemporalError
         }
     }
 
+    // The P term needs the PREVIOUS accepted step's norm. Updated here, at the
+    // very end and only on an accepted step, so a discarded attempt can never
+    // contribute -- measureTemporalError() is called after the retry loop.
+    errNormPrev_ = errNorm_;
+
     ++errHistorySteps_;
 }
 
@@ -703,6 +749,44 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
             dtLimiterName_ = name;
         }
     };
+
+    // TEMPORAL-ERROR PI CONTROL (Phase 2a).
+    //
+    // This is the ACCURACY layer, and it is meant to be the primary setter of
+    // deltaT. The Courant and stiffness limits below remain as CAPS: if one of
+    // them still names itself in `deltaT set by`, the controller is not in
+    // charge and that is the thing to investigate.
+    //
+    // errNorm_ is the PREVIOUS step's error -- measureTemporalError() runs
+    // after a step is ACCEPTED, and adjustDeltaT() runs before ++runTime, so
+    // the ordering is already right and no extra bookkeeping is needed.
+    //
+    // PI form, Gustafsson/Lundh/Soderlind (BIT 28 (1988) 270), PI.4.2:
+    //
+    //     factor = (target/e_n)^kI * (e_{n-1}/e_n)^kP
+    //
+    // The integral term alone is the elementary controller, which oscillates on
+    // stiff problems; the proportional term damps that. Both gains are
+    // fractions of 1/(p+1) with p = 2 for BDF2.
+    if
+    (
+        errorControlDeltaT_
+     && errNorm_ > VSMALL
+     && errHistorySteps_ > errWarmupSteps_
+    )
+    {
+        scalar factor = Foam::pow(errTarget_/errNorm_, errKi_);
+
+        if (errNormPrev_ > VSMALL)
+        {
+            factor *= Foam::pow(errNormPrev_/errNorm_, errKp_);
+        }
+
+        factor *= errSafety_;
+        factor = min(max(factor, errMaxShrink_), errMaxGrow_);
+
+        bind(currentDeltaT*factor, "temporal error (PI)");
+    }
 
     scalar maxSigma = 0.0;
     scalar maxConvFluxRate  = 0.0;
@@ -1058,10 +1142,19 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
             }
             else
             {
-                if (currentDeltaT*1.2 < newDeltaT)
+                // The controller supersedes the crude cap. With error
+                // control on, 1.2x/step would stop it ever reaching the step
+                // it is asking for -- measured, the estimate wanted 77x on the
+                // inert ramp, which 1.2x/step needs ~24 steps to deliver.
+                const scalar growCap =
+                    errorControlDeltaT_ ? errMaxGrow_ : 1.2;
+
+                if (currentDeltaT*growCap < newDeltaT)
                 {
-                    newDeltaT = currentDeltaT*1.2;
-                    dtLimiterName_ = "growth cap (1.2x)";
+                    newDeltaT = currentDeltaT*growCap;
+                    dtLimiterName_ = errorControlDeltaT_
+                        ? "growth cap (errorMaxGrow)"
+                        : "growth cap (1.2x)";
                 }
             }
         }

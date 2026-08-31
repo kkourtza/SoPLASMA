@@ -391,7 +391,28 @@ plasmaEnergy::plasmaEnergy
     // the previous iterate from the field's INITIAL value -- the only point at
     // which a pre-solve value is available without a before-solve hook.
     {
-        IOdictionary controls
+        // REGION-SCOPED FIRST, THEN THE TOP-LEVEL FILE.
+        //
+        // Reading with `mesh_` as the database resolves to
+        // system/<region>/plasmaSimulationControls, and with READ_IF_PRESENT
+        // there is NO fallback. In a MULTI-REGION case that file does not
+        // exist -- only fvSchemes and fvSolution are copied per region -- so
+        // the whole outerCoupling block was silently EMPTY here while
+        // plasmaTimeControl (which reads with `runTime` as the database) read
+        // it correctly from the top-level file.
+        //
+        // The result was a PARTIALLY honoured block: target/tolerance/
+        // maxCorrectors worked, `outerScheme` did not, and the "is not
+        // recognised" validation in plasmaOuterRelaxation was unreachable.
+        // VERIFIED 2026-08-31 on the needle-DBD bed: `outerScheme
+        // BOGUS_SCHEME_NAME` was ACCEPTED and the run proceeded on Aitken.
+        // A user asking for Anderson on any multi-region case got Aitken with
+        // no warning.
+        //
+        // Region-scoped is still tried first so a genuine per-region override
+        // keeps working; the top-level file is the fallback, which is where
+        // users actually write these settings.
+        IOdictionary regionControls
         (
             IOobject
             (
@@ -402,6 +423,23 @@ plasmaEnergy::plasmaEnergy
                 IOobject::NO_WRITE
             )
         );
+
+        IOdictionary globalControls
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                mesh_.time().system(),
+                mesh_.time(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+
+        const dictionary& controls =
+            regionControls.found("outerCoupling")
+          ? static_cast<const dictionary&>(regionControls)
+          : static_cast<const dictionary&>(globalControls);
         const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
 
         // LMEA is the case the joint relaxation exists for, so it is the

@@ -265,7 +265,28 @@ plasmaTransport::plasmaTransport
     // the iterates a converging outer loop passes through, and every
     // validated result in this project predates it.
     {
-        IOdictionary controls
+        // REGION-SCOPED FIRST, THEN THE TOP-LEVEL FILE.
+        //
+        // Reading with `mesh_` as the database resolves to
+        // system/<region>/plasmaSimulationControls, and with READ_IF_PRESENT
+        // there is NO fallback. In a MULTI-REGION case that file does not
+        // exist -- only fvSchemes and fvSolution are copied per region -- so
+        // the whole outerCoupling block was silently EMPTY here while
+        // plasmaTimeControl (which reads with `runTime` as the database) read
+        // it correctly from the top-level file.
+        //
+        // The result was a PARTIALLY honoured block: target/tolerance/
+        // maxCorrectors worked, `outerScheme` did not, and the "is not
+        // recognised" validation in plasmaOuterRelaxation was unreachable.
+        // VERIFIED 2026-08-31 on the needle-DBD bed: `outerScheme
+        // BOGUS_SCHEME_NAME` was ACCEPTED and the run proceeded on Aitken.
+        // A user asking for Anderson on any multi-region case got Aitken with
+        // no warning.
+        //
+        // Region-scoped is still tried first so a genuine per-region override
+        // keeps working; the top-level file is the fallback, which is where
+        // users actually write these settings.
+        IOdictionary regionControls
         (
             IOobject
             (
@@ -276,6 +297,23 @@ plasmaTransport::plasmaTransport
                 IOobject::NO_WRITE
             )
         );
+
+        IOdictionary globalControls
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                mesh_.time().system(),
+                mesh_.time(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+
+        const dictionary& controls =
+            regionControls.found("outerCoupling")
+          ? static_cast<const dictionary&>(regionControls)
+          : static_cast<const dictionary&>(globalControls);
         const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
 
         // ONE coordinator per mesh, holding the JOINT Aitken estimator.
@@ -304,8 +342,14 @@ plasmaTransport::plasmaTransport
                 species_.numberDensity(species_.electronSpeciesID())
             );
 
+            // The SCHEME NAME, not a hardcoded string. It read " (Aitken)"
+            // literally until 2026-08-31, so a run with
+            // `outerScheme anderson` printed "Aitken" and there was no way to
+            // tell from the log which scheme was active -- during a test whose
+            // whole purpose was to compare the two. Note the comment
+            // immediately below states the principle this line was violating.
             Info<< "plasmaTransport: JOINT adaptive outer-loop relaxation"
-                << " (Aitken)" << nl
+                << " (" << relax_->scheme() << ")" << nl
                 // RESOLVED values from the coordinator, never a second read
                 // of the dictionary: a banner that re-reads can print a
                 // default the solver is not using.
