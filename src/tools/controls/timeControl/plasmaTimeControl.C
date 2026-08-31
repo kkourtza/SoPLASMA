@@ -334,6 +334,17 @@ void plasmaTimeControl::read()
                 oc.getOrDefault<label>("maxCorrectors", 20);
             outerTolerance_ =
                 oc.getOrDefault<scalar>("tolerance", 1e-8);
+
+            // PHASE 3a: the contraction a step must achieve to FINISH inside
+            // the corrector budget. Derived, not tuned -- see rhoTarget_.
+            if (outerMaxCorrectors_ > 0 && outerTolerance_ > 0)
+            {
+                rhoTarget_ = Foam::pow
+                (
+                    outerTolerance_,
+                    1.0/scalar(outerMaxCorrectors_)
+                );
+            }
             // DEFAULT: retryStep. `reduceDeltaT` ACCEPTS a non-converged
             // step into the history and only shortens the NEXT one, so the
             // unconverged state stays in the solution for good. Measured on
@@ -1447,7 +1458,26 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         Info<< "    rho [contraction]:        max " << relaxContraction_
             << (relaxContraction_ >= 1.0
                     ? "   <--  residual GREW" : "")
+            << "   [ target " << rhoTarget_ << " ]"
             << "   (diagnostic; omega still governs)" << nl;
+
+        // PHASE 3a: what a contraction governor WOULD ask for, printed only.
+        // Picard coupling strength grows roughly linearly with deltaT, so the
+        // first model is dt*(rho_target/rho). This is the data that decides
+        // whether the linear model holds: if rho does not respond monotonically
+        // to deltaT on BOTH beds, the model is wrong and Phase 3 stops.
+        if (rhoTarget_ > 0 && relaxContraction_ > VSMALL)
+        {
+            const scalar dtRho =
+                actualDeltaT*(rhoTarget_/relaxContraction_);
+
+            Info<< "      dt would be:          " << dtRho
+                << "  (vs " << actualDeltaT << ", ratio "
+                << dtRho/actualDeltaT << ")"
+                << (relaxContraction_ > rhoTarget_
+                        ? "   <--  too slow to finish" : "")
+                << nl;
+        }
     }
 
     // OUTER-LOOP HALVING, reported beside the other constraints.

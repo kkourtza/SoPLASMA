@@ -392,6 +392,33 @@ private:
         //  which is what Anderson acceleration needs.
         scalar relaxContraction_ = 0.0;
 
+        //- PHASE 3a: the contraction target a governor should key on, DERIVED
+        //  from the user's own outerCoupling settings rather than tuned:
+        //
+        //      rho_target = outerTolerance ^ (1/maxCorrectors)
+        //
+        //  A Picard loop contracting at rho from a residual of order 1 reaches
+        //  `tolerance` in N correctors when rho^N <= tolerance. The target is
+        //  therefore "contract fast enough to FINISH" -- which is exactly what
+        //  the rho comment in adjustDeltaT() argues a governor must key on, and
+        //  NOT rho = 1, which only says the residual did not grow.
+        //
+        //  INDEPENDENT CORROBORATION: with the default tolerance 1e-8 and 20
+        //  correctors this gives 0.3981, against the ~0.38 MEASURED in
+        //  testAitken CASE 14 against ground truth. A formula derived from
+        //  first principles landing on a separately measured number is why this
+        //  is believed to be an invariant rather than a knob.
+        //
+        //  WHY rho AND NOT omega: omega is only defined for a scheme that
+        //  DAMPS. Measured 2026-08-31 on the inert-ramp bed, the omega-based
+        //  coupling-margin governor bound 31 of 48 steps under Aitken and
+        //  ZERO under Anderson, which then discovered its ceiling by failing --
+        //  14 discarded steps, 25% of its work. rho is defined for every
+        //  scheme, so it is the only governor that can be universal.
+        //
+        //  Phase 3a REPORTS it and governs nothing.
+        scalar rhoTarget_ = 0.0;
+
         //- Largest factor this step, reported beside the minimum
         scalar relaxOmegaMax_ = 1.0;
 
