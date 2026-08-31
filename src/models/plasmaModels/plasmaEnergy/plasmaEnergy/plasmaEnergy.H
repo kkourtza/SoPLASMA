@@ -238,6 +238,32 @@ public:
         //  e_vib needs nothing -- it integrates from eVibStart_, which is
         //  keyed on the time index a retry holds fixed, so re-running simply
         //  recomputes it with the shorter deltaT.
+        //- Append every transported field this manager and its models own.
+        //
+        //  Deliberately the SAME shape as discardStep() below, including the
+        //  models-first-then-T_gas order: the set of fields to restore on a
+        //  discarded step and the set to measure temporal error on are the
+        //  same set, and the two must not drift apart.
+        void appendTransportedFields
+        (
+            DynamicList<const volScalarField*>& fields,
+            DynamicList<word>& names
+        ) const
+        {
+            forAll(energyModels_, i)
+            {
+                energyModels_[i].appendTransportedFields(fields, names);
+            }
+
+            // T_gas is owned by the MANAGER, not by a model -- which is why
+            // the gasTemperature model's virtual is correctly a no-op.
+            if (solveGasEnergy_ && TgasFieldPtr_)
+            {
+                fields.append(TgasFieldPtr_.get());
+                names.append(TgasFieldPtr_->name());
+            }
+        }
+
         void discardStep()
         {
             // THE ENERGY MODELS FIRST, AND UNCONDITIONALLY. An LMEA case need

@@ -414,6 +414,21 @@ Foam::scalar Foam::plasmaTransport::maxChemLossRate() const
 
 // * * * * * * * * * * * * * * * G2: gas energy * * * * * * * * * * * * * * //
 
+void Foam::plasmaTransport::appendTransportedFields
+(
+    DynamicList<const volScalarField*>& fields,
+    DynamicList<word>& names
+) const
+{
+    forAll(species_.numberDensities(), s)
+    {
+        const volScalarField& n = species_.numberDensities()[s];
+        fields.append(&n);
+        names.append(n.name());
+    }
+}
+
+
 void Foam::plasmaTransport::discardStep()
 {
     forAll(species_.numberDensities(), s)

@@ -1502,6 +1502,17 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
 }
 
 
+void localEnergyEnergyModel::appendTransportedFields
+(
+    DynamicList<const volScalarField*>& fields,
+    DynamicList<word>& names
+) const
+{
+    fields.append(&nEps_);
+    names.append(nEps_.name());
+}
+
+
 void localEnergyEnergyModel::discardStep()
 {
     // THE STEP IS BEING THROWN AWAY, so n_eps must go back with the species.

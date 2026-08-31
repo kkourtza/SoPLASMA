@@ -768,6 +768,18 @@ public:
         //  exception and is now baselined per index for exactly this reason.
         void discardStep();
 
+        //- Append every transported number density, with its name.
+        //
+        //  Enumerated from the species registry, NOT a hardcoded list: with
+        //  `activeSpecies fromMechanism` the case does not know the names in
+        //  advance. Same set that discardStep() restores, and for the same
+        //  reason -- see plasmaEnergyModel::appendTransportedFields.
+        void appendTransportedFields
+        (
+            DynamicList<const volScalarField*>& fields,
+            DynamicList<word>& names
+        ) const;
+
     // Constructors
 
         //- Construct from mesh and species

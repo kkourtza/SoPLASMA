@@ -48,6 +48,7 @@ SourceFiles
 #ifndef plasmaEnergyModel_H
 #define plasmaEnergyModel_H
 
+#include "DynamicList.H"
 #include "fvMesh.H"
 #include "fvMatrix.H"
 #include "autoPtr.H"
@@ -161,6 +162,26 @@ public:
         //  Default no-op: a model with no transported state of its own
         //  (isothermal, gasTemperature, localField) has nothing to undo.
         virtual void discardStep() {}
+
+        //- Append every field this model TRANSPORTS to `fields`.
+        //
+        //  Default no-op, for the same reason discardStep() above is one: a
+        //  model with no transported state of its own (isothermal,
+        //  gasTemperature, localField) has nothing to contribute.
+        //
+        //  WHY THIS MIRRORS discardStep(). Whatever must be RESTORED when a
+        //  step is thrown away is exactly the transported state, so the two
+        //  lists must never diverge. Keeping them adjacent and identically
+        //  shaped is deliberate: a model that adds a transported field and
+        //  forgets one of the two will be obvious. retryStep shipped with
+        //  nEps_e missing from discardStep() and it took a SIGFPE at step 6 to
+        //  find, because every validation bed was LFA.
+        virtual void appendTransportedFields
+        (
+            DynamicList<const volScalarField*>& fields,
+            DynamicList<word>& names
+        ) const
+        {}
 
         //- Return the energy equation (Matrix)
         virtual tmp<fvScalarMatrix> eEqn() const = 0;

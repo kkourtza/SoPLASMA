@@ -45,6 +45,8 @@ SourceFiles
 #ifndef plasmaTimeControl_H
 #define plasmaTimeControl_H
 
+#include "HashTable.H"
+#include "DynamicList.H"
 #include "fvCFD.H"
 #include "IOdictionary.H"
 
@@ -102,6 +104,42 @@ private:
 
             //- Maximum allowed convective Courant for the tracked species
             scalar maxSpeciesConvectiveCo_;
+
+            // TEMPORAL ERROR CONTROL -- Phase 1: MEASURE AND REPORT ONLY.
+            //  Nothing here influences deltaT. See
+            //  docs/adaptive-timestep-error-control-plan.md.
+
+            //- Report the local temporal error estimate. Default OFF, and with
+            //  it off nothing is computed and no field history is extended.
+            Switch reportTemporalError_ = false;
+
+            //- Relative tolerance in the weighted RMS norm.
+            scalar errRtol_ = 1e-3;
+
+            //- Absolute tolerance, per field name, with a fallback.
+            //  atol IS the design: densities span eight orders and most cells
+            //  sit at the floor, so without a significance floor the norm is
+            //  dominated by cells containing nothing. A field with no atol and
+            //  no fallback is a FATAL error, never a silent omission.
+            //  Stored as a DICTIONARY, not a HashTable, so the keys can be
+            //  REGEXES: a mechanism with 13 species should need one entry
+            //  ("n_.*") and not thirteen. This is how the solver and BC
+            //  dictionaries already match names.
+            dictionary errAtolDict_;
+            scalar errAtolDefault_ = -1;
+
+            //- Last measured norm, the field that dominated it, and the step
+            //  that norm would ask for. Diagnostics only in Phase 1.
+            scalar errNorm_ = -1;
+            word errWorstField_ = "none";
+            scalar errDtSuggested_ = -1;
+            label errFieldsSeen_ = 0;
+            label errHistorySteps_ = 0;
+
+            //- Maximum |dt/dt_old - 1| over the levels used, so the reader can
+            //  see how far the equal-step assumption in the estimator is being
+            //  stretched.
+            scalar errStepRatioDev_ = 0;
 
             //- Maximum allowed convective Courant for the ENERGY equation.
             //  Defaults to maxSpeciesConvectiveCo_ so an existing case is
@@ -426,6 +464,25 @@ public:
         //- Adjust deltaT using the specific plasmaTransport object
         //  Note: We pass it by const reference
         void adjustDeltaT(const plasmaTransport& transport);
+
+        //- Measure the local temporal error over the supplied transported
+        //  fields. Phase 1: REPORTS ONLY, never changes deltaT.
+        //
+        //  The caller supplies the field list because the SOLVER is what knows
+        //  which models are active -- the same place that orchestrates both
+        //  discardStep() calls. plasmaTimeControl resolves each field's atol by
+        //  NAME and aborts if one cannot be resolved.
+        void measureTemporalError
+        (
+            const DynamicList<const volScalarField*>& fields,
+            const DynamicList<word>& names
+        );
+
+        //- Is the temporal-error report switched on?
+        bool reportTemporalError() const noexcept
+        {
+            return reportTemporalError_;
+        }
 
         //- Set the first time step of the simulation
         void setInitialDeltaT(const plasmaTransport& transport);

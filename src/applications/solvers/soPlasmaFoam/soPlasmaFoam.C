@@ -483,6 +483,29 @@ int main(int argc, char *argv[])
         // current is a diagnostic of the state that was actually accepted.
         dischargeCurrent.update(transport, species, em());
 
+        // TEMPORAL ERROR MEASUREMENT (Phase 1: report only).
+        //
+        // AFTER the retry loop, for the same reason dischargeCurrent.update()
+        // is: the estimate must describe the state that was ACCEPTED, not a
+        // discarded attempt.
+        //
+        // The field list is assembled HERE because the solver is what knows
+        // which models are active -- the same place that calls both
+        // discardStep()s. Each model appends what IT transports, so a case is
+        // covered whatever the user selected: species always, nEps_e under
+        // LMEA, T_gas under gas heating.
+        if (timeControl.reportTemporalError())
+        {
+            DynamicList<const volScalarField*> errFields;
+            DynamicList<word> errNames;
+
+            transport.appendTransportedFields(errFields, errNames);
+            if (energy) energy->appendTransportedFields(errFields, errNames);
+
+            timeControl.measureTemporalError(errFields, errNames);
+        }
+
+
         runTime.write();
         runTime.printExecutionTime(Info);
     }

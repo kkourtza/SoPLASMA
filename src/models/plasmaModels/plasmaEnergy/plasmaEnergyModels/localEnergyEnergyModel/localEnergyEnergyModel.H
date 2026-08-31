@@ -271,6 +271,15 @@ public:
         //  from n_e at t^n and n_eps at the thrown-away t^{n+1}.
         virtual void discardStep() override;
 
+        //- nEps_e is this model's transported state -- the same field
+        //  discardStep() restores. See the base class for why the two lists
+        //  are kept adjacent.
+        virtual void appendTransportedFields
+        (
+            DynamicList<const volScalarField*>& fields,
+            DynamicList<word>& names
+        ) const override;
+
         virtual bool isUniform() const override { return false; }
         virtual bool isConstant() const override { return false; }
 

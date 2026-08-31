@@ -210,6 +210,33 @@ void plasmaTimeControl::read()
         printSpeciesCo_ = 
             dict_.lookupOrDefault<Switch>("printSpeciesCo", false);
 
+        // TEMPORAL ERROR -- Phase 1: MEASURE AND REPORT ONLY, default OFF.
+        // With it off nothing is computed and the old-time chain is NOT
+        // extended, so an existing case is bit-for-bit unchanged.
+        reportTemporalError_ =
+            dict_.lookupOrDefault<Switch>("reportTemporalError", false);
+
+        if (reportTemporalError_)
+        {
+            errRtol_ = dict_.lookupOrDefault<scalar>("errorRtol", 1e-3);
+            errAtolDefault_ =
+                dict_.lookupOrDefault<scalar>("errorAtolDefault", -1);
+
+            errAtolDict_.clear();
+            if (dict_.found("errorAtol"))
+            {
+                errAtolDict_ = dict_.subDict("errorAtol");
+            }
+
+            Info<< "plasmaTimeControl: temporal-error REPORT is on (rtol "
+                << errRtol_ << ", " << errAtolDict_.size()
+                << " atol entries, fallback "
+                << errAtolDefault_ << ")." << nl
+                << "    Phase 1: measured and printed only -- it does NOT"
+                << " influence deltaT." << endl;
+        }
+
+
         if (limitSpeciesCo_ || printSpeciesCo_)
         {
             maxSpeciesConvectiveCo_ =
@@ -520,6 +547,136 @@ scalar plasmaTimeControl::patchVoltageAvg
 
     return localCount > 0 ? localSum / scalar(localCount) : 0.0;
 }
+
+void plasmaTimeControl::measureTemporalError
+(
+    const DynamicList<const volScalarField*>& fields,
+    const DynamicList<word>& names
+)
+{
+    if (!reportTemporalError_) return;
+
+    errNorm_ = -1;
+    errWorstField_ = "none";
+    errDtSuggested_ = -1;
+    errFieldsSeen_ = 0;
+    errStepRatioDev_ = 0;
+
+    const scalar dt = runTime_.deltaTValue();
+    const scalar dt0 = runTime_.deltaT0Value();
+    if (dt0 > VSMALL)
+    {
+        errStepRatioDev_ = mag(dt/dt0 - 1.0);
+    }
+
+    // BDF2 LOCAL TRUNCATION ERROR from the THIRD difference of the history.
+    //
+    //   LTE = -(2/9) h^3 d3y/dt3      (constant step)
+    //   h^3 d3y/dt3 ~ D3 = phi_n - 3 phi_n1 + 3 phi_n2 - phi_n3
+    //   => |LTE| ~ (2/9) |D3|
+    //
+    // Needs THREE old levels. OpenFOAM creates them on demand and
+    // storeOldTime() recurses down the chain, so the history rotates itself.
+    // Because it rotates on the TIME INDEX -- which a retry holds fixed -- this
+    // carries NO state of its own for discardStep() to undo, which is the whole
+    // reason for using the old-time chain rather than private buffers.
+    //
+    // The constant-step form is deliberate for Phase 1, and its assumption is
+    // REPORTED rather than hidden: errStepRatioDev_ shows how far deltaT moved
+    // between levels, and the 1.2x growth cap bounds that.
+    const scalar C_BDF2 = 2.0/9.0;
+
+    scalar sumsq = 0;
+    label nTot = 0;
+    scalar worst = -1;
+
+    forAll(fields, i)
+    {
+        const volScalarField& f = *fields[i];
+        const word& nm = names[i];
+
+        // Resolve atol BY NAME. A transported field with no atol is FATAL:
+        // dropping it silently is indistinguishable from it being converged.
+        // REGEX-aware lookup: dictionary::findEntry with keyType::REGEX
+        // matches "n_.*" against every species name, so one entry covers a
+        // whole mechanism.
+        scalar atol = -1;
+        const entry* ap =
+            errAtolDict_.findEntry(nm, keyType::REGEX);
+        if (ap)
+        {
+            atol = readScalar(ap->stream());
+        }
+        else if (errAtolDefault_ > 0)
+        {
+            atol = errAtolDefault_;
+        }
+        else
+        {
+            FatalErrorInFunction
+                << "No absolute tolerance for transported field " << nm << nl
+                << "    Set it in plasmaTimeControl as errorAtol { " << nm
+                << "  <value>; } -- the key may be a REGEX, so \"n_.*\" covers"
+                << " every species -- or set errorAtolDefault." << nl
+                << "    EVERY transported field needs one: a field left out of"
+                << " the error norm is an unbounded error the controller cannot"
+                << " see." << nl
+                << "    Fields offered this step: " << names
+                << exit(FatalError);
+        }
+
+        // Three old levels; requesting them here is what extends the chain.
+        const volScalarField& f1 = f.oldTime();
+        const volScalarField& f2 = f1.oldTime();
+        const volScalarField& f3 = f2.oldTime();
+
+        const scalarField& a  = f.primitiveField();
+        const scalarField& a1 = f1.primitiveField();
+        const scalarField& a2 = f2.primitiveField();
+        const scalarField& a3 = f3.primitiveField();
+
+        scalar fsum = 0;
+        scalar fworst = 0;
+        forAll(a, c)
+        {
+            const scalar d3 = a[c] - 3.0*a1[c] + 3.0*a2[c] - a3[c];
+            const scalar w  = errRtol_*mag(a[c]) + atol;
+            const scalar e  = C_BDF2*mag(d3)/(w + VSMALL);
+            fsum += e*e;
+            fworst = max(fworst, e);
+        }
+        reduce(fsum, sumOp<scalar>());
+        reduce(fworst, maxOp<scalar>());
+
+        label n = a.size();
+        reduce(n, sumOp<label>());
+
+        sumsq += fsum;
+        nTot += n;
+        ++errFieldsSeen_;
+
+        if (fworst > worst)
+        {
+            worst = fworst;
+            errWorstField_ = nm;
+        }
+    }
+
+    if (nTot > 0)
+    {
+        errNorm_ = Foam::sqrt(sumsq/scalar(nTot));
+
+        // What a PI controller WOULD ask for, at order p = 2 so exponent
+        // 1/(p+1) = 1/3. Printed for comparison only; Phase 1 changes nothing.
+        if (errNorm_ > VSMALL)
+        {
+            errDtSuggested_ = dt*Foam::pow(1.0/errNorm_, 1.0/3.0);
+        }
+    }
+
+    ++errHistorySteps_;
+}
+
 
 void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
 {
@@ -1120,13 +1277,6 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     // Those want opposite fixes, so the number has to be visible.
     if (relaxMargin_ < 1.0 - SMALL || relaxMarginBound_)
     {
-    // THE BINDING CONSTRAINT, named. Everything else in this block reports a
-    // value against a cap; this says which one actually set deltaT. "Why is my
-    // timestep so small" is exactly this question, and the values alone cannot
-    // answer it -- a limiter can sit at a fraction of its cap and still bind,
-    // and several constraints applied in adjustDeltaT() never appear here.
-    Info<< "    deltaT set by:            " << dtLimiterName_ << nl;
-
         Info<< "    omega [coupling margin]:  min " << relaxMargin_
             << "  max " << relaxOmegaMax_
             << (relaxMarginBound_ ? "   <--  deltaT GOVERNED" : "")
@@ -1136,6 +1286,46 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     {
         Info<< "    omega [coupling margin]:  min 1  (nothing damped)" << nl;
     }
+
+    // THE BINDING CONSTRAINT, named. Everything else in this block reports a
+    // value against a cap; this says which one actually set deltaT. "Why is my
+    // timestep so small" is exactly this question, and the values alone cannot
+    // answer it -- a limiter can sit at a fraction of its cap and still bind,
+    // and several constraints applied in adjustDeltaT() never appear here.
+    //
+    // UNCONDITIONAL, and that is the whole point. When first added (2026-08-30)
+    // this line was accidentally placed INSIDE the coupling-margin `if` above,
+    // so it printed only when the margin was damped or governing. On the
+    // needle-DBD bed the margin was frequently bound, so it appeared and looked
+    // correct; on the streamer bed nothing was damped and the line VANISHED --
+    // on the one run whose binding limiter we actually needed to identify.
+    // A diagnostic that hides exactly when the system is healthy is worse than
+    // useless, because its absence is read as "nothing to report".
+    // TEMPORAL ERROR, if measured. Printed beside the limiters deliberately:
+    // this is the quantity the Courant numbers above are a PROXY for, and the
+    // point of Phase 1 is to let the two be compared on real runs before
+    // either drives deltaT. `dt would be` is what a PI controller at order 2
+    // would ask for -- it is NOT applied.
+    if (reportTemporalError_ && errNorm_ >= 0)
+    {
+        Info<< "    temporal err ||e||:     " << errNorm_
+            << "   [ target 1 ]   worst: " << errWorstField_
+            << " of " << errFieldsSeen_ << " fields" << nl;
+        if (errDtSuggested_ > 0)
+        {
+            Info<< "      dt would be:          " << errDtSuggested_
+                << "  (vs " << actualDeltaT << ", ratio "
+                << errDtSuggested_/actualDeltaT << ")" << nl;
+        }
+        if (errStepRatioDev_ > 0.05)
+        {
+            Info<< "      NOTE: |dt/dt_old - 1| = " << errStepRatioDev_
+                << "; the estimator assumes a constant step, so treat"
+                << " ||e|| as approximate here." << nl;
+        }
+    }
+
+    Info<< "    deltaT set by:            " << dtLimiterName_ << nl;
 
     // CONTRACTION, reported beside omega and NOT yet governing anything.
     //
