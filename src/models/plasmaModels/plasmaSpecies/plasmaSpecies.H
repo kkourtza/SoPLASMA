@@ -170,6 +170,22 @@ protected:
             //- Background gas dictionary
             dictionary backgroundDict_;
 
+            //- The electron energy closure, `LFA` or `LMEA`. RESOLVED ONCE,
+            //  here, from the global `electronEnergyModel` key (with the
+            //  legacy per-species spelling accepted for one release).
+            //
+            //  Everything downstream -- whether the n_eps equation is solved,
+            //  which field the electron transport coefficients are keyed on,
+            //  which field the reaction rates are keyed on -- ASKS this and
+            //  never re-derives the condition. Three places used to derive it
+            //  independently, which is how a run came to be half-LMEA.
+            //
+            //  ORTHOGONAL to gas heating (`backgroundGas/energy/solve`):
+            //  all four combinations are supported and neither implies the
+            //  other. An earlier version keyed LMEA off `energy { solve }`,
+            //  so enabling LMEA silently switched on the gas temperature.
+            word electronEnergyModel_;
+
         //- Groups
 
             //- Index for the electron species
@@ -196,20 +212,25 @@ protected:
             //- Indices for immobile species
             labelList immobileSpeciesIDs_;
 
-            //- Species with a constant (fixed) temperature value
-            labelList constantTemperatureSpeciesIDs_;
-
-            //- Species with a dynamic (non-fixed) temperature
-            labelList dynamicTemperatureSpeciesIDs_;
-
-            //- Species that follow the background gas temperature
-            labelList followBackgroundTempSpeciesIDs_;
-
-            //- Species for which we solve a dedicated energy equation
-            labelList solveEnergySpeciesIDs_;
-
-            //- Species that have a volScalarField for temperature
-            labelList fieldTemperatureSpeciesIDs_;
+            // REMOVED 2026-09-01: the five per-species TEMPERATURE groupings
+            // (constantTemperature / dynamicTemperature /
+            // followBackgroundTemp / solveEnergy / fieldTemperature).
+            //
+            // They were populated from a per-species `energyModel` key whose
+            // accepted values -- isothermal / backgroundGas / localField /
+            // solveEnergy -- were a SECOND, incompatible vocabulary for the
+            // same key name that plasmaEnergy and plasmaTransport read with
+            // {gasTemperature, isothermal, localEnergy, localField}. Only two
+            // values were common, and `gasTemperature` -- the documented
+            // default -- matched no branch here, so a species using the
+            // default fell into no group at all.
+            //
+            // All five accessors were called ZERO times outside their own
+            // declarations, so the grouping decided nothing: it existed only
+            // to confuse the person writing the case. Gas temperature is a
+            // GLOBAL property, resolved once from backgroundGas/energy, and
+            // the electron closure is `electronEnergyModel`. Do not
+            // reintroduce a per-species temperature key without a consumer.
 
             //- Species that participate in reactions
             labelList reactingSpeciesIDs_;
@@ -223,6 +244,28 @@ protected:
         //- Fill speciesNames_, mechCharge_ and mechMass_ from the compiled
         //  mechanism dictionary, for `activeSpecies fromMechanism;`
         void readMechanismSpecies();
+
+        //- Resolve electronEnergyModel_ into `LFA` or `LMEA`.
+        //
+        //  MUST run AFTER electronSpeciesID_ is assigned (plasmaSpecies.C,
+        //  in the species loop), because the legacy per-species spelling can
+        //  only be read off the electron's own sub-dictionary. It is a second
+        //  pass over the dictionary for exactly that reason.
+        void resolveElectronEnergyModel();
+
+        //- Point the ELECTRON's drift-diffusion coefficients at the field the
+        //  closure implies, and reject a contradiction.
+        //
+        //  This closes the last silent half-LMEA hole. The chemistry key and
+        //  the energy model both follow electronEnergyModel_, but the
+        //  electron's own driftDiffusionCoeffs -- which drive the n_e flux --
+        //  were hand-maintained, so LMEA could run its transport on `reducedE`
+        //  with no error and plausible output.
+        //
+        //  ELECTRON ONLY. Ion coefficients are functions of E/N or |E| and are
+        //  never touched; the ion blocks deliberately omit `lookupVariable` so
+        //  that MechanismProperty's `reducedE` default applies.
+        void deriveElectronTransportKey();
 
 
 public:
@@ -334,6 +377,19 @@ public:
 
         //- Group access
         inline label electronSpeciesID() const;
+
+        //- The electron energy closure: `LFA` or `LMEA`.
+        inline const word& electronEnergyModel() const;
+
+        //- Is the local MEAN ENERGY approximation active? The one question
+        //  every downstream consumer should ask; do not re-derive it from
+        //  dictionary keys.
+        inline bool isLMEA() const;
+
+        //- The field the electron coefficients and reaction rates are keyed
+        //  on: `meanE` under LMEA, `reducedE` under LFA. Determined entirely
+        //  by the closure, so it is derived and never read from a case.
+        inline const word& electronLookupKey() const;
         inline const labelList& ionSpeciesIDs() const;
         inline const labelList& positiveIonSpeciesIDs() const;
         inline const labelList& negativeIonSpeciesIDs() const;
@@ -342,11 +398,6 @@ public:
 
         inline const labelList& mobileSpeciesIDs() const;
         inline const labelList& immobileSpeciesIDs() const;
-        inline const labelList& constantTemperatureSpeciesIDs() const;
-        inline const labelList& dynamicTemperatureSpeciesIDs() const;
-        inline const labelList& followBackgroundTempSpeciesIDs() const;
-        inline const labelList& solveEnergySpeciesIDs() const;
-        inline const labelList& fieldTemperatureSpeciesIDs() const;
         inline const labelList& reactingSpeciesIDs() const;
         inline const labelList& nonReactingSpeciesIDs() const;
 };

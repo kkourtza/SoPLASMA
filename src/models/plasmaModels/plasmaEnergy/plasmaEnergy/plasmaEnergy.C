@@ -179,24 +179,15 @@ bool plasmaEnergy::required(const plasmaSpecies& species)
         return true;
     }
 
-    // Or any species carrying its own energy equation? `gasTemperature` is the
-    // default and needs none -- it is the historical "every species sits at
-    // the gas temperature" behaviour. Anything else (localEnergy for LMEA)
-    // does.
-    forAll(species.speciesNames(), i)
-    {
-        if
-        (
-            species.speciesDict(i)
-                .getOrDefault<word>("energyModel", "gasTemperature")
-         != "gasTemperature"
-        )
-        {
-            return true;
-        }
-    }
-
-    return false;
+    // Or is the electron carrying its own energy equation? Only LMEA does.
+    //
+    // ASKED, not re-derived: plasmaSpecies resolved the closure once, from a
+    // single top-level key, and this is the one condition that follows from it.
+    // Note the two are deliberately OR-ed, never coupled -- gas heating without
+    // LMEA and LMEA without gas heating are both normal, and an earlier version
+    // that keyed LMEA off `energy { solve }` made enabling one switch on the
+    // other silently.
+    return species.isLMEA();
 }
 
 
@@ -321,17 +312,24 @@ void plasmaEnergy::constructModels()
         const word& sName = species_.speciesNames()[i];
         const dictionary& sDict = species_.speciesDict(sName);
 
-        // DEFAULT rather than demand. Requiring the entry made constructing
-        // this class break every case in the repository, because none of them
-        // declare it -- and the historical behaviour it would be replacing is
-        // exactly "every species sits at the gas temperature", which is what
-        // gasTemperature means. So that is the default, and a case only writes
-        // the entry when it wants something else.
+        // ASKED, not derived. plasmaSpecies::resolveElectronEnergyModel() is
+        // the one owner of the electron closure; re-reading `energyModel` here
+        // is how three sites came to derive the same condition independently,
+        // and how a run came to be half-LMEA.
         //
-        // A required entry whose only sensible value is the historical one is
-        // not a safety feature, it is a migration tax.
+        // Heavy species always follow the gas temperature. That is not a
+        // narrowing of anything real: the per-species temperature vocabulary
+        // that used to be readable here filled five labelLists with no readers
+        // (see the removal note in plasmaSpecies.C), and `gasTemperature` is
+        // precisely "use T_gas", which is the solved field when
+        // backgroundGas/energy/solve is true and the fixed dictionary value
+        // when it is not. One switch, one place.
+        const bool isElectron = (i == species_.electronSpeciesID());
+
         const word modelName =
-            sDict.getOrDefault<word>("energyModel", "gasTemperature");
+            isElectron
+          ? (species_.isLMEA() ? word("localEnergy") : word("gasTemperature"))
+          : word("gasTemperature");
 
         // Optional for the same reason energyModel is: the default model
         // needs no coefficients, so demanding the sub-dictionary would be a

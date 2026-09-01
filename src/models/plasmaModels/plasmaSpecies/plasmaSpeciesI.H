@@ -184,6 +184,33 @@ Foam::plasmaSpecies::electronSpeciesID() const
     return electronSpeciesID_;
 }
 
+
+inline const Foam::word&
+Foam::plasmaSpecies::electronEnergyModel() const
+{
+    return electronEnergyModel_;
+}
+
+
+inline bool
+Foam::plasmaSpecies::isLMEA() const
+{
+    return electronEnergyModel_ == "LMEA";
+}
+
+
+inline const Foam::word&
+Foam::plasmaSpecies::electronLookupKey() const
+{
+    // Static so a reference can be returned. These are FIELD names, and the
+    // choice between them is not a degree of freedom -- it follows the
+    // closure, which is why no case is allowed to set it independently.
+    static const word meanE("meanE");
+    static const word reducedE("reducedE");
+
+    return isLMEA() ? meanE : reducedE;
+}
+
 inline const Foam::labelList&
 Foam::plasmaSpecies::ionSpeciesIDs() const
 {
@@ -225,36 +252,6 @@ inline const Foam::labelList&
 Foam::plasmaSpecies::immobileSpeciesIDs() const
 {
     return immobileSpeciesIDs_;
-}
-
-inline const Foam::labelList&
-Foam::plasmaSpecies::constantTemperatureSpeciesIDs() const
-{
-    return constantTemperatureSpeciesIDs_;
-}
-
-inline const Foam::labelList&
-Foam::plasmaSpecies::dynamicTemperatureSpeciesIDs() const
-{
-    return dynamicTemperatureSpeciesIDs_;
-}
-
-inline const Foam::labelList&
-Foam::plasmaSpecies::followBackgroundTempSpeciesIDs() const
-{
-    return followBackgroundTempSpeciesIDs_;
-}
-
-inline const Foam::labelList&
-Foam::plasmaSpecies::solveEnergySpeciesIDs() const
-{
-    return solveEnergySpeciesIDs_;
-}
-
-inline const Foam::labelList&
-Foam::plasmaSpecies::fieldTemperatureSpeciesIDs() const
-{
-    return fieldTemperatureSpeciesIDs_;
 }
 
 inline const Foam::labelList&

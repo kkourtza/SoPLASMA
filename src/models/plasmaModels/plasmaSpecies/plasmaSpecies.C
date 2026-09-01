@@ -15,6 +15,8 @@
 #include "IFstream.H"
 #include "HashSet.H"
 #include "plasmaConstants.H"
+#include "DynamicList.H"
+#include "FlatOutput.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -311,6 +313,9 @@ plasmaSpecies::plasmaSpecies
         )
     ),
     backgroundDict_(),
+    // Overwritten by resolveElectronEnergyModel(); LFA is the safe value to
+    // hold in the window before it runs, since it demands nothing extra.
+    electronEnergyModel_("LFA"),
     electronSpeciesID_(-1),
     ionSpeciesIDs_(),
     positiveIonSpeciesIDs_(),
@@ -319,11 +324,6 @@ plasmaSpecies::plasmaSpecies
     chargedSpeciesIDs_(),
     mobileSpeciesIDs_(),
     immobileSpeciesIDs_(),
-    constantTemperatureSpeciesIDs_(),
-    dynamicTemperatureSpeciesIDs_(),
-    followBackgroundTempSpeciesIDs_(),
-    solveEnergySpeciesIDs_(),
-    fieldTemperatureSpeciesIDs_(),
     reactingSpeciesIDs_(),
     nonReactingSpeciesIDs_()
 {
@@ -381,14 +381,10 @@ plasmaSpecies::plasmaSpecies
     // evaluated at 1 atm while the case was at 1 bar.
     em_.setBackgroundDensity(backgroundDensity_);
 
-    const dictionary bgEnergyDict = backgroundDict_.subOrEmptyDict("energy");
-    bool solveBg = bgEnergyDict.getOrDefault<bool>("solve", false);
-    bool bgIsField = solveBg || !bgEnergyDict.found("T");
-
-    constantTemperatureSpeciesIDs_.clear();
-    dynamicTemperatureSpeciesIDs_.clear();
-    solveEnergySpeciesIDs_.clear();
-    fieldTemperatureSpeciesIDs_.clear();
+    // backgroundGas/energy is NOT read here any more. It is a global property
+    // and plasmaEnergy is its one owner (see the removal note further down);
+    // reading `solve`/`T` here as well is how a second, disagreeing copy of a
+    // setting gets established.
 
     if (!found("activeSpecies"))
     {
@@ -719,41 +715,286 @@ plasmaSpecies::plasmaSpecies
             mobileSpeciesIDs_.append(i);
         }
 
-        // Energy groups
-        const word energy =
-            mergedDict.getOrDefault<word>("energyModel", "isothermal");
+        // NO per-species temperature grouping here.
+        //
+        // REMOVED 2026-09-01, with the five labelLists it filled. It read
+        // `energyModel` with its own vocabulary -- isothermal (default) /
+        // backgroundGas / localField / solveEnergy -- while plasmaEnergy and
+        // plasmaTransport read the SAME key as {gasTemperature (default),
+        // isothermal, localEnergy, localField}. Two enums, one key name: only
+        // two values were shared, `gasTemperature` matched nothing here, and
+        // `backgroundGas`/`solveEnergy` would have been fatal as
+        // plasmaEnergyModel type names.
+        //
+        // It was also inert -- all five accessors had zero callers -- so the
+        // whole block decided nothing while presenting the user with four
+        // keywords to choose between. The gas temperature is a GLOBAL
+        // property: `backgroundGas/energy/solve` selects whether it is solved
+        // and `backgroundGas/energy/T` fixes its value, in one place. The
+        // electron closure is `electronEnergyModel` (LFA|LMEA), which is
+        // orthogonal to gas heating -- all four combinations are supported.
+    }
 
-        // Constant vs Dynamic Temperature
-        if (energy == "isothermal")
+    // SECOND PASS, after the loop: electronSpeciesID_ is only assigned inside
+    // it, and the legacy per-species spelling lives on the electron's own
+    // sub-dictionary.
+    resolveElectronEnergyModel();
+}
+
+
+void Foam::plasmaSpecies::resolveElectronEnergyModel()
+{
+    // ONE OWNER for the electron energy closure.
+    //
+    // WHY A GLOBAL KEY RATHER THAN A PER-SPECIES ONE (user, 2026-09-01):
+    // "gasTemperature for electrons does not mean anything to me and the user
+    // won't know if that's LFA". Two independent problems with the old shape:
+    //
+    //   1. LMEA is meaningful for EXACTLY ONE species -- meanE, muEpsN and
+    //      PelasticN are all electron quantities -- so a per-species key
+    //      invited `energyModel localEnergy` on an ion, which means nothing.
+    //   2. It spelled the closure in a vocabulary that never mentions LFA or
+    //      LMEA, so the switch could not be found by the name it is known by.
+    //
+    // The key is also read in ONE place because it was previously derived
+    // independently in three (plasmaEnergy twice, plasmaTransport once), which
+    // is how a run came to be half-LMEA: transport keyed on the mean energy
+    // while ionisation still followed the field, a measured runaway.
+    const bool haveGlobal = found("electronEnergyModel");
+
+    // STEP 2 OF 5 (2026-09-01): the default is deliberately LFA here so that
+    // introducing the key changes NO existing case. The flip to LMEA is a
+    // separate commit, because it is a physics change for every case that does
+    // not name the closure.
+    word resolved("LFA");
+
+    if (haveGlobal)
+    {
+        resolved = get<word>("electronEnergyModel");
+
+        if (resolved != "LFA" && resolved != "LMEA")
         {
-            constantTemperatureSpeciesIDs_.append(i);
+            FatalIOErrorInFunction(*this)
+                << "electronEnergyModel is `" << resolved
+                << "`, which is not a closure this solver has." << nl
+                << "    The only values are:" << nl
+                << "      LFA   -- local field approximation: electron"
+                << " coefficients and rates follow the local E/N." << nl
+                << "      LMEA  -- local mean energy approximation: the"
+                << " electron energy-density equation is solved and"
+                << " coefficients and rates follow the local mean energy."
+                << nl
+                << exit(FatalIOError);
         }
-        else if (energy == "backgroundGas")
+    }
+
+    // LEGACY per-species spelling, accepted for one release.
+    //
+    // Mapped, not ignored: silently dropping it would turn every existing LMEA
+    // case into an LFA case that still runs and still looks plausible, which is
+    // precisely the failure this whole change exists to remove.
+    word legacy(word::null);
+
+    if (electronSpeciesID_ >= 0)
+    {
+        const dictionary& eDict = speciesDict(electronSpeciesID_);
+
+        if (eDict.found("energyModel"))
         {
-            followBackgroundTempSpeciesIDs_.append(i);
-            if (bgIsField)
+            const word em = eDict.get<word>("energyModel");
+
+            if (em == "localEnergy")
             {
-                fieldTemperatureSpeciesIDs_.append(i);
-                dynamicTemperatureSpeciesIDs_.append(i);
+                legacy = "LMEA";
+            }
+            else if (em == "gasTemperature" || em == "isothermal")
+            {
+                legacy = "LFA";
             }
             else
             {
-                constantTemperatureSpeciesIDs_.append(i);
+                FatalIOErrorInFunction(*this)
+                    << "The electron species carries the legacy key"
+                    << " `energyModel " << em << "`, which does not map onto"
+                    << " an electron energy closure." << nl
+                    << "    Replace it with the top-level key"
+                    << " `electronEnergyModel LFA;` or"
+                    << " `electronEnergyModel LMEA;`." << nl
+                    << exit(FatalIOError);
             }
         }
-        else if (energy == "localField")
+    }
+
+    if (!legacy.empty())
+    {
+        if (haveGlobal && legacy != resolved)
         {
-            fieldTemperatureSpeciesIDs_.append(i);
-            dynamicTemperatureSpeciesIDs_.append(i);
+            FatalIOErrorInFunction(*this)
+                << "electronEnergyModel is `" << resolved
+                << "` but the electron species still carries the legacy key"
+                << " `energyModel` selecting `" << legacy << "`." << nl
+                << "    These are the SAME setting spelled two ways and they"
+                << " disagree. Delete the per-species `energyModel` entry --"
+                << " the closure is now a single top-level key." << nl
+                << exit(FatalIOError);
         }
-        else if (energy == "solveEnergy")
+
+        if (!haveGlobal)
         {
-            solveEnergySpeciesIDs_.append(i);
-            fieldTemperatureSpeciesIDs_.append(i);
-            dynamicTemperatureSpeciesIDs_.append(i);
+            resolved = legacy;
+
+            Info<< "plasmaSpecies: the electron species uses the DEPRECATED"
+                << " per-species key `energyModel`, read as"
+                << " `electronEnergyModel " << resolved << "`." << nl
+                << "    Move it to the top level of plasmaSpeciesProperties as"
+                << " `electronEnergyModel " << resolved << ";` -- the"
+                << " per-species spelling will be removed." << endl;
         }
     }
-}  
+
+    electronEnergyModel_ = resolved;
+
+    // Heavy species: report that a legacy energy key does nothing, rather than
+    // dropping it silently. The five temperature groupings it used to fill had
+    // no readers at all (see the removal note above), so a case carrying one
+    // has always been configuring nothing -- and a user is entitled to know
+    // that the entry they wrote is not doing what they assumed.
+    DynamicList<word> staleKeys;
+
+    forAll(speciesNames_, i)
+    {
+        if (i == electronSpeciesID_) continue;
+
+        if (speciesDict(i).found("energyModel"))
+        {
+            staleKeys.append(speciesNames_[i]);
+        }
+    }
+
+    if (staleKeys.size())
+    {
+        Info<< "plasmaSpecies: IGNORED `energyModel` on " << staleKeys.size()
+            << " heavy species " << flatOutput(staleKeys) << "." << nl
+            << "    Heavy-species temperature is not a per-species setting:"
+            << " `backgroundGas/energy/solve` decides whether the gas"
+            << " temperature is solved and `backgroundGas/energy/T` fixes its"
+            << " value. These entries had no reader before either." << endl;
+    }
+
+    Info<< "plasmaSpecies: electronEnergyModel " << electronEnergyModel_
+        << " -- electron coefficients and reaction rates are keyed on `"
+        << electronLookupKey() << "`." << nl
+        << "    Independent of gas heating: `backgroundGas/energy/solve`"
+        << " is a separate switch and all four combinations are supported."
+        << endl;
+
+    deriveElectronTransportKey();
+}
+
+
+void Foam::plasmaSpecies::deriveElectronTransportKey()
+{
+    if (electronSpeciesID_ < 0)
+    {
+        return;
+    }
+
+    const word& eName = speciesNames_[electronSpeciesID_];
+
+    // Nothing to point anywhere. A drift-diffusion electron with no
+    // coefficients fails loudly in driftDiffusion itself, which is the right
+    // place for that error; inventing a block here would hide it.
+    if (!speciesDicts_[eName].found("driftDiffusionCoeffs"))
+    {
+        return;
+    }
+
+    dictionary& dd = speciesDicts_[eName].subDict("driftDiffusionCoeffs");
+    const word& want = electronLookupKey();
+
+    const wordList props({word("mobility"), word("diffusivity")});
+
+    DynamicList<word> derived;
+    DynamicList<word> ownKey;
+
+    for (const word& prop : props)
+    {
+        if (!dd.found(prop))
+        {
+            continue;
+        }
+
+        dictionary& pd = dd.subDict(prop);
+        const word type = pd.getOrDefault<word>("type", "fromMechanism");
+
+        // ONLY `fromMechanism` is derived-and-validated.
+        //
+        // For that type the key names the TABLE FILE the sweep wrote
+        // (<quantity>_vs_<key>), so LFA-versus-LMEA is precisely what the entry
+        // selects, and a mismatch is the measured half-LMEA.
+        //
+        // For a powerLaw / function1 / tabulated1D fit the key is part of the
+        // FIT's own definition -- the hand-fitted electron mobility kept in the
+        // streamer tutorial is `powerLaw` in |E|, which is a legitimate model
+        // and has no meanE-keyed counterpart. Forcing `meanE` onto it would
+        // reject valid physics, so those are reported and left alone. Same
+        // reasoning as `tableKey` in plasmaTransport: derive what is
+        // unambiguously implied, default or leave what is a modelling choice.
+        if (type != "fromMechanism")
+        {
+            ownKey.append
+            (
+                prop + " (" + type + ", keyed on "
+              + pd.getOrDefault<word>("lookupVariable", "<unset>") + ")"
+            );
+            continue;
+        }
+
+        if (pd.found("lookupVariable"))
+        {
+            const word given = pd.get<word>("lookupVariable");
+
+            if (given != want)
+            {
+                FatalIOErrorInFunction(*this)
+                    << "Electron driftDiffusionCoeffs/" << prop
+                    << "/lookupVariable is `" << given
+                    << "` but electronEnergyModel is `" << electronEnergyModel_
+                    << "`, which requires `" << want << "`." << nl
+                    << "    That combination is the HALF-LMEA: the electron"
+                    << " flux responding to one variable while the reaction"
+                    << " rates respond to another. It is a measured runaway,"
+                    << " and it produces no error of its own." << nl
+                    << "    The key is DERIVED from electronEnergyModel."
+                    << " Delete it from the electron's driftDiffusionCoeffs."
+                    << nl
+                    << exit(FatalIOError);
+            }
+        }
+        else
+        {
+            // MechanismProperty's own default is `reducedE`, so an omitted key
+            // under LMEA silently read the LFA table. Insert it.
+            pd.add("lookupVariable", want);
+            derived.append(prop);
+        }
+    }
+
+    if (derived.size())
+    {
+        Info<< "plasmaSpecies: electron driftDiffusionCoeffs "
+            << flatOutput(derived) << " keyed on `" << want
+            << "`, DERIVED from electronEnergyModel." << endl;
+    }
+
+    if (ownKey.size())
+    {
+        Info<< "plasmaSpecies: electron " << flatOutput(ownKey)
+            << " is not table-based, so its lookup variable is part of the fit"
+            << " and was left as written -- it does NOT follow"
+            << " electronEnergyModel." << endl;
+    }
+}
 
 // * * * * * * * * * * * * * * Public Member Functions * * * * * * * * * * * //
 

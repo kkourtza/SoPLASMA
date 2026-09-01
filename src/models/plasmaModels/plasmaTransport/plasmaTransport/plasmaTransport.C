@@ -2204,14 +2204,13 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // the transport-side keys ALONE left the run silently on LFA -- no error,
     // plausible output, wrong physics. It was caught only by an unrelated
     // start-up line. Two attempts were needed, by someone who knew the code.
-    const word eName = species_.speciesNames()[species_.electronSpeciesID()];
-    const word energyModelName =
-        species_.speciesDict(eName).getOrDefault<word>
-        (
-            "energyModel", "gasTemperature"
-        );
-    const bool isLMEA = (energyModelName == "localEnergy");
-    const word derivedKey = isLMEA ? "meanE" : "reducedE";
+    // ASKED, not derived. plasmaSpecies resolved the closure once from the
+    // single top-level `electronEnergyModel` key; this site used to re-read the
+    // per-species `energyModel` and reach its own conclusion, which is exactly
+    // the duplication that let a run be half-LMEA.
+    const bool isLMEA = species_.isLMEA();
+    const word& energyModelName = species_.electronEnergyModel();
+    const word& derivedKey = species_.electronLookupKey();
 
     // `lookupVariable` is the OpenFOAM FIELD the tables are keyed on, and it is
     // unambiguously determined by the energy model, so an explicit entry that
@@ -2223,14 +2222,14 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         {
             FatalErrorInFunction
                 << "chemistry/lookupVariable is `" << given
-                << "` but the electron energyModel is `" << energyModelName
+                << "` but electronEnergyModel is `" << energyModelName
                 << "`, which requires `" << derivedKey << "`." << nl
                 << "    These are NOT independent: that combination is the"
                 << " HALF-LMEA -- ionisation responding to the field while"
                 << " transport responds to the energy -- and it is a measured"
                 << " runaway." << nl
-                << "    The key is now DERIVED from energyModel. Delete it from"
-                << " plasmaTransportProperties/chemistry." << nl
+                << "    The key is now DERIVED from electronEnergyModel."
+                << " Delete it from plasmaTransportProperties/chemistry." << nl
                 << exit(FatalError);
         }
     }
@@ -2245,14 +2244,12 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     const word resolvedTableKey =
         cd.getOrDefault<word>("tableKey", derivedKey);
 
-    Info<< "plasmaTransport: electron energy is "
-        << (isLMEA ? "LMEA" : "LFA")
-        << " (energyModel " << energyModelName
-        << "), so the chemistry field is `" << derivedKey
+    Info<< "plasmaTransport: electron energy is " << energyModelName
+        << ", so the chemistry field is `" << derivedKey
         << "` and the table files are keyed on `" << resolvedTableKey << "`."
         << nl
-        << "    DERIVED, not read -- one switch. `energyModel` on the electron"
-        << " species selects both." << endl;
+        << "    DERIVED, not read -- one switch. `electronEnergyModel` selects"
+        << " both." << endl;
 
     rates_.reset
     (
