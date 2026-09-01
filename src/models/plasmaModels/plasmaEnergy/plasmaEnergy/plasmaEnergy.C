@@ -17,6 +17,10 @@
 #include "plasmaEnergyModel.H"
 
 #include "plasmaSimulationProfiler.H"
+#include "DynamicList.H"
+#include "FlatOutput.H"
+#include "Pair.H"
+#include "OSspecific.H"
 #include "fvm.H"
 #include "fvc.H"
 
@@ -191,6 +195,394 @@ bool plasmaEnergy::required(const plasmaSpecies& species)
 }
 
 
+namespace
+{
+
+// Validate the leaves the CASE wrote, and fill in a lookupVariable that
+// `fromMechanism` would otherwise default to the WRONG field.
+//
+// The split follows the one already drawn in plasmaTransport for the chemistry
+// key: `lookupVariable` is a FIELD NAME and is unambiguously fixed by the
+// closure, so a contradiction is derived-and-validated (fatal); `quantity`,
+// `file` and `tableDir` name TABLE FILES, a different namespace, where a case
+// may legitimately differ, so those are defaulted and never validated.
+void validateElectronCoeffs(Foam::dictionary& c, const Foam::word& key)
+{
+    using namespace Foam;
+
+    // The six leaves that must follow the closure, and the one that must not.
+    const List<Pair<word>> leaves
+    ({
+        Pair<word>("mobility",           key),
+        Pair<word>("diffusivity",        key),
+        Pair<word>("energyMobility",     key),
+        Pair<word>("energyDiffusivity",  key),
+        Pair<word>("powerLoss/elastic",   key),
+        Pair<word>("powerLoss/inelastic", key),
+        // STRUCTURAL carve-out, fatal in the OPPOSITE direction.
+        Pair<word>("initialMeanEnergy",  word("reducedE"))
+    });
+
+    for (const Pair<word>& leaf : leaves)
+    {
+        const word& path = leaf.first();
+        const word& want = leaf.second();
+
+        const auto slash = path.find('/');
+        const bool nested = (slash != std::string::npos);
+
+        word parent;
+        word name(path);
+
+        if (nested)
+        {
+            parent = word(path.substr(0, slash), false);
+            name   = word(path.substr(slash + 1), false);
+        }
+
+        dictionary* owner = &c;
+
+        if (nested)
+        {
+            owner = c.found(parent) ? &c.subDict(parent) : nullptr;
+        }
+
+        if (!owner || !owner->found(name)) continue;
+
+        dictionary& pd = owner->subDict(name);
+        const word type = pd.getOrDefault<word>("type", "fromMechanism");
+
+        // The density-division trap. PelasticN/PinelasticN are already per
+        // density and meanEnergy is an absolute eV value, so fromMechanism
+        // divides by the gas density a second time.
+        if
+        (
+            type == "fromMechanism"
+         && (path == "initialMeanEnergy" || nested)
+        )
+        {
+            FatalErrorInFunction
+                << "energyModelCoeffs/" << path << " is `type fromMechanism`,"
+                << " which DIVIDES BY THE GAS NUMBER DENSITY." << nl
+                << "    That is correct for the reduced quantities (muN, DLN,"
+                << " muEpsN, DEpsN) but wrong here: PelasticN and PinelasticN"
+                << " are ALREADY per density, and meanEnergy is an absolute"
+                << " energy in eV." << nl
+                << "    Measured consequence: a loss term 2.4e25 times too"
+                << " small, so the electrons heat with no sink and the mean"
+                << " energy climbs to the clamp. The seed comes out at"
+                << " ~4e-26 eV." << nl
+                << "    Use `type tabulated1D` with an explicit `file`." << nl
+                << exit(FatalError);
+        }
+
+        if (pd.found("lookupVariable"))
+        {
+            const word given = pd.get<word>("lookupVariable");
+
+            if (given == want) continue;
+
+            if (path == "initialMeanEnergy")
+            {
+                FatalErrorInFunction
+                    << "energyModelCoeffs/initialMeanEnergy/lookupVariable is `"
+                    << given << "`, but it must be `reducedE`." << nl
+                    << "    TWO independent reasons, both structural:" << nl
+                    << "      1. the Boltzmann sweep excludes `meanEnergy` from"
+                    << " its mean-energy loop, so meanEnergy_vs_meanE is NEVER"
+                    << " written -- it would be the identity;" << nl
+                    << "      2. this entry SEEDS the mean energy, so it is"
+                    << " evaluated before `meanE` exists." << nl
+                    << "    This is the one entry that does not follow"
+                    << " electronEnergyModel. Delete it and it is derived."
+                    << nl
+                    << exit(FatalError);
+            }
+
+            FatalErrorInFunction
+                << "energyModelCoeffs/" << path << "/lookupVariable is `"
+                << given << "` but electronEnergyModel requires `" << want
+                << "`." << nl
+                << "    That combination is the HALF-LMEA: transport and"
+                << " losses responding to one variable while the reaction"
+                << " rates respond to another. It is a measured runaway and it"
+                << " produces no error of its own." << nl
+                << "    The key is DERIVED from electronEnergyModel. Delete it."
+                << nl
+                << exit(FatalError);
+        }
+        else if (type == "fromMechanism")
+        {
+            // MechanismProperty's OWN default is `reducedE`, so an omitted key
+            // inside an LMEA block silently read the LFA table -- a working
+            // half-LMEA with no warning anywhere. Insert the derived key.
+            pd.add("lookupVariable", want);
+        }
+    }
+}
+
+} // End anonymous namespace
+
+
+Foam::dictionary plasmaEnergy::resolveEnergyModelCoeffs
+(
+    const word& modelName,
+    const label speciesIndex,
+    const dictionary& userCoeffs
+) const
+{
+    // Only the electron under LMEA is configured from the model. Everything
+    // else gets its own block back, byte for byte.
+    //
+    // SCOPED TO THE ELECTRON on purpose: meanE, muEpsN and PelasticN are all
+    // electron quantities, and ion coefficients are functions of E/N or |E|
+    // and live in each species' own driftDiffusionCoeffs. Nothing here can
+    // reach them.
+    if
+    (
+        modelName != "localEnergy"
+     || speciesIndex != species_.electronSpeciesID()
+    )
+    {
+        return userCoeffs;
+    }
+
+    // The table directory. Defaulted from the chemistry dictionary so the
+    // energy model reads the same tables the sweep just wrote; a case that
+    // keeps its energy tables elsewhere overrides per entry, which is why this
+    // is DEFAULTED and never validated.
+    fileName tableDir("constant/plasmaTables");
+    {
+        IOdictionary transportDict
+        (
+            IOobject
+            (
+                "plasmaTransportProperties",
+                mesh_.time().constant(),
+                mesh_,
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+
+        tableDir = transportDict.subOrEmptyDict("chemistry")
+            .getOrDefault<fileName>("tableDir", tableDir);
+    }
+
+    // PRE-FLIGHT, before any evaluator is built.
+    //
+    // TabulatedProperty1D constructs its table in its member-init list, so its
+    // own nicer error is unreachable and a missing defaulted file surfaces as
+    // interpolationTable's raw "cannot open file". Worse, MechanismProperty's
+    // missing-table error names a DIFFERENT likely cause -- "the case has no
+    // chemistry dictionary" -- which is false here and actively misleading.
+    //
+    // Only run on the defaulting path: a case that writes the block itself may
+    // point anywhere it likes, and its own evaluators will complain.
+    const bool haveMeanE = isFile(tableDir/"muN_vs_meanE");
+    const bool haveReducedE = isFile(tableDir/"muN_vs_reducedE");
+
+    if (!haveMeanE)
+    {
+        if (haveReducedE)
+        {
+            // The sweep RAN and DECLINED. This is the real diagnosis.
+            FatalErrorInFunction
+                << "`" << tableDir
+                << "` has muN_vs_reducedE but no muN_vs_meanE, so this"
+                << " mechanism cannot be run under LMEA." << nl
+                << "    The Boltzmann sweep writes mean-energy-keyed tables"
+                << " only where the mean electron energy is STRICTLY"
+                << " INCREASING with E/N. It is not, for this mixture." << nl
+                << "    That happens in ATTACHMENT-DOMINATED mixtures:"
+                << " attachment removes electrons energy-selectively, so"
+                << " <eps> can fall as E/N rises, and a mean-energy lookup"
+                << " would then be ambiguous -- two fields, two different"
+                << " coefficients, one key. The sweep says so in its own log"
+                << " (\"mean electron energy is not strictly increasing\")."
+                << nl
+                << "    Note the k_*_vs_meanE rate tables are missing for the"
+                << " same reason, so this is not a limitation of the energy"
+                << " equation alone: where the key is not invertible, the LMEA"
+                << " closure itself does not apply." << nl
+                << "    Remedies, in order:" << nl
+                << "      1. run this case under LFA -- set"
+                << " `electronEnergyModel LFA;` and everything else follows;"
+                << nl
+                << "      2. change the sweep's E/N range so the"
+                << " non-monotonic stretch falls outside it;" << nl
+                << "      3. if you have validated mean-energy tables from"
+                << " elsewhere, write `energyModelCoeffs` explicitly and point"
+                << " at them." << nl
+                << exit(FatalError);
+        }
+
+        FatalErrorInFunction
+            << "`electronEnergyModel LMEA` configures itself from the"
+            << " Boltzmann sweep's tables, and `" << tableDir
+            << "` holds none." << nl
+            << "    The sweep runs only when the case has a `chemistry`"
+            << " dictionary in plasmaTransportProperties. Add one, or write"
+            << " `energyModelCoeffs` yourself (mobility, diffusivity,"
+            << " energyMobility, energyDiffusivity, powerLoss/elastic,"
+            << " powerLoss/inelastic, initialMeanEnergy)." << nl
+            << exit(FatalError);
+    }
+
+    // Start from the case's own block and fill in whole LEAVES it omitted.
+    //
+    // NOT dictionary::merge: OpenFOAM's merge RECURSES into sub-dictionaries,
+    // so a user writing `mobility { lookupVariable reducedE; }` would inherit
+    // type/quantity from the default and get a WORKING half-LMEA. The rule is
+    // therefore: if you write a property sub-dictionary it is yours entirely;
+    // if you omit it, it is derived entirely. There is no half-inherited
+    // sub-dictionary.
+    dictionary c(userCoeffs);
+
+    const word& key = species_.electronLookupKey();   // `meanE` under LMEA
+
+    DynamicList<word> defaulted;
+    DynamicList<word> fromCase;
+
+    // --- the four REDUCED, table-keyed transport coefficients -------------
+    //
+    // `fromMechanism` divides by the gas number density, which is exactly
+    // right for muN / DLN / muEpsN / DEpsN because those tables hold reduced
+    // quantities. tableDir is omitted deliberately: MechanismProperty already
+    // defaults it to constant/plasmaTables, and writing it here would be a
+    // second copy of the same constant.
+    auto addMech = [&](const word& name, const word& quantity)
+    {
+        if (c.found(name))
+        {
+            fromCase.append(name);
+            return;
+        }
+
+        dictionary d;
+        d.add("type", word("fromMechanism"));
+        d.add("quantity", quantity);
+        d.add("tableDir", tableDir);
+        d.add("lookupVariable", key);
+        c.add(name, d);
+        defaulted.append(name + " (" + quantity + "_vs_" + key + ")");
+    };
+
+    addMech("mobility",          "muN");
+    addMech("diffusivity",       "DLN");
+    addMech("energyMobility",    "muEpsN");
+    addMech("energyDiffusivity", "DEpsN");
+
+    // --- the ALREADY-PER-DENSITY tables ----------------------------------
+    //
+    // tabulated1D, NEVER fromMechanism. PelasticN / PinelasticN are already
+    // per density and meanEnergy is an absolute energy in eV, so running them
+    // through fromMechanism divides by the gas density a second time. Measured
+    // consequence: a loss term 2.4e25 times too small, the electrons heat with
+    // no sink, and the mean energy climbs to the clamp. Same trap gives
+    // ~4e-26 eV for the seed.
+    auto addTable = [&](const word& name, const word& file, const word& lookup)
+    {
+        if (c.found(name))
+        {
+            fromCase.append(name);
+            return;
+        }
+
+        dictionary d;
+        d.add("type", word("tabulated1D"));
+        d.add("file", fileName(tableDir/file));
+        d.add("lookupVariable", lookup);
+        c.add(name, d);
+        defaulted.append(name + " (" + file + ")");
+    };
+
+    // initialMeanEnergy is keyed on reducedE, and that is STRUCTURAL, not a
+    // convention: the sweep excludes `meanEnergy` from its mean-energy loop, so
+    // meanEnergy_vs_meanE is never written -- it would be the identity -- and
+    // the seed is needed before `meanE` exists at all.
+    addTable("initialMeanEnergy", "meanEnergy_vs_reducedE", "reducedE");
+
+    // powerLoss defaults PER LEAF, not as a block: a case writing only
+    // `elastic` still gets `inelastic`. Omitting a sink can only ever make the
+    // equation wrong in the runaway direction, and a user who genuinely wants
+    // none can say so explicitly with `inelastic { type constant; value 0; }`.
+    dictionary& pl = c.subDictOrAdd("powerLoss");
+    auto addLoss = [&](const word& name, const word& file)
+    {
+        if (pl.found(name))
+        {
+            fromCase.append("powerLoss/" + name);
+            return;
+        }
+
+        dictionary d;
+        d.add("type", word("tabulated1D"));
+        d.add("file", fileName(tableDir/file));
+        d.add("lookupVariable", key);
+        pl.add(name, d);
+        defaulted.append("powerLoss/" + name + " (" + file + ")");
+    };
+
+    addLoss("elastic",   "PelasticN_vs_meanE");
+    addLoss("inelastic", "PinelasticN_vs_meanE");
+
+    // --- validate what the CASE wrote ------------------------------------
+    validateElectronCoeffs(c, key);
+
+    // --- report, per the rule that a fallback is never silent ------------
+    Info<< "plasmaEnergy: energyModelCoeffs for `"
+        << species_.speciesNames()[speciesIndex]
+        << "` resolved from electronEnergyModel LMEA." << nl
+        << "    tables: " << tableDir << nl;
+
+    if (defaulted.size())
+    {
+        Info<< "    DERIVED from the model (the case omitted these): "
+            << flatOutput(defaulted) << nl
+            << "      -- every one is the Boltzmann sweep's own EEDF moment;"
+            << " nothing here is a fit or an assumed ratio." << nl;
+    }
+
+    if (fromCase.size())
+    {
+        Info<< "    READ from the case (used whole, the default dropped): "
+            << flatOutput(fromCase) << nl;
+    }
+
+    Info<< "    initialMeanEnergy is keyed on `reducedE`, NOT `" << key
+        << "`: meanEnergy_vs_meanE is the identity and is never written, and"
+        << " the seed precedes " << key << "." << nl;
+
+    // reportInterval: 25 ON THE DEFAULTING PATH ONLY.
+    //
+    // The model's own default is 1, and that is left alone for any case that
+    // writes its own block -- silently changing an existing default is the
+    // thing this change exists to make unnecessary.
+    //
+    // But 1 is the wrong value to HAND a new user, because the per-term dump
+    // evaluates ddt/div/laplacian over the whole mesh once per CORRECTOR:
+    //   - measured on the 1.15M-cell 2 ns streamer: ~44 s -> ~23 s per step
+    //     when set to 25, i.e. reporting every step nearly DOUBLES the run;
+    //   - measured 2026-09-01 on the 130x130 bed: only 1.7% (76.94 vs
+    //     75.68 s), because at that size the dump is small next to the step.
+    // The cost is therefore mesh-dependent and severe exactly where it hurts,
+    // so a one-switch case would conclude "LMEA is slow" from a diagnostics
+    // default. 25 is what every hand-written block in the repository uses.
+    if (!c.found("reportInterval"))
+    {
+        c.add("reportInterval", 25);
+        Info<< "    reportInterval defaulted to 25. The per-term dump is a"
+            << " whole-mesh evaluation per corrector: measured ~44 s -> ~23 s"
+            << " per step on the 1.15M-cell streamer between 1 and 25." << nl;
+    }
+
+    Info<< endl;
+
+    return c;
+}
+
+
 void plasmaEnergy::constructModels()
 {
     // Read the backgroundGas properties.
@@ -334,8 +726,19 @@ void plasmaEnergy::constructModels()
         // Optional for the same reason energyModel is: the default model
         // needs no coefficients, so demanding the sub-dictionary would be a
         // second migration tax behind the first.
-        const dictionary& modelDict =
-            sDict.subOrEmptyDict("energyModelCoeffs");
+        //
+        // For the electron under LMEA the block is also RESOLVED: whatever
+        // leaves the case omitted are filled in from the model, so the switch
+        // alone is a complete configuration. Stored in modelDicts_ because a
+        // synthesised dictionary has no home in the case file.
+        modelDicts_[i] = resolveEnergyModelCoeffs
+        (
+            modelName,
+            i,
+            sDict.subOrEmptyDict("energyModelCoeffs")
+        );
+
+        const dictionary& modelDict = modelDicts_[i];
 
         // Construct the model using the runtime selection system
         energyModels_.set
@@ -380,7 +783,8 @@ plasmaEnergy::plasmaEnergy
     mesh_(mesh),
     species_(species),
     E_(E),
-    energyModels_(species.nSpecies())
+    energyModels_(species.nSpecies()),
+    modelDicts_(species.nSpecies())
 {
     constructModels();
 

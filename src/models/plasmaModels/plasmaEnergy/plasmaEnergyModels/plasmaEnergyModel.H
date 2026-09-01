@@ -80,8 +80,15 @@ protected:
     //- Reference to species database
     const plasmaSpecies& species_;
 
-    //- Dictionary for this species
-    const dictionary& dict_;
+    //- Coefficients for this species' energy model.
+    //
+    //  BY VALUE, not by reference. plasmaEnergy hands this in from
+    //  `subOrEmptyDict("energyModelCoeffs")`, which returns a TEMPORARY, and
+    //  from a dictionary it synthesises when the case omits the block -- so a
+    //  reference dangled the moment construction returned. It was harmless
+    //  only because nothing read it after construction, which is not a
+    //  property a base class should depend on.
+    const dictionary dict_;
 
     //- Index of the species this model applies to
     const label specieIndex_;
