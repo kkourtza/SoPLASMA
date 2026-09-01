@@ -249,6 +249,54 @@ private:
             //- Previous timestep voltage on the applied patch [V]
             scalar prevPatchVoltage_;
 
+            // A RELATIVE field-change limiter was built and then
+            // REMOVED, 2026-09-01. It computed correctly (instrumented: it
+            // asked for dt ~1.2e-11 while the active limiters gave 1e-12 to
+            // 3e-12) but was NEVER the binding constraint in four regimes:
+            // the 62 Td streamer bed, a short instrumented run, and a 10 Td
+            // low-field arm both short and with dt allowed to saturate
+            // (113 steps: growth cap 87, Co_chem 18, field change 0).
+            //
+            // WHY IT IS NOT NEEDED, which is the useful part: the 1.2x/step
+            // GROWTH CAP already prevents dt from jumping into a transient,
+            // and Co_chem covers the response through maxChemStateRate() --
+            // the fractional rate of change of the STATE over all species,
+            // which is loose exactly when nothing is happening and tight when
+            // it is. Between them there was nothing left for a field-change
+            // criterion to do. Do not re-add one without a case where those
+            // two are demonstrably slack.
+
+            //- Ceiling on the FIRST timestep [s]. 0 disables.
+            //
+            //  WHY A SEPARATE CONTROL, and why it cannot be delegated to any
+            //  of the limiters above: all of them are BACKWARD differences, so
+            //  on step 1 there is nothing to difference against. A case whose
+            //  `deltaT` exceeds the applied-voltage ramp therefore steps over
+            //  the entire ramp BEFORE any limiter has an opinion -- the
+            //  pathology is complete by the time the machinery wakes up.
+            //
+            //  WHY 1e-12 rather than the 1e-10 that first looks sufficient:
+            //  this repository's own streamer tutorial ramps in 93.75 ps, so
+            //  1e-10 would put 0.9 steps inside it. The intuition that "no
+            //  applied ramp is shorter than 1-2 ns" is contradicted by the
+            //  shipped benchmark. 1e-12 gives ~94 points across that ramp, and
+            //  is what all four tutorials already set, so this default changes
+            //  nothing for them.
+            //
+            //  WHY IT IS ALMOST FREE, measured from the 1.2x/step growth cap:
+            //  recovering from 1e-12 takes 51 steps to reach 1e-8 and 76 to
+            //  reach 1e-6. A run slow enough to want dt = 1e-6 needs thousands
+            //  of steps, so a <80-step warm-up is noise. This is the whole
+            //  reason a crude ceiling beats a clever predictive scheme here.
+            //
+            //  ON A RESTART it also applies, costing that same bounded
+            //  regrowth. Deliberate: the alternative is a restart-detection
+            //  test, and `timeIndex() == startTimeIndex()` is true for a
+            //  restart too (see the freshStart use in localEnergyEnergyModel,
+            //  which needs a second, field-based check to disambiguate). A
+            //  visible, bounded cost beats a subtly wrong condition.
+            scalar maxInitialDeltaT_;
+
         // Outer (PIMPLE) coupling convergence
         //
         // The Poisson and species equations are lagged relative to each other

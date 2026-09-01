@@ -221,6 +221,21 @@ protected:
             // solveEnergy -- were a SECOND, incompatible vocabulary for the
             // same key name that plasmaEnergy and plasmaTransport read with
             // {gasTemperature, isothermal, localEnergy, localField}. Only two
+            // (`localField` was REMOVED 2026-09-01: it interpolated a
+            // hand-supplied T(E/N) table and published T_<sp>, a field
+            // nothing reads -- plasmaEnergy::T(label) has no callers --
+            // and the sweep already writes meanEnergy_vs_reducedE. Under
+            // LMEA T_e follows from the solved meanE; under LFA no
+            // electron temperature is wanted at all.
+            //
+            // `isothermal` was REMOVED the same day and for the same
+            // reason -- a constant T_<sp> that nothing reads -- and it is
+            // NOT the mechanism for vibrational non-equilibrium: that is
+            // the dynamic eVib reservoir in plasmaEnergy, drained by
+            // Millikan-White/Popov V-T relaxation. A hand-set constant
+            // could not represent an evolving T_vib in any case, and no
+            // T_vib field or consumer exists. Selectable models are now
+            // `gasTemperature` and `localEnergy`.)
             // values were common, and `gasTemperature` -- the documented
             // default -- matched no branch here, so a species using the
             // default fell into no group at all.

@@ -176,7 +176,8 @@ localEnergyEnergyModel::localEnergyEnergyModel
     )
 {
     // `dict` IS energyModelCoeffs -- plasmaEnergy passes that subdict
-    // directly, as localFieldEnergyModel's `temperature` lookup shows. A
+    // directly, as the removed localFieldEnergyModel's `temperature`
+    // lookup did. A
     // nested `localEnergyCoeffs` would break the convention every other
     // energy model follows.
     const dictionary& c = dict;

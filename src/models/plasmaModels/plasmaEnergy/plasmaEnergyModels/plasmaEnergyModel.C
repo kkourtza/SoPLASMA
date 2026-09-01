@@ -88,7 +88,8 @@ const dimensionedScalar& plasmaEnergyModel::Tvalue() const
     // override this, this function throws an error.
     FatalErrorInFunction
         << "Requested Tvalue() for species '" << sName 
-        << "' from a non-isothermal energy model type (" << modelName_ << ")."
+        << "' from an energy model whose temperature is a FIELD, not a"
+        << " single value (" << modelName_ << ")."
         << nl << "This species uses a spatial temperature field. "
         << "Please update the solver logic to use the .T() accessor instead."
         << abort(FatalError);

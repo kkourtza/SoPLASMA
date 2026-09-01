@@ -40,7 +40,13 @@ Heavy species (ions, neutrals) have **no** energy key. They follow
 `backgroundGas/energy`. An earlier per-species `energyModel` key existed with a
 second, incompatible vocabulary (`isothermal`/`backgroundGas`/`localField`/
 `solveEnergy`) that filled five index lists with no readers; it was removed on
-2026-09-01. The per-species spelling is **rejected**, on the electron and on
+2026-09-01. The `localField` energy model went with it: it interpolated a
+hand-supplied `T(E/N)` table to publish `T_<species>`, a field nothing reads
+(`plasmaEnergy::T(label)` has no callers), and the sweep already writes
+`meanEnergy_vs_reducedE`. Under LMEA `T_e = (2/3)⟨ε⟩e/k_B` follows from the
+solved `meanE`; under LFA no electron temperature is wanted, and none is even
+created — `plasmaEnergy` is not constructed unless gas heating or LMEA asks for
+it. The selectable models are now `gasTemperature`, `isothermal`, `localEnergy`. The per-species spelling is **rejected**, on the electron and on
 heavy species alike, with an error naming the replacement — two live spellings of
 one setting is the problem this change exists to remove.
 

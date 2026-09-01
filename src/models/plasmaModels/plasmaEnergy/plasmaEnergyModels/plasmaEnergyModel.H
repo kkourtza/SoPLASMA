@@ -71,7 +71,7 @@ class plasmaEnergyModel
 {
 protected:
 
-    //- Model name (e.g. isothermal, localField, localEnergy)
+    //- Model name: `gasTemperature` or `localEnergy`.
     const word modelName_;
 
     //- Mesh reference
@@ -167,14 +167,14 @@ public:
         //  meanE = nEps_e/n_e, and it SIGFPE'd on the first discard.
         //
         //  Default no-op: a model with no transported state of its own
-        //  (isothermal, gasTemperature, localField) has nothing to undo.
+        //  (gasTemperature) has nothing to undo.
         virtual void discardStep() {}
 
         //- Append every field this model TRANSPORTS to `fields`.
         //
         //  Default no-op, for the same reason discardStep() above is one: a
-        //  model with no transported state of its own (isothermal,
-        //  gasTemperature, localField) has nothing to contribute.
+        //  model with no transported state of its own (gasTemperature)
+        //  has nothing to contribute.
         //
         //  WHY THIS MIRRORS discardStep(). Whatever must be RESTORED when a
         //  step is thrown away is exactly the transported state, so the two
@@ -205,7 +205,9 @@ public:
         //- It can be a reference to a real field or a created uniform field
         virtual tmp<volScalarField> T() const = 0;
 
-        //- Return the scalar value for isothermal models.
+        //- Return the scalar value for models whose temperature is a
+        //  single number rather than a field (gasTemperature, when the gas
+        //  temperature is not solved).
         virtual const dimensionedScalar& Tvalue() const;
 
 

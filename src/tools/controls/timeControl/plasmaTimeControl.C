@@ -47,6 +47,7 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     maxVoltageRiseRate_(GREAT),
     voltagePatchName_(""),
     prevPatchVoltage_(0.0),
+    maxInitialDeltaT_(1.0e-12),
     voltageSeeded_(false),
     outerChaseConvergence_(true),
     outerMaxCorrectors_(20),
@@ -504,6 +505,9 @@ void plasmaTimeControl::read()
         // Set 0 to disable.
         maxVoltageRiseRate_ =
             dict_.lookupOrDefault<scalar>("maxVoltageRisePerStep", 100.0);
+
+        maxInitialDeltaT_ =
+            dict_.lookupOrDefault<scalar>("maxInitialDeltaT", 1.0e-12);
 
         limitVoltageRiseRate_ = (maxVoltageRiseRate_ > 0);
 
@@ -1757,13 +1761,51 @@ void plasmaTimeControl::setInitialDeltaT(const plasmaTransport& transport)
         prevPatchVoltage_ = patchVoltageAvg(transport);
     }
 
+    // CEILING ON THE FIRST STEP.
+    //
+    // Applied last so it wins over every physics limiter above -- deliberately,
+    // because none of them can see the failure it guards against. They are all
+    // backward differences, so on step 1 there is nothing to difference
+    // against: a case whose `deltaT` exceeds the applied-voltage ramp steps
+    // over the whole ramp before any limiter has an opinion.
+    //
+    // Nearly free, which is why a crude ceiling beats a predictive scheme here:
+    // the 1.2x/step growth just below recovers 1e-12 -> 1e-8 in 51 steps and
+    // -> 1e-6 in 76, and a run slow enough to want 1e-6 needs thousands.
+    // NOT ON A RESTART. A run continuing from a written solution has already
+    // passed the ramp and carries a converged step; knocking it back to 1e-12
+    // would throw away ~50-76 steps of regrowth for no protection at all.
+    //
+    // `startTimeIndex() == 0` is the reliable tell, and it is reliable because
+    // OpenFOAM writes the step counter into <time>/uniform/time (`index 248`
+    // in the streamer bed's 5e-10 directory), so a restart begins with a
+    // NONZERO start index while a fresh start begins at 0. Note this is a
+    // different test from the `freshStart` in localEnergyEnergyModel --
+    // `timeIndex() == startTimeIndex()` is true for a restart too, which is
+    // why that site needs a second, field-based check to disambiguate.
+    const bool freshStart = (runTime_.startTimeIndex() == 0);
+
+    if (freshStart && maxInitialDeltaT_ > 0 && newDeltaT > maxInitialDeltaT_)
+    {
+        Info<< "plasmaTimeControl: first step capped at maxInitialDeltaT = "
+            << maxInitialDeltaT_ << " s (limiters asked for " << newDeltaT
+            << " s)." << nl
+            << "    Guards the one case no limiter can: a first step longer"
+            << " than the applied-voltage ramp, which is over before any"
+            << " backward-difference limiter can act. It regrows at 1.2x/step"
+            << " -- ~51 steps to 1e-8, ~76 to 1e-6. Not applied on a restart."
+            << endl;
+
+        newDeltaT = maxInitialDeltaT_;
+    }
+
     // Reduction and setting
     reduce(newDeltaT, minOp<scalar>());
     if (newDeltaT > currentDeltaT)
     {
         newDeltaT = min(newDeltaT, currentDeltaT * 1.2);
     }
-    runTime_.setDeltaT(newDeltaT);   
+    runTime_.setDeltaT(newDeltaT);
 }
 
 void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
