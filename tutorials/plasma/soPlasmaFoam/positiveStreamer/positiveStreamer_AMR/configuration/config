@@ -54,7 +54,6 @@ maxSpeciesCo                        1;
 limitChemistryCo                    false;
 printChemistryCo                    true;
 maxChemistryCo                      0.9;
-limitVoltageRiseRate                false;
 printVoltageRiseRate                true;
 // VOLTS PER STEP, not V/s: the limiter solves for the deltaT that makes
 // the applied voltage change by this much in one step. 100 V resolves a

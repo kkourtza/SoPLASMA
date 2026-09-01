@@ -505,59 +505,78 @@ void plasmaTimeControl::read()
         maxVoltageRiseRate_ =
             dict_.lookupOrDefault<scalar>("maxVoltageRisePerStep", 100.0);
 
-        // Old key still read, so existing cases load -- but it is the same
-        // control, not a second one.
-        const bool haveOldValue = dict_.found("maxVoltageRiseRate");
-        maxVoltageRiseRate_ =
-            dict_.lookupOrDefault<scalar>
-            (
-                "maxVoltageRiseRate", maxVoltageRiseRate_
-            );
-
         limitVoltageRiseRate_ = (maxVoltageRiseRate_ > 0);
 
-        // MIGRATION, and it is not cosmetic. Before the four keys were
-        // collapsed into one, the limiter was gated by a SEPARATE switch:
+        // THE DEPRECATED KEYS ARE NO LONGER READ. They are REJECTED, and that
+        // is deliberately not the same thing as ignoring them.
         //
-        //     limitVoltageRiseRate  (Switch, default FALSE)
+        // The pair `limitVoltageRiseRate` (Switch, default FALSE) +
+        // `maxVoltageRiseRate` (value) was collapsed into the single
+        // `maxVoltageRisePerStep`, where 0 disables. The two vocabularies do
+        // NOT translate by copying the number across: under the old keys a
+        // case carrying `maxVoltageRiseRate 1` with no switch had the limiter
+        // OFF and the value inert. Reading it now would turn that case ON at
+        // 1 V/step -- against an 18.75 kV ramp, a run that never finishes.
+        // Measured on `cmp-lfa`, whose dV/step peaked at 2739 V with the
+        // limiter off, i.e. a silent ~2700x change in the driving term.
         //
-        // so a case carrying `maxVoltageRiseRate 1` with no switch had the
-        // limiter OFF, and the stray number never did anything. Reading the
-        // old key alone would now turn that case ON at 1 V/step -- against an
-        // 18.75 kV ramp, a run that never finishes. Measured on `cmp-lfa`,
-        // whose dV/step had peaked at 2739 V with the limiter off.
+        // Silently DROPPING them is equally wrong, in the other direction: a
+        // case that genuinely asked for the limiter with
+        // `limitVoltageRiseRate true` would lose it without being told.
         //
-        // A silent 2700x change in a case's driving term is worse than any
-        // amount of deprecation noise, so the OLD GATE STILL DECIDES for
-        // dictionaries written in the old vocabulary: value alone means off,
-        // exactly as it did before. Cases that genuinely asked for it
-        // (`limitVoltageRiseRate true`) keep the behaviour they had.
-        if (haveOldValue && !dict_.found("maxVoltageRisePerStep"))
+        // Since neither reading nor ignoring is safe, the only honest option is
+        // to stop and make the author translate. That is a one-time edit with
+        // an unambiguous rule, printed below.
         {
-            const Switch oldGate
-            (
-                dict_.lookupOrDefault<Switch>("limitVoltageRiseRate", false)
-            );
+            const bool haveOldValue = dict_.found("maxVoltageRiseRate");
+            const bool haveOldGate  = dict_.found("limitVoltageRiseRate");
 
-            if (!oldGate && limitVoltageRiseRate_)
+            if (haveOldValue || haveOldGate)
             {
-                limitVoltageRiseRate_ = false;
+                const Switch oldGate
+                (
+                    dict_.lookupOrDefault<Switch>("limitVoltageRiseRate", false)
+                );
+                const scalar oldValue =
+                    dict_.lookupOrDefault<scalar>("maxVoltageRiseRate", 0);
 
-                WarningInFunction
-                    << "this case sets the DEPRECATED `maxVoltageRiseRate "
-                    << maxVoltageRiseRate_ << "` without" << nl
-                    << "    `limitVoltageRiseRate true`. Under the old keys"
-                    << " that meant the limiter was OFF," << nl
-                    << "    so it is left OFF here and the value is ignored"
-                    << " -- honouring it would silently" << nl
-                    << "    change the driving term of a case that ran fine."
-                    << nl << nl
-                    << "    To limit the voltage rise, use the new key:"
-                    << " maxVoltageRisePerStep <volts>;" << nl
-                    << "    (100 is the default for new cases; 0 disables.)"
-                    << endl;
+                // The exact translation for THIS dictionary, so the fix does
+                // not require reasoning about the old semantics.
+                const scalar equivalent = oldGate ? oldValue : 0;
+
+                FatalIOErrorInFunction(dict_)
+                    << "plasmaTimeControl uses the REMOVED keys"
+                    << (haveOldGate ? " `limitVoltageRiseRate`" : "")
+                    << (haveOldValue && haveOldGate ? " and" : "")
+                    << (haveOldValue ? " `maxVoltageRiseRate`" : "")
+                    << "." << nl
+                    << "    They were replaced by the single key"
+                    << " `maxVoltageRisePerStep <volts>;` (0 disables)." << nl
+                    << nl
+                    << "    FOR THIS DICTIONARY the equivalent is:" << nl
+                    << nl
+                    << "        maxVoltageRisePerStep    " << equivalent << ";"
+                    << nl
+                    << nl
+                    << "    because the old pair gated the limiter on the"
+                    << " SWITCH, not on the value: with"
+                    << " `limitVoltageRiseRate " << oldGate << "` the value "
+                    << oldValue << (oldGate ? " applied." : " was inert.") << nl
+                    << "    This is rejected rather than translated"
+                    << " automatically because copying the number across is"
+                    << " wrong whenever the old switch was false -- on one"
+                    << " measured case that would have changed the driving term"
+                    << " by ~2700x -- and dropping the keys silently would"
+                    << " disable a limiter a case had genuinely asked for." << nl
+                    << nl
+                    << "    (100 V/step is the default for new cases: it puts"
+                    << " ~190 points across the shipped 18.75 kV / 93.75 ps"
+                    << " ramp, where the Courant limit alone gives about ten.)"
+                    << nl
+                    << exit(FatalIOError);
             }
         }
+
         printVoltageRiseRate_ = limitVoltageRiseRate_;
 
         if (limitVoltageRiseRate_)

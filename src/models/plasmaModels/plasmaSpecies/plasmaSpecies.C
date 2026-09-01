@@ -17,6 +17,7 @@
 #include "plasmaConstants.H"
 #include "DynamicList.H"
 #include "FlatOutput.H"
+#include "OSspecific.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -762,11 +763,24 @@ void Foam::plasmaSpecies::resolveElectronEnergyModel()
     // while ionisation still followed the field, a measured runaway.
     const bool haveGlobal = found("electronEnergyModel");
 
-    // STEP 2 OF 5 (2026-09-01): the default is deliberately LFA here so that
-    // introducing the key changes NO existing case. The flip to LMEA is a
-    // separate commit, because it is a physics change for every case that does
-    // not name the closure.
-    word resolved("LFA");
+    // NO DEFAULT. The key is REQUIRED (user's decision, 2026-09-01).
+    //
+    // WHY THIS ONE IS NOT DEFAULTED, when so much else in this change is:
+    // LFA and LMEA are DIFFERENT PHYSICS that give different answers, so there
+    // is no value that is merely "the historical one". The migration-tax
+    // argument that justifies defaulting `energyModel` or `energyModelCoeffs`
+    // -- an entry whose only sensible value is the historical one is a tax, not
+    // a safety feature -- turns on there being ONE sensible value. Here there
+    // are two, and picking either silently chooses the closure for the user.
+    //
+    // That is the same failure this whole change exists to remove: the
+    // half-LMEA is fatal rather than warned precisely because quietly-wrong
+    // physics, with plausible output and no error, is the worst outcome.
+    //
+    // The one-switch win is that ONE key configures ~80 lines of coefficients,
+    // not that the key itself can be omitted. So the error below TEACHES the
+    // choice rather than making it.
+    word resolved;
 
     if (haveGlobal)
     {
@@ -825,31 +839,75 @@ void Foam::plasmaSpecies::resolveElectronEnergyModel()
         }
     }
 
+    // THE PER-SPECIES SPELLING IS REJECTED, not translated.
+    //
+    // Keeping it readable would leave two live spellings of one setting, which
+    // is how the two-vocabulary mess this change removes came about in the
+    // first place. The translation is unambiguous and printed, so the fix is a
+    // one-line edit.
     if (!legacy.empty())
     {
-        if (haveGlobal && legacy != resolved)
-        {
-            FatalIOErrorInFunction(*this)
-                << "electronEnergyModel is `" << resolved
-                << "` but the electron species still carries the legacy key"
-                << " `energyModel` selecting `" << legacy << "`." << nl
-                << "    These are the SAME setting spelled two ways and they"
-                << " disagree. Delete the per-species `energyModel` entry --"
-                << " the closure is now a single top-level key." << nl
-                << exit(FatalIOError);
-        }
+        FatalIOErrorInFunction(*this)
+            << "The electron species carries the REMOVED per-species key"
+            << " `energyModel`." << nl
+            << "    The electron energy closure is now a single TOP-LEVEL key."
+            << nl
+            << nl
+            << "    Replace it with:" << nl
+            << nl
+            << "        electronEnergyModel " << legacy << ";" << nl
+            << nl
+            << "    at the top level of plasmaSpeciesProperties, and delete the"
+            << " `energyModel` entry from the electron's block."
+            << (haveGlobal
+                  ? " (You already set electronEnergyModel; the two spellings"
+                    " of one setting must not coexist.)"
+                  : "")
+            << nl
+            << exit(FatalIOError);
+    }
 
-        if (!haveGlobal)
-        {
-            resolved = legacy;
-
-            Info<< "plasmaSpecies: the electron species uses the DEPRECATED"
-                << " per-species key `energyModel`, read as"
-                << " `electronEnergyModel " << resolved << "`." << nl
-                << "    Move it to the top level of plasmaSpeciesProperties as"
-                << " `electronEnergyModel " << resolved << ";` -- the"
-                << " per-species spelling will be removed." << endl;
-        }
+    // The key is REQUIRED, so there is no defaulted-LMEA case to rescue and no
+    // fallback here. An explicit `LMEA` on a mechanism with no
+    // mean-energy-keyed tables reaches plasmaEnergy's pre-flight, which gives
+    // the full diagnosis (non-invertible mean energy in an
+    // attachment-dominated mixture) instead of quietly running a different
+    // closure than the one that was asked for.
+    if (resolved.empty())
+    {
+        FatalIOErrorInFunction(*this)
+            << "`electronEnergyModel` is not set, and it has no default." << nl
+            << "    It selects the ELECTRON ENERGY CLOSURE, which is a physics"
+            << " choice: LFA and LMEA give different answers, so neither can be"
+            << " assumed on your behalf." << nl
+            << nl
+            << "    Add ONE of these at the TOP LEVEL of"
+            << " constant/plasmaSpeciesProperties:" << nl
+            << nl
+            << "      electronEnergyModel LFA;   // local FIELD approximation."
+            << " Electron coefficients and reaction rates are read at the local"
+            << " reduced field E/N. Assumes the electron energy distribution is"
+            << " in equilibrium with the local field. Cheaper, and the standard"
+            << " choice for streamer work where the field varies slowly"
+            << " compared with the energy relaxation length." << nl
+            << nl
+            << "      electronEnergyModel LMEA;  // local MEAN ENERGY"
+            << " approximation. Solves an electron energy-density equation and"
+            << " reads the coefficients at the local mean energy instead, so the"
+            << " energy is transported and may lag the field. More accurate"
+            << " where LFA breaks -- in a streamer head and near boundaries --"
+            << " at the cost of one more equation." << nl
+            << nl
+            << "    If you are unsure, LMEA is the better physics and needs no"
+            << " further configuration: it derives the electron transport key,"
+            << " the chemistry rate key and the whole energyModelCoeffs block"
+            << " from the mechanism's own tables." << nl
+            << "    See docs/models/energy/lmea.md." << nl
+            << nl
+            << "    NOTE this is separate from gas heating"
+            << " (backgroundGas/energy/solve). The two are independent and all"
+            << " four combinations are supported." << nl
+            << exit(FatalIOError);
     }
 
     electronEnergyModel_ = resolved;
@@ -873,12 +931,18 @@ void Foam::plasmaSpecies::resolveElectronEnergyModel()
 
     if (staleKeys.size())
     {
-        Info<< "plasmaSpecies: IGNORED `energyModel` on " << staleKeys.size()
-            << " heavy species " << flatOutput(staleKeys) << "." << nl
-            << "    Heavy-species temperature is not a per-species setting:"
-            << " `backgroundGas/energy/solve` decides whether the gas"
-            << " temperature is solved and `backgroundGas/energy/T` fixes its"
-            << " value. These entries had no reader before either." << endl;
+        FatalIOErrorInFunction(*this)
+            << "The REMOVED key `energyModel` is set on " << staleKeys.size()
+            << " heavy species: " << flatOutput(staleKeys) << "." << nl
+            << "    Delete these entries. Heavy-species temperature is not a"
+            << " per-species setting: `backgroundGas/energy/solve` decides"
+            << " whether the gas temperature is solved, and"
+            << " `backgroundGas/energy/T` fixes its value." << nl
+            << "    Rejected rather than ignored because these entries NEVER"
+            << " had a reader -- they filled five index lists nothing consumed"
+            << " -- so leaving them in place would let a case go on believing"
+            << " it had configured something." << nl
+            << exit(FatalIOError);
     }
 
     Info<< "plasmaSpecies: electronEnergyModel " << electronEnergyModel_

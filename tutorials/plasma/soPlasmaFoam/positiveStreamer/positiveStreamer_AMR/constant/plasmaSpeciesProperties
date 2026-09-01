@@ -15,6 +15,11 @@ FoamFile
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * /
 #include "../configuration/config"
 
+// Local field approximation: electron coefficients and reaction rates
+// follow the local E/N. REQUIRED: electronEnergyModel has no default, because
+// LFA and LMEA are different physics. This bed is the LFA benchmark.
+electronEnergyModel LFA;
+
 activeSpecies (e pIon);
 
 backgroundGas

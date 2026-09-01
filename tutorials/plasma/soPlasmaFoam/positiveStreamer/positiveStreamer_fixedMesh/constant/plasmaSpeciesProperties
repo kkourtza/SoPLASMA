@@ -19,6 +19,11 @@ FoamFile
 // knows which species its reactions create; listing them again is how a case
 // ends up NOT transporting an ion the chemistry produces, which breaks charge
 // conservation silently. An explicit list still works and still wins.
+// Local field approximation: electron coefficients and reaction rates
+// follow the local E/N. REQUIRED: electronEnergyModel has no default, because
+// LFA and LMEA are different physics. This bed is the LFA benchmark.
+electronEnergyModel LFA;
+
 activeSpecies fromMechanism;
 
 mechanismSpecies

@@ -19,6 +19,12 @@ FoamFile
 // knows which species its reactions create; listing them again is how a case
 // ends up NOT transporting an ion the chemistry produces, which breaks charge
 // conservation silently. An explicit list still works and still wins.
+// THE one switch. LMEA solves the electron energy-density equation and keys
+// all electron transport and reaction rates on the local mean energy.
+// This bed KEEPS its explicit energyModelCoeffs block below, as the
+// regression test that a hand-written block still overrides the defaults.
+electronEnergyModel LMEA;
+
 activeSpecies fromMechanism;
 
 mechanismSpecies
@@ -82,7 +88,7 @@ speciesProperties
     // LMEA: transport the electron energy instead of taking the mean energy
     // from the LFA table. The transport coefficients above now look up
     // `meanE`, the field this model publishes, rather than `reducedE`.
-    energyModel               localEnergy;
+    // energyModel: superseded by the top-level electronEnergyModel.
 
     energyModelCoeffs
     {

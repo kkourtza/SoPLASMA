@@ -1,0 +1,35 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2412                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      electromagneticsProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+electromagneticsModel   singleRegionPoisson;
+
+singleRegionPoissonCoeffs
+{
+    dielectricConstant      1.0;// Dimensionless
+
+    EScheme                 grad;         // Options: reconstruct | grad
+
+    PoissonScheme           $poissonSolver;        // Here, the only option
+
+    nNonOrthogonalCorrectors 0;              // Non-ortho correctors
+
+    // backgroundDensity removed: it was a second, independent definition of the
+    // gas density (2.4463e25, i.e. 101325 Pa) that disagreed by 1.3% with the
+    // 1e5 Pa stated in plasmaSpeciesProperties. The current solver rejects the
+    // duplicate. The density now comes from `backgroundGas` alone, so E/N is
+    // 1.3% higher here than in the archived validation run.
+}

@@ -277,6 +277,67 @@ Existing cases are unaffected: `reactions electronImpact` + `solver explicitSour
 and remains available. The mechanism-driven path is opt-in per case.
 
 
+## The electron energy model — one switch
+
+All electron-energy configuration is a single top-level key in
+`constant/plasmaSpeciesProperties`:
+
+```
+electronEnergyModel  LMEA;      // LFA | LMEA   (REQUIRED - no default)
+```
+
+**LFA** (local field approximation) reads every electron coefficient and rate at
+the local reduced field `E/N`. **LMEA** (local mean energy approximation) solves
+an electron energy-density equation and reads them at the local mean energy
+instead, which relaxes the assumption that the electron distribution is in
+equilibrium with the local field — the assumption that fails in a streamer head
+and at boundaries.
+
+Setting `LMEA` is a *complete* configuration. It derives the electron transport
+lookup key, the chemistry rate key, and the whole `energyModelCoeffs` block from
+the mechanism's own tables. `tutorials/.../positiveStreamer_LMEA_minimal` is that
+one line and nothing else, and produces byte-identical fields to
+`positiveStreamer_LMEA_fast`, which keeps the explicit 80-line block as a
+regression test of the override path.
+
+Gas heating is a **separate, orthogonal** switch — all four combinations work and
+neither implies the other:
+
+```
+backgroundGas { energy { solve true; T 300; } }
+```
+
+Heavy species have no energy key; they follow `backgroundGas/energy`.
+
+An explicit entry that *contradicts* the closure is fatal, not warned. The
+contradiction — transport following one variable while the reaction rates follow
+another, the "half-LMEA" — is a measured runaway that produces no error of its
+own: plausible fields, a clean run, wrong physics.
+
+Full treatment, including the two measured traps the defaults are shaped to
+avoid and the invertibility condition for when LMEA is unavailable, in
+[`docs/models/energy/lmea.md`](docs/models/energy/lmea.md).
+
+### Migration note (2026-09-01)
+
+The per-species `energyModel` key is superseded.
+
+- On the **electron** it is **rejected** with an error naming the one-line
+  replacement. Keeping it readable would leave two live spellings of one
+  setting, which is how the two-vocabulary problem arose in the first place.
+- On **heavy species it never had a reader** — it filled five index lists nothing
+  consumed — and is also rejected, so a case cannot go on believing it had
+  configured something.
+- **`electronEnergyModel` is REQUIRED and has no default.** Every case must name
+  its closure. This is deliberate: LFA and LMEA are different physics that give
+  different answers, so neither can be assumed on a user's behalf — the same
+  reason the half-LMEA is fatal rather than warned. The "a required entry whose
+  only sensible value is the historical one is a migration tax" argument that
+  justifies defaulting `energyModelCoeffs` does not apply, because here there
+  are two sensible values. A case without the key stops at start-up with an
+  error that explains both closures and what each costs.
+
+
 ## Contributors
 
 **Rention Pasolari** <r.pasolari@gmail.com>  

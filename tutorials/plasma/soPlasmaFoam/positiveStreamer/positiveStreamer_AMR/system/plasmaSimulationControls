@@ -32,9 +32,8 @@ plasmaTimeControl
     printChemistryCo                $printChemistryCo;
     maxChemistryCo                  $maxChemistryCo;
 
-    limitVoltageRiseRate            $limitVoltageRiseRate;
     printVoltageRiseRate            $printVoltageRiseRate;
-    maxVoltageRiseRate              $maxVoltageRiseRate;
+    maxVoltageRisePerStep           $maxVoltageRisePerStep;
     voltagePatchName                "active_electrode";
 }
 

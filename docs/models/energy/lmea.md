@@ -6,7 +6,7 @@ All electron-energy configuration is a single top-level key in
 `constant/plasmaSpeciesProperties`:
 
 ```
-electronEnergyModel  LMEA;      // LFA | LMEA
+electronEnergyModel  LMEA;      // LFA | LMEA   -- REQUIRED, no default
 ```
 
 Gas heating is a **separate, orthogonal** switch:
@@ -29,12 +29,20 @@ All four combinations are supported and neither switch implies the other:
 | `electronEnergyModel LFA`  | ✓ | ✓ |
 | `electronEnergyModel LMEA` | ✓ | ✓ |
 
+**The key is required and has no default.** LFA and LMEA are different physics
+that give different answers, so neither is assumed for you; a case without it
+stops at start-up with an error explaining both. Note this is the opposite of the
+policy for `energyModelCoeffs`, and deliberately so: that block has exactly one
+correct content given the closure, so requiring it is a migration tax, whereas
+the closure itself is a genuine choice.
+
 Heavy species (ions, neutrals) have **no** energy key. They follow
 `backgroundGas/energy`. An earlier per-species `energyModel` key existed with a
 second, incompatible vocabulary (`isothermal`/`backgroundGas`/`localField`/
 `solveEnergy`) that filled five index lists with no readers; it was removed on
-2026-09-01. The per-species spelling on the *electron* is still accepted, with a
-deprecation notice, and maps onto this key.
+2026-09-01. The per-species spelling is **rejected**, on the electron and on
+heavy species alike, with an error naming the replacement — two live spellings of
+one setting is the problem this change exists to remove.
 
 ## What the two closures are
 
@@ -196,8 +204,10 @@ trimmed. It gives up only if the trimmed range is still non-monotonic.
 
 Where it does give up, **the LMEA closure itself does not apply** — LMEA presumes
 `eps_bar` determines the distribution shape, and where the map is not invertible
-it does not. The solver then reports the non-invertibility as the cause and names
-the remedies rather than failing on a missing file.
+it does not. Asking for `LMEA` on such a mechanism is therefore an error, not
+something to silently substitute: the solver reports the non-invertibility as the
+cause and names the remedies, rather than quietly running a different closure
+than the one requested or failing on a missing file.
 
 Measured 2026-09-01, the repository's air mechanism is unaffected:
 `muN_vs_meanE` and `muN_vs_reducedE` both have 263 rows (nothing trimmed),
