@@ -2185,6 +2185,75 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         }
     }
 
+    // THE TABLE LOOKUP KEY IS DERIVED FROM THE ENERGY MODEL, NOT CHOSEN.
+    //
+    // Under LMEA the rate coefficients must follow the local MEAN ENERGY; under
+    // LFA they follow the local reduced field. The two are not independent
+    // choices -- mixing them is the "HALF-LMEA" this file already documents as a
+    // MEASURED runaway ("ionisation responding to the field while transport
+    // responds to the energy -- and it ran away").
+    //
+    // WHY IT IS DERIVED RATHER THAN VALIDATED (user, 2026-09-01: "either we'll
+    // have LFA or LMEA"): a setting that is always determined by another setting
+    // is not a degree of freedom, it is a derived quantity being maintained by
+    // hand. An audit of 30+ cases in the repository found the pair consistent in
+    // EVERY ONE -- so nothing is gained by letting a user set it, and the cost is
+    // a silent footgun.
+    //
+    // THE FAILURE THIS PREVENTS, measured 2026-09-01: enabling LMEA by setting
+    // the transport-side keys ALONE left the run silently on LFA -- no error,
+    // plausible output, wrong physics. It was caught only by an unrelated
+    // start-up line. Two attempts were needed, by someone who knew the code.
+    const word eName = species_.speciesNames()[species_.electronSpeciesID()];
+    const word energyModelName =
+        species_.speciesDict(eName).getOrDefault<word>
+        (
+            "energyModel", "gasTemperature"
+        );
+    const bool isLMEA = (energyModelName == "localEnergy");
+    const word derivedKey = isLMEA ? "meanE" : "reducedE";
+
+    // `lookupVariable` is the OpenFOAM FIELD the tables are keyed on, and it is
+    // unambiguously determined by the energy model, so an explicit entry that
+    // CONTRADICTS the model is the half-LMEA and is fatal.
+    if (cd.found("lookupVariable"))
+    {
+        const word given = cd.get<word>("lookupVariable");
+        if (given != derivedKey)
+        {
+            FatalErrorInFunction
+                << "chemistry/lookupVariable is `" << given
+                << "` but the electron energyModel is `" << energyModelName
+                << "`, which requires `" << derivedKey << "`." << nl
+                << "    These are NOT independent: that combination is the"
+                << " HALF-LMEA -- ionisation responding to the field while"
+                << " transport responds to the energy -- and it is a measured"
+                << " runaway." << nl
+                << "    The key is now DERIVED from energyModel. Delete it from"
+                << " plasmaTransportProperties/chemistry." << nl
+                << exit(FatalError);
+        }
+    }
+
+    // `tableKey` is a DIFFERENT NAMESPACE: the suffix of the table FILES
+    // ("EN" or "meanE"), not the name of a field. See the comment on
+    // plasmaReactionRates::tableKey_ -- "they are different namespaces and
+    // conflating them looks for k_<id>_vs_reducedE, which genMechTables never
+    // writes". So it is DEFAULTED from the model and NOT validated against it:
+    // a mechanism whose files are tabulated against `EN` is legitimate and must
+    // keep working.
+    const word resolvedTableKey =
+        cd.getOrDefault<word>("tableKey", derivedKey);
+
+    Info<< "plasmaTransport: electron energy is "
+        << (isLMEA ? "LMEA" : "LFA")
+        << " (energyModel " << energyModelName
+        << "), so the chemistry field is `" << derivedKey
+        << "` and the table files are keyed on `" << resolvedTableKey << "`."
+        << nl
+        << "    DERIVED, not read -- one switch. `energyModel` on the electron"
+        << " species selects both." << endl;
+
     rates_.reset
     (
         new plasmaReactionRates
@@ -2192,8 +2261,8 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
             mesh_,
             cd.get<fileName>("mechanism"),
             cd.get<fileName>("tableDir"),
-            cd.getOrDefault<word>("lookupVariable", "reducedE"),
-            cd.getOrDefault<word>("tableKey", "reducedE"),
+            derivedKey,
+            resolvedTableKey,
             cd
         )
     );

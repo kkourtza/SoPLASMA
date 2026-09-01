@@ -784,43 +784,91 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
         }
     };
 
-    // PHASE 3b: CONTRACTION BACKOFF -- the ROBUSTNESS layer.
+    // CONTRACTION BACKOFF -- the ROBUSTNESS layer, in CEILING form.
     //
-    // relaxContraction_ is the PREVIOUS step's worst corrector ratio
+    // relaxContraction_ is the previous step's worst corrector ratio
     // ||r_k||/||r_{k-1}||, and rhoTarget_ = tolerance^(1/maxCorrectors) is the
-    // rate needed to FINISH inside the budget. Above target the loop is not
-    // going to converge in time, so deltaT comes down.
+    // rate needed to FINISH inside the corrector budget.
     //
-    // MULTIPLICATIVE, not proportional: rho is a threshold. Measured on the
-    // ramp, rho went 0.189 -> 0.175 as deltaT DOUBLED, then jumped to 2.005 --
-    // there is no ratio to invert, so walk deltaT down until rho recovers.
+    // TWO HARD PRECONDITIONS, both from measurement:
     //
-    // PERSISTENCE requirement from the measured excursion rate: isolated
-    // excursions occur on ~3% of steps below the cliff (2/79 ramp, 1/34
-    // streamer) but 100% above it (39/39, 30/30). Two consecutive steps cuts
-    // spurious triggers to ~0.1% and costs at most one step of delay.
+    // 1. THE RELAXATION MUST BE ACTIVE. Without damping, rho measures the
+    //    UNRELAXED Picard iteration's own contraction rate -- a property of the
+    //    coupling, not of the timestep -- so reducing deltaT does not move it
+    //    and the criterion is UNSATISFIABLE. MEASURED on the LFA streamer:
+    //    deltaT fell 55x (3.84e-12 -> 6.94e-14) while rho moved 0.005,
+    //    converging to 1 from above. Same bed with the relaxation ON: 0.342.
+    //    Confirmed by holding the regime fixed -- the LMEA streamer, same mesh
+    //    and seed, is stable at rho = 0.297 with zero discards.
     //
-    // This layer only ever REDUCES deltaT. Growth belongs to the accuracy
-    // controller: a well-contracting loop is not evidence that a bigger step
-    // would be accurate.
+    // 2. A FLOOR, WITH A REPORT. Any "reduce until a criterion is met" loop
+    //    needs one, or an unsatisfiable criterion walks deltaT to zero in
+    //    silence. Hitting it is a DIAGNOSIS, not a nuisance: it means rho is
+    //    not responding to deltaT.
     if (contractionBackoff_ && rhoTarget_ > 0 && relaxContraction_ > VSMALL)
     {
-        if (relaxContraction_ > rhoTarget_)
+        if (!relaxActive_)
         {
-            ++rhoOverCount_;
+            if (!rhoFloorReported_)
+            {
+                rhoFloorReported_ = true;
+                WarningInFunction
+                    << "contractionBackoff is on but the outer-loop relaxation"
+                    << " is INACTIVE, so rho cannot be controlled by deltaT."
+                    << nl
+                    << "    The backoff is DISABLED for this run. Set"
+                    << " outerCoupling/adaptiveRelaxation true to use it"
+                    << " (it defaults to ON only under LMEA)." << endl;
+            }
         }
         else
         {
-            rhoOverCount_ = 0;
-        }
+            if (relaxContraction_ > rhoTarget_)
+            {
+                ++rhoOverCount_;
+            }
+            else
+            {
+                rhoOverCount_ = 0;
+            }
 
-        if (rhoOverCount_ >= contractionBackoffSteps_)
+            if (rhoOverCount_ >= contractionBackoffSteps_)
+            {
+                const scalar want = currentDeltaT*contractionBackoffFactor_;
+                rhoCeiling_ = (rhoCeiling_ > 0) ? min(rhoCeiling_, want) : want;
+                rhoOverCount_ = 0;
+            }
+        }
+    }
+
+    // Apply the ceiling, and let it drift up slowly so the PI cannot undo a
+    // backoff in one step. Same shape as the rejection memory below.
+    if (rhoCeiling_ > 0)
+    {
+        const scalar floor = rhoBackoffFloorFactor_*minDeltaT_;
+
+        if (rhoCeiling_ < floor)
         {
-            bind
-            (
-                currentDeltaT*contractionBackoffFactor_,
-                "contraction backoff"
-            );
+            if (!rhoFloorReported_)
+            {
+                rhoFloorReported_ = true;
+                WarningInFunction
+                    << "the contraction backoff has reached its floor ("
+                    << floor << " s) without rho falling inside its target ("
+                    << rhoTarget_ << "; rho is " << relaxContraction_ << ")."
+                    << nl
+                    << "    THE CRITERION IS NOT SATISFIABLE by reducing"
+                    << " deltaT: rho is not responding to it. The backoff is"
+                    << " released so the run is not walked to zero." << nl
+                    << "    Look at the OUTER LOOP -- scheme, tolerance,"
+                    << " maxCorrectors -- not at the timestep." << endl;
+            }
+            rhoCeiling_ = 0;
+        }
+        else
+        {
+            bind(rhoCeiling_, "contraction ceiling");
+            rhoCeiling_ *= rhoCeilingRelax_;
         }
     }
 

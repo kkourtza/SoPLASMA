@@ -456,6 +456,38 @@ private:
         //- Consecutive steps seen above target so far.
         label rhoOverCount_ = 0;
 
+        //- CEILING form of the backoff, replacing the per-step multiplicative
+        //  cut that OSCILLATED against the PI controller.
+        //
+        //  WHY A CEILING. bind() already takes the minimum of every request, so
+        //  the oscillation was not a race -- it was coupled-loop windup: the
+        //  backoff cut deltaT, the error fell, the PI asked for more on the next
+        //  step, rho rose again, repeat. MEASURED on the LMEA ramp: deltaT went
+        //  4.3e-13 -> 5.5e-13 -> 4.06e-12 -> 1.39e-12 -> 7.1e-13 -> 3.65e-13 ->
+        //  1.15e-12 while rho swung 0.22 -> 6.21 -> 0.68 -> 0.48.
+        //
+        //  A ceiling the PI CANNOT EXCEED, drifting up only slowly while rho
+        //  stays inside target, breaks the cycle. This mirrors dtFailCeiling_
+        //  (rejection memory), which solves the same problem for rejected steps
+        //  and is already proven in this file.
+        scalar rhoCeiling_ = 0;
+
+        //- Per-step upward drift of the ceiling. Slow, so the PI cannot
+        //  immediately undo a backoff.
+        scalar rhoCeilingRelax_ = 1.05;
+
+        //- FLOOR for the backoff, as a multiple of minDeltaT_. A backoff whose
+        //  criterion is UNSATISFIABLE must stop and say so rather than walk
+        //  deltaT to zero: MEASURED on the LFA streamer, deltaT fell 55x while
+        //  rho stayed pinned just above 1, because without an active relaxation
+        //  rho measures the coupling and not the timestep. Any "reduce until a
+        //  criterion is met" loop needs this.
+        scalar rhoBackoffFloorFactor_ = 100;
+
+        //- Set once when the backoff floor is hit, so the diagnostic prints
+        //  once rather than every step.
+        bool rhoFloorReported_ = false;
+
         //- Largest factor this step, reported beside the minimum
         scalar relaxOmegaMax_ = 1.0;
 
