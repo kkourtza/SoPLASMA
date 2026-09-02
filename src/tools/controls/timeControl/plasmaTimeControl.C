@@ -581,6 +581,32 @@ void plasmaTimeControl::read()
             }
         }
 
+        // REPORTING FOLLOWS LIMITING -- it is not separately settable.
+        //
+        // `printVoltageRiseRate` is therefore NOT READ. It is only NOTICED,
+        // not rejected, and the asymmetry with the two keys above is
+        // deliberate: those two could silently change the DRIVING TERM by
+        // ~2700x, so neither reading nor ignoring them was safe. This one can
+        // only change the log, so stopping a run over it would cost more than
+        // it protects. But it must not pass in silence either -- a user who
+        // wrote `printVoltageRiseRate false` and still sees the report has no
+        // way to tell an ignored key from a broken one.
+        if (dict_.found("printVoltageRiseRate"))
+        {
+            Info<< "plasmaTimeControl: `printVoltageRiseRate` is NO LONGER READ"
+                << " -- remove it." << nl
+                << "    Reporting now follows the limiter: it prints when"
+                << " `maxVoltageRisePerStep` is non-zero" << nl
+                << "    and is silent when the limiter is off (0, or no"
+                << " `voltagePatchName`). Four keys described" << nl
+                << "    one quantity -- limitVoltageRiseRate,"
+                << " printVoltageRiseRate, maxVoltageRiseRate and" << nl
+                << "    maxVoltageRisePerStep -- and that is how a user sets"
+                << " one and is surprised by another." << nl
+                << "    Unlike the other two this cannot change any result,"
+                << " so it is a notice, not an error." << endl;
+        }
+
         printVoltageRiseRate_ = limitVoltageRiseRate_;
 
         if (limitVoltageRiseRate_)
