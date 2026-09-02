@@ -45,6 +45,7 @@ SourceFiles
 #ifndef plasmaBoltzmann_H
 #define plasmaBoltzmann_H
 
+#include "objectRegistry.H"
 #include "dictionary.H"
 #include "fileName.H"
 #include "word.H"
@@ -75,12 +76,28 @@ public:
     //  from its `boltzmann` sub-dictionary; the gas temperature and pressure
     //  come from `Tgas` and `pressure` there, defaulting to the values a case
     //  would otherwise state in `backgroundGas`.
+    //- The gas pressure [Pa], from `backgroundGas/pressure` in
+    //  constant/<region>/plasmaSpeciesProperties.
+    //
+    //  ONE OWNER, ONE UNIT. The sweep needs the gas density because three-body
+    //  processes break E/N similarity -- their contribution to the EEDF scales
+    //  with N, so the tables are valid only near the density they were solved
+    //  at. That density is not an independent setting: it is the one the case
+    //  runs at.
+    //
+    //  It used to be stated separately as `boltzmann/pressureAtm`, in ATM, so a
+    //  case wrote the same physical quantity twice in two units and they could
+    //  disagree. Every shipped case set it to the hand-computed 0.98692 against
+    //  a pressure of 1e5 Pa; nothing used the `0` sentinel it also carried.
+    static scalar gasPressurePa(const objectRegistry& obr);
+
     static status ensureTables
     (
         const dictionary& dict,
         const fileName& manifest,
         const fileName& tableDir,
-        const word& expectedHash
+        const word& expectedHash,
+        const scalar pGasPa
     );
 
     //- Force a rebuild regardless of the existing table set. Used by the EEDF
@@ -97,6 +114,7 @@ public:
         const dictionary& dict,
         const fileName& manifest,
         const fileName& tableDir,
+        const scalar pGasPa,
         const HashTable<scalar>& composition = HashTable<scalar>(),
         const scalar Tgas = -1
     );

@@ -2372,7 +2372,19 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
         gasHeating_ = ed.getOrDefault<bool>("solve", false);   // existing key, see plasmaSpecies
         kappaGas_ = ed.getOrDefault<scalar>("kappa", 0.026);
         tauVTfixed_ = ed.getOrDefault<scalar>("tauVT", -1);
-        pGasAtm_ = ed.getOrDefault<scalar>("pressure", 101325.0)/101325.0;
+        // THE OUTER `backgroundGas/pressure`, not `backgroundGas/energy/pressure`.
+        //
+        // The nested key was a duplicate of the outer one in the SAME file, so a
+        // case stated the pressure twice and the two could disagree. The outer
+        // one is what plasmaSpecies closes the gas density from, which makes it
+        // the owner; this now follows it.
+        pGasAtm_ = constant::plasma::atmFromPa
+        (
+            species_.backgroundDict().getOrDefault<scalar>
+            (
+                "pressure", constant::plasma::PaPerAtm
+            )
+        );
 
         if (gasHeating_)
         {

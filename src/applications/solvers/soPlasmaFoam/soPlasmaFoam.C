@@ -180,7 +180,10 @@ int main(int argc, char *argv[])
                 (
                     "tableDir", "constant/plasmaTables"
                 ),
-                mechHash
+                mechHash,
+                // Derived from backgroundGas/pressure, so the sweep is solved
+                // at the density this case actually runs at.
+                plasmaBoltzmann::gasPressurePa(gasMesh())
             );
         }
     }

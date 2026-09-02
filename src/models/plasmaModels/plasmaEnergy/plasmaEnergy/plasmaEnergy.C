@@ -665,8 +665,20 @@ void plasmaEnergy::constructModels()
 
         kappaGas_   = bgGasEnergyDict.getOrDefault<scalar>("kappa", 0.026);
         tauVTfixed_ = bgGasEnergyDict.getOrDefault<scalar>("tauVT", -1);
-        pGasAtm_    =
-            bgGasEnergyDict.getOrDefault<scalar>("pressure", 101325.0)/101325.0;
+        // THE OUTER `backgroundGas/pressure`, not `backgroundGas/energy/pressure`.
+        // The nested key duplicated the outer one in the same file; the outer is
+        // what plasmaSpecies closes the gas density from, so it is the owner.
+        pGasAtm_    = constant::plasma::atmFromPa
+        (
+            bgGasEnergyDict.getOrDefault<scalar>
+            (
+                "pressure",
+                species_.backgroundDict().getOrDefault<scalar>
+                (
+                    "pressure", constant::plasma::PaPerAtm
+                )
+            )
+        );
     }
     else
     {

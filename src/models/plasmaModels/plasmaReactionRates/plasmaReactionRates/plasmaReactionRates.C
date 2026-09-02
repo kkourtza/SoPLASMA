@@ -410,7 +410,8 @@ Foam::plasmaReactionRates::plasmaReactionRates
 
     plasmaBoltzmann::ensureTables
     (
-        chemDict_, manifest_, tableDir_, word(mechanismHash_)
+        chemDict_, manifest_, tableDir_, word(mechanismHash_),
+        plasmaBoltzmann::gasPressurePa(mesh_)
     );
 
     buildEvaluators(tableDir);
@@ -451,7 +452,8 @@ bool Foam::plasmaReactionRates::refreshEEDF
     // refresh that costs full price and changes nothing.
     plasmaBoltzmann::rebuild
     (
-        chemDict_, manifest_, tableDir_, composition, Tgas
+        chemDict_, manifest_, tableDir_,
+        plasmaBoltzmann::gasPressurePa(mesh_), composition, Tgas
     );
 
     buildEvaluators(tableDir_);

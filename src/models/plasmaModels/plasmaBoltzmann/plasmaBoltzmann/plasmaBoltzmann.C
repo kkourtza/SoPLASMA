@@ -24,6 +24,10 @@ License
 
 #include <fstream>
 #include <sstream>
+#include "pressureUnits.H"
+#include "IOdictionary.H"
+#include "objectRegistry.H"
+#include "Time.H"
 #include <string>
 
 // * * * * * * * * * * * * * * * * Local Functions * * * * * * * * * * * * * //
@@ -40,7 +44,8 @@ Boltzmann::MechTableOptions readOptions
 (
     const Foam::dictionary& chem,
     const Foam::fileName& manifest,
-    const Foam::fileName& tableDir
+    const Foam::fileName& tableDir,
+    const Foam::scalar pGasPa
 )
 {
     const Foam::dictionary b = chem.subOrEmptyDict("boltzmann");
@@ -65,16 +70,43 @@ Boltzmann::MechTableOptions readOptions
     // 2000 Td in dry air, which looks like a solver failure and is not.
     o.growth = b.getOrDefault<Foam::word>("growthModel", "temporal");
 
-    // Pressure in atm, for density-scaled (three-body) processes. 0 leaves them
-    // out and keeps the tables density-independent; a positive value includes
-    // them, and the resulting tables are valid only near that density because a
-    // three-body process breaks E/N similarity.
+    // DERIVED from the gas the case actually runs at -- never stated here.
     //
-    // The default is 1 atm rather than 0: e + O2 + M -> O2- + M is the dominant
-    // electron loss channel in atmospheric air below ~50 Td, and excluding it
-    // by default would quietly bias the electron density high in exactly the
-    // cases this solver is aimed at.
-    o.pressure_atm = b.getOrDefault<Foam::scalar>("pressureAtm", 1.0);
+    // Density-scaled (three-body) processes break E/N similarity: their
+    // contribution to the EEDF scales with N, so the tables are valid only near
+    // the density they were solved at. There is therefore exactly ONE correct
+    // density for the sweep, the case's own, and nothing to choose.
+    //
+    // The library still wants atm because that is the convention of the
+    // cross-section literature. That conversion is internal; a user only ever
+    // types Pa.
+    o.pressure_atm = Foam::constant::plasma::atmFromPa(pGasPa);
+
+    // REJECTED, not silently migrated.
+    //
+    // `pressureAtm` was a second, independent spelling of the gas pressure, in
+    // a different unit, in a different file from `backgroundGas/pressure`. It
+    // is now derived. Reading it would be worse than ignoring it and ignoring
+    // it would be worse than stopping, because -- as sweepStamp below says --
+    // changing the sweep pressure changes EVERY table while leaving the
+    // mechanism hash untouched. A case whose stated value disagreed with its
+    // own gas would silently get a table set built for a different gas.
+    if (b.found("pressureAtm"))
+    {
+        FatalIOErrorInFunction(b)
+            << "`pressureAtm` in the `boltzmann` block is no longer read." << Foam::nl
+            << Foam::nl
+            << "    The sweep pressure is DERIVED from `backgroundGas/pressure`"
+            << " in plasmaSpeciesProperties, which for this case is" << Foam::nl
+            << "        "
+            << Foam::constant::plasma::pressureStr(pGasPa).c_str() << Foam::nl
+            << Foam::nl
+            << "    Delete the entry. Pressure is stated ONCE, in Pa, in"
+            << " `backgroundGas/pressure`." << Foam::nl
+            << "    Three-body processes are included whenever the mechanism"
+            << " has them; there is nothing to switch." << Foam::nl
+            << exit(Foam::FatalIOError);
+    }
 
     return o;
 }
@@ -92,7 +124,8 @@ Foam::string sweepStamp(const Boltzmann::MechTableOptions& o)
     std::ostringstream ss;
     ss << "EN=" << o.EN_min << ":" << o.EN_max << ":" << o.nPoints
        << " Tgas=" << o.T_gas << " Texc=" << o.T_exc
-       << " grid=" << o.gridPoints << " p=" << o.pressure_atm
+       << " grid=" << o.gridPoints
+       << " pPa=" << o.pressure_atm*Foam::constant::plasma::PaPerAtm
        << " growth=" << o.growth << " floor=" << o.thermalFloor;
     return Foam::string(ss.str());
 }
@@ -112,18 +145,115 @@ Foam::string firstLineOf(const Foam::fileName& path)
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
 
+Foam::scalar Foam::plasmaBoltzmann::gasPressurePa
+(
+    const Foam::objectRegistry& obr
+)
+{
+    IOdictionary sp
+    (
+        IOobject
+        (
+            "plasmaSpeciesProperties",
+            obr.time().constant(),
+            obr,
+            IOobject::READ_IF_PRESENT,
+            IOobject::NO_WRITE,
+            IOobject::NO_REGISTER
+        )
+    );
+
+    // 101325 Pa if the case says nothing, matching plasmaSpecies, which closes
+    // the number density from the same key with the same default. The two must
+    // agree or the tables are solved for a different gas than the transport.
+    return sp.subOrEmptyDict("backgroundGas")
+             .getOrDefault<scalar>("pressure", constant::plasma::PaPerAtm);
+}
+
+
 Foam::plasmaBoltzmann::status Foam::plasmaBoltzmann::ensureTables
 (
     const dictionary& chem,
     const fileName& manifest,
     const fileName& tableDir,
-    const word& expectedHash
+    const word& expectedHash,
+    const scalar pGasPa
 )
 {
     if (!chem.getOrDefault<Switch>("generateTables", true))
     {
-        Info<< "plasmaBoltzmann: generateTables off; using the tables in "
-            << tableDir << " as found" << endl;
+        // `generateTables no` MUST STILL CHECK THE STAMP.
+        //
+        // This branch used to return here, before the stamp was ever read, so
+        // the one path that cannot self-correct was also the one with no check:
+        // take a pre-built table set from another case, run at a different
+        // pressure or a different ENmax, and every rate coefficient and
+        // mobility comes from the wrong sweep -- converging, plausible, wrong.
+        // "as found" was doing a great deal of quiet work.
+        //
+        // `no` is an explicit instruction NOT to rebuild, so the only honest
+        // options are to stop or to lie. It stops.
+        const fileName stampFile = tableDir/"sweep.stamp";
+        const string want = sweepStamp(readOptions(chem, manifest, tableDir, pGasPa));
+
+        if (!isFile(stampFile))
+        {
+            FatalErrorInFunction
+                << "`generateTables no`, but " << tableDir
+                << " carries no sweep.stamp." << nl
+                << nl
+                << "    Without it there is no way to tell what conditions"
+                << " those tables were solved at, and a table set" << nl
+                << "    built for a different gas or a different E/N range is"
+                << " indistinguishable from a correct one." << nl
+                << "    A missing stamp is therefore treated as a mismatch, not"
+                << " as permission." << nl
+                << nl
+                << "    This case needs:  " << want.c_str() << nl
+                << nl
+                << "    Set `generateTables yes` to solve the sweep here, or"
+                << " point `tableDir` at a set built for this case." << nl
+                << exit(FatalError);
+        }
+
+        const string have = firstLineOf(stampFile);
+
+        if (have != want)
+        {
+            // Name the field that moved. The stamp has eight, and "they differ"
+            // would leave the reader diffing two long strings by eye.
+            string diffs;
+            {
+                std::istringstream hs(have), ws(want);
+                std::string ht, wt;
+                while (hs >> ht && ws >> wt)
+                {
+                    if (ht != wt)
+                    {
+                        diffs += "        " + ht + "   ->   " + wt + "\n";
+                    }
+                }
+            }
+
+            FatalErrorInFunction
+                << "`generateTables no`, but the tables in " << tableDir
+                << " were not built for this case." << nl
+                << nl
+                << "    tables were built at:  " << have.c_str() << nl
+                << "    this case needs:       " << want.c_str() << nl
+                << nl
+                << "    differing:" << nl
+                << diffs.c_str()
+                << nl
+                << "    Every rate coefficient and mobility would come from the"
+                << " wrong sweep. Set `generateTables yes` to" << nl
+                << "    re-solve it here, or point `tableDir` at a set built for"
+                << " this case." << nl
+                << exit(FatalError);
+        }
+
+        Info<< "plasmaBoltzmann: generateTables off; the tables in " << tableDir
+            << " match this case's sweep settings." << endl;
         return disabled;
     }
 
@@ -140,7 +270,7 @@ Foam::plasmaBoltzmann::status Foam::plasmaBoltzmann::ensureTables
     // Reuse only if an existing table carries the manifest's hash. Checking one
     // representative table is enough because the whole set is written together
     // by one sweep -- a half-written set is not a state that occurs.
-    const string stamp = sweepStamp(readOptions(chem, manifest, tableDir));
+    const string stamp = sweepStamp(readOptions(chem, manifest, tableDir, pGasPa));
     const fileName stampFile = tableDir/"sweep.stamp";
 
     const fileName probe = tableDir/"muN_vs_reducedE";
@@ -175,7 +305,7 @@ Foam::plasmaBoltzmann::status Foam::plasmaBoltzmann::ensureTables
         }
     }
 
-    rebuild(chem, manifest, tableDir);
+    rebuild(chem, manifest, tableDir, pGasPa);
     return generated;
 }
 
@@ -185,13 +315,14 @@ void Foam::plasmaBoltzmann::rebuild
     const dictionary& chem,
     const fileName& manifest,
     const fileName& tableDir,
+    const scalar pGasPa,
     const HashTable<scalar>& composition,
     const scalar Tgas
 )
 {
     mkDir(tableDir);
 
-    Boltzmann::MechTableOptions o = readOptions(chem, manifest, tableDir);
+    Boltzmann::MechTableOptions o = readOptions(chem, manifest, tableDir, pGasPa);
 
     if (Tgas > 0)
     {

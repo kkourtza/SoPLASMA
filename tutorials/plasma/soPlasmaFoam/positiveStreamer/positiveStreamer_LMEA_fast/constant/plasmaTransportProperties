@@ -85,10 +85,6 @@ chemistry
         ENmax           10000;
         nPoints         261;
         Tgas            300;
-        // 1 bar = 0.9869 atm, matching the benchmark's N = 2.414e25 m^-3.
-        // This sets the density the three-body attachment tables are built
-        // at, so it must agree with `pressure` in plasmaSpeciesProperties.
-        pressureAtm     0.98692;
         growthModel     temporal;
     }
 }
