@@ -1,0 +1,254 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  needleDBD -- ONE place for every number in this case.                      |
+\*---------------------------------------------------------------------------*/
+
+// HOW THIS FILE WORKS, and its one sharp edge.
+//
+// Every dictionary in the case reaches this file with
+//     #include "../configuration/config"
+// and refers to a value as $name. That is a CASE CONVENTION, not an OpenFOAM
+// feature: a value defined here that no dictionary references DOES NOTHING, and
+// nothing warns you. Four of the beds in this repository carry such variables --
+// `appliedVoltage` among them, which is exactly the knob you would reach for to
+// change the voltage.
+//
+// So the rule for this file is: if it is here, something reads it. To check:
+//     for k in $(grep -oE '^[a-zA-Z][a-zA-Z0-9_]*' configuration/config | sort -u); do
+//         grep -rqF "\$$k" system/ constant/ etc/ 0.orig/ Allrun-serial \
+//             || echo "DANGLING: $k"
+//     done
+
+
+// ===========================================================================
+//  APPLIED VOLTAGE
+// ===========================================================================
+
+// The waveform as ONE WHOLE VALUE. A style choice, and a good one, but the
+// reason first given here was wrong.
+//
+// CORRECTED 2026-09-02. SUPERSEDES the earlier claim that "`changeDictionary`
+// does not expand a $var nested inside a compound value", which said a table
+// written as `table ((0 0) ($riseTime $appliedVoltage))` would reach the field
+// file verbatim and kill the solver with "Illegal dictionary entry or
+// environment variable name riseTime".
+//
+// MEASURED on positiveStreamer_fixedMesh, whose electrode uses exactly that
+// nested form. `changeDictionary` expands NOTHING -- not a nested $var and not
+// a whole-value one. Both reach 0/ePotential verbatim:
+//     uniformValue    table ( ( 0 0 ) ( $voltageRampTime $appliedVoltage ) );
+// and BOTH then resolve when the field is parsed:
+//     $ foamDictionary 0/ePotential -entry \
+//           boundaryField/active_electrode/uniformValue
+//     uniformValue    table ( ( 0 0 ) ( 9.375e-11 18750 ) );
+//
+// THE ACTUAL RULE: the `#include` must be present in the file where the $var is
+// finally RESOLVED, which is the field file in 0/, not the changeDictionaryDict.
+// It gets there from 0.orig/, and `changeDictionary` preserves it. The reported
+// "Illegal dictionary entry" comes from a field file that has LOST its include
+// -- the separate, real trap that `changeDictionary` strips the `#include` it
+// used from dictionaries it rewrites in place.
+//
+// SO WHY KEEP THE WHOLE VALUE? Because the waveform is a Function1, and only
+// this form lets you change its TYPE from here. `constant`, `linearRamp`,
+// `halfCosineRamp`, `sine`, `square`, `polynomial`, `csv`, `tableFile` and
+// `coded` all work with no solver change. For an AC DBD:
+//     voltageRamp   sine { frequency 1e3; amplitude 20e3; level 0; };
+// None of those has an amplitude-and-rise-time to split into two variables, so
+// an `appliedVoltage` + `riseTime` pair would quietly limit the case to ramps.
+// See docs/models/energy/applied-voltage.md for the full menu.
+//
+// RAMPED, not stepped: a step puts the whole 8 kV across the gap in one
+// timestep, which is unphysical and a large transient for the Poisson /
+// space-charge coupling to absorb.
+voltageRamp                         table ((0 0) (100e-9 8e3));
+
+
+// ===========================================================================
+//  GAS STATE -- stated once, here
+// ===========================================================================
+
+// 1 bar, not 1 atm. The two differ by 1.3% in density, which shifts E/N and
+// therefore every rate coefficient; small, but not the kind of difference to
+// leave unexplained.
+//
+// The gas NUMBER DENSITY is not stated anywhere: plasmaSpecies closes it from
+// this pressure and this temperature by the ideal gas law, and pushes it out as
+// the one owner. A second copy of the density is how E/N came to be evaluated
+// at 1 atm in a case that was at 1 bar.
+gasPressure                         1e5;      // [Pa]
+gasTemperature                      300;      // [K]
+
+
+// ===========================================================================
+//  GEOMETRY AND MATERIALS
+// ===========================================================================
+
+epsilonRgas                         1.0;
+epsilonRdielectric                  3.0;      // the slab below the gap
+
+// MONOLITHIC region coupling. The gas and the dielectric potential are
+// assembled into ONE matrix and solved together, so the permittivity jump and
+// the surface charge are satisfied exactly at every linear solve.
+//
+// The alternative -- explicit coupling -- lags the interface: each region sees
+// the other's potential from the previous corrector. On this geometry that was
+// MEASURED to plateau the outer ePotential residual around 1e-7, and at a
+// tolerance of 1e-8 the outer loop hit its cap and every step was discarded.
+//
+// Monolithic coupling requires an assembly-aware linear solver. See the
+// `agglomerator` entry in system/fvSolution -- with GAMG's default
+// agglomerator this aborts with "lduPrimitiveMeshAssembly to fvMesh".
+useImplicit                         true;
+
+// Which field carries the interface surface charge. Exactly ONE side of the
+// interface owns it (the gas, because the plasma deposits it); the other names
+// it as the neighbour field and owns none.
+surfChargeDict                      surfCharge;
+
+// Secondary electron emission, both electrodes.
+seeCoefficient                      0.001;
+
+// THE INITIAL CONDITION, not a numerical guard.
+//
+// This case has NO SEEDED BLOB. The discharge initiates from this background
+// density in the geometrically enhanced field at the needle tip, so the value
+// is physics.
+//
+// IMPLICATION: a clamp is a source. Electrons are injected wherever attachment
+// would have removed them, so this only conserves charge because the positive
+// ions are clamped to the same total, split by mole fraction. Raise one and you
+// must raise the others.
+floorDensity                        1e11;     // [m^-3]
+
+
+// ===========================================================================
+//  DISCRETISATION SCHEMES
+// ===========================================================================
+
+ddtSchemes                          backward;
+gradSchemes                         leastSquares;
+driftDiffusionFluxScheme            standard;
+
+electronDriftDivScheme                  Gauss ROUNDF;
+electronDiffusionLaplacianScheme        Gauss harmonic corrected 0.33;
+electronMobilityInterpolationScheme     harmonic;
+electronDiffusivityInterpolationScheme  harmonic;
+ePotentialLaplacianScheme               Gauss linear corrected 0.33;
+ePotentialSnGradScheme                  corrected 0.33;
+snGradSpeciesScheme                     corrected 0.33;
+
+
+// ===========================================================================
+//  LINEAR SOLVERS
+// ===========================================================================
+
+// THE LINEAR-SOLVER BACKEND, IN ONE PLACE.
+//
+// Other beds in this repository ship TWO whole dictionaries --
+// `system/fvSolution-foam` and `system/fvSolution-petsc` -- and their Allrun
+// copies one over `system/fvSolution` according to a `matrixSolver` variable.
+// That makes `system/fvSolution` a build artefact whose edits vanish silently,
+// and it duplicates every unrelated setting (species tolerances, PIMPLE
+// controls) across two files that then drift.
+//
+// It is unnecessary. MEASURED 2026-09-02: an OpenFOAM solver dictionary
+// SILENTLY IGNORES entries it does not use -- a `PCG` block carrying
+// `agglomerator`, `nCellsInCoarsestLevel` and a `petsc { options { ... } }`
+// sub-dictionary runs clean. So one `ePotential` block can carry BOTH
+// backends' settings, and switching backend is one word here.
+//
+//   GAMG        native, needs `agglomerator assembledFaceAreaPair` under
+//               monolithic coupling (see system/fvSolution)
+//   PBiCGStab   native, for a non-symmetric operator
+//   petsc       PETSc, configured by the `petsc { options { ... } }` block
+//
+ePotentialSolver                    GAMG;
+
+// The libraries controlDict loads, as ONE WHOLE VALUE so the list can be
+// swapped from here. ROUNDSchemes supplies the `Gauss ROUNDF` divergence
+// scheme the electron equation uses.
+//
+// TO USE PETSc: set ePotentialSolver above to `petsc` and add
+// "libpetscFoam.so" to this list. Both are in this file, so no dictionary
+// moves and nothing is copied.
+//
+// NOT LOADED BY DEFAULT, and on this machine that is not merely caution:
+// libpetscFoam.so is installed but cannot load --
+//     Could not load "libpetscFoam.so"
+//     libpetsc.so.3.24: cannot open shared object file
+// The wrapper is present, PETSc itself is not. It is a WARNING rather than a
+// fatal error, so an unnecessary entry costs a confusing line at start-up on
+// every run.
+solverLibs                          ( "libROUNDSchemes.so" );
+
+// A SCHEME, not a linear solver -- hence the name. `explicit` treats the space
+// charge as a pure source; `semiImplicit` also brings the conductivity in
+// implicitly, which stabilises the space-charge / Poisson coupling. The LINEAR
+// solver for ePotential is the `ePotential` block in fvSolution, below.
+//
+// This key used to be called `poissonSolver` while the dictionary entry it fed
+// was called `PoissonScheme`: two names for one setting, each suggesting the
+// other's meaning.
+poissonScheme                       semiImplicit;
+nOuterCorrectors                    4;
+
+ePotentialTolerance                 1e-10;
+ePotentialRelTolerance              0.0;
+neTolerance                         1e-10;
+neRelTolerance                      0.0;
+npIonTolerance                      1e-10;
+npIonRelTolerance                   0.0;
+TgasTolerance                       1e-12;
+
+// OUTER (PIMPLE) tolerances. Note these are the LINEAR solver's per-field
+// tolerances inside the outer loop; the gate that decides whether the outer
+// loop has converged is `outerCoupling/tolerance` in
+// system/plasmaSimulationControls, and editing these to fix an outer-loop
+// failure changes nothing.
+ePotentialTolerancePIMPLE           1e-8;
+neTolerancePIMPLE                   1e-10;
+npIonTolerancePIMPLE                1e-10;
+
+
+// ===========================================================================
+//  TIME CONTROL
+// ===========================================================================
+
+adjustTimeStep                      true;
+deltaT                              1e-12;
+endTime                             2e-08;
+
+// The interesting window opens EARLY. With ~15x tip enhancement, E/N reaches
+// the ionisation range at roughly V ~ 167 V, i.e. t ~ 2.1 ns on an 8 kV /
+// 100 ns ramp -- long before the ramp completes. Write often enough to see it.
+writeControl                        adjustableRunTime;
+writeInterval                       1e-09;
+
+// Timestep limiters. maxSpeciesCo is a RAIL rather than the control: on this
+// bed the binding limiter is the ENERGY convective Courant, which shares this
+// cap.
+limitSpeciesCo                      true;
+printSpeciesCo                      true;
+maxSpeciesCo                        100;
+
+limitChemistryCo                    true;
+printChemistryCo                    true;
+maxChemistryCo                      0.9;
+
+limitDielectricRelaxationRatio      false;
+printDielectricRelaxationRatio      true;
+maxDielectricRelaxationRatio        5;
+
+// ONE key for the voltage rise: volts per step, 0 disables, always active when
+// a `voltagePatchName` is named. 100 V/step over an 8 kV ramp is ~80 points
+// across the rise.
+//
+// There is no separate on/off switch and no separate print switch -- reporting
+// follows the limiter. `limitVoltageRiseRate` and `maxVoltageRiseRate` are
+// REJECTED with an error carrying the exact translation for your dictionary,
+// and `printVoltageRiseRate` prints a notice saying it is no longer read. Four
+// keys once described this one quantity, which is how a case sets one and is
+// surprised by another.
+maxVoltageRisePerStep               100;      // [V/step]
+
+// ************************************************************************* //

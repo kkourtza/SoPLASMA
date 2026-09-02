@@ -1,0 +1,58 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- run control                                                    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+// The library list lives in configuration/config, like every other choice in
+// this case, so switching to PETSc does not mean editing a second dictionary.
+// It is passed as ONE WHOLE VALUE because a $var nested inside a list is not
+// what we want here -- the whole list is the setting.
+libs            $solverLibs;
+
+application     soPlasmaFoam;
+
+// startTime, not latestTime.
+//
+// `latestTime` is the right default for a production restart and the wrong one
+// for a tutorial: once you have run once, re-running silently continues from
+// wherever you stopped instead of reproducing the walkthrough. It has also
+// broken a pinned comparison in this repository, because each arm resumed from
+// its own latest snapshot rather than the one intended.
+startFrom       startTime;
+startTime       0;
+
+stopAt          endTime;
+endTime         $endTime;
+
+deltaT          $deltaT;
+
+// adjustableRunTime, not runTime.
+//
+// With plain `runTime` the writes land on whatever step happens to straddle the
+// interval, so two runs of the same case write at slightly different times --
+// measured at 7.4e-13 s apart, which was 0.28 of an energy relaxation time and
+// enough to make a comparison meaningless. `adjustableRunTime` nudges the step
+// so the write lands exactly on the interval.
+writeControl    $writeControl;
+writeInterval   $writeInterval;
+
+purgeWrite      0;
+
+writeFormat     ascii;
+writePrecision  12;
+writeCompression off;
+
+timeFormat      general;
+timePrecision   6;
+
+runTimeModifiable true;
+
+// ************************************************************************* //

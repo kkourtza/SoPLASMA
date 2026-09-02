@@ -1,0 +1,680 @@
+# Building a needle-DBD case from scratch
+
+A step-by-step walkthrough for someone who has never set up a SoPLASMA case. Every
+step says **what to run**, **what you should see**, and **what it means when you
+don't**. Nothing is skipped and nothing is done for you by a script you can't read.
+
+Each step was actually run while writing this, and the numbers quoted are the
+numbers it produced.
+
+---
+
+## What this case is
+
+A **dielectric barrier discharge** driven by a sharp needle:
+
+- a square gas domain, 1 mm gap
+- a **125 µm needle** electrode, ramped to **8 kV over 100 ns**
+- a **100 µm dielectric slab** in front of the grounded electrode
+- **two mesh regions** — `gas` and `dielectric` — coupled at their interface
+
+Two things make it a good first case. The needle gives **geometric field
+enhancement** (~15×), so the interesting physics is present from the first step
+and you don't need a seeded plasma blob to start a discharge. And the dielectric
+makes it a genuine DBD: charge deposited on the surface shields the gap and makes
+the discharge self-limiting, which is the entire point of the geometry.
+
+It is also a *multi-region* case, which is the part no other tutorial covers and
+where most of the traps live.
+
+---
+
+## What you must supply
+
+Only two things are genuinely yours:
+
+| input | what it is |
+|---|---|
+| **a 2D gmsh mesh** | `.msh`, MSH 2.x ASCII, with `Physical Curve`s for the boundaries and one `Physical Surface` per region |
+| **a compiled chemistry** | `air_plasma.foam` + `air_plasma.mech.json`, produced by SoEEDF's `mechc` |
+
+Everything else in the case is written during this walkthrough.
+
+You do **not** need to run the Boltzmann solver, generate lookup tables, or
+pre-process the chemistry. The solver does the electron-energy sweep itself at
+start-up. (If you want to build the chemistry from raw LXCat cross-section files,
+that's Appendix A — it is a real step, but not one you need on the first pass.)
+
+---
+
+## Step 0 — Prerequisites
+
+```bash
+source /usr/lib/openfoam/openfoam2412/etc/bashrc
+export BOLTZMANN_DIR=$HOME/Projects/SoEEDF      # where SoEEDF lives
+cd $HOME/soplasma-scratch
+./Allwmake                                       # or ./build-all.sh
+```
+
+Check the environment is actually live — this is the single most common reason a
+first attempt fails with something that looks unrelated:
+
+```bash
+echo $WM_PROJECT_DIR      # must print the OpenFOAM path, not nothing
+which soPlasmaFoam        # must resolve
+```
+
+> **If `$WM_PROJECT_DIR` is empty**, every `Allrun` script in this repository
+> fails at its first line with `/bin/tools/RunFunctions: No such file or
+> directory`, because it sources `$WM_PROJECT_DIR/bin/tools/RunFunctions`. The
+> error names the wrong thing entirely.
+
+---
+
+## Step 1 — The case skeleton, and the one-place rule
+
+```bash
+cd $HOME/soplasma-scratch/tutorials/plasma/soPlasmaFoam
+mkdir -p needleDBD/{configuration,constant,system,etc,0.orig}
+cd needleDBD
+```
+
+| directory | holds |
+|---|---|
+| `configuration/` | **`config`** — every number in the case, defined once |
+| `constant/` | the mesh, the chemistry, and the physics dictionaries |
+| `system/` | run control, schemes, linear solvers, timestep control |
+| `etc/` | the boundary-condition scripts (`changeDictionary.*`) |
+| `0.orig/` | the initial fields you author by hand |
+
+### The one-place rule, and its sharp edge
+
+Every dictionary begins with
+
+```
+#include "../configuration/config"
+```
+
+and refers to values as `$name`. **This is a case convention, not an OpenFOAM
+feature.** A value defined in `config` that no dictionary references simply does
+nothing, and nothing warns you.
+
+That is not hypothetical. Four beds in this repository carry dangling variables,
+and one of them is `appliedVoltage` — precisely the knob you would reach for to
+change the voltage. Editing it changes nothing, silently, because the electrode
+reads a hardcoded number elsewhere.
+
+**So check it.** Any time you add a variable:
+
+```bash
+for k in $(grep -oE '^[a-zA-Z][a-zA-Z0-9_]*' configuration/config | sort -u); do
+    grep -rqF "\$$k" system/ constant/ etc/ 0.orig/ Allrun-serial 2>/dev/null \
+        || echo "DANGLING: $k"
+done
+```
+
+Read `configuration/config` now — it is commented, and it explains why the
+voltage waveform is one whole variable rather than an amplitude and a rise time.
+
+The reason is **not** the one you may have read elsewhere in this repository.
+`changeDictionary` expands *nothing* — neither a nested `$var` nor a whole-value
+one. Both reach the field file verbatim:
+
+```
+uniformValue    table ( ( 0 0 ) ( $voltageRampTime $appliedVoltage ) );
+```
+
+and both then resolve when the field is parsed, which you can check without
+running the solver:
+
+```bash
+foamDictionary 0/ePotential -entry boundaryField/active_electrode/uniformValue
+#   -> uniformValue    table ( ( 0 0 ) ( 9.375e-11 18750 ) );
+```
+
+**The rule that matters:** the `#include` must be present in the file where the
+`$var` is finally *resolved* — the field file under `0/`, not the
+`changeDictionaryDict`. It gets there from `0.orig/`, and `changeDictionary`
+preserves it. The `Illegal dictionary entry or environment variable name …`
+failure comes from a field file that has *lost* its include, which is the
+separate and very real trap that `changeDictionary` strips the `#include` from
+dictionaries it rewrites in place (see step 9).
+
+So the waveform is one whole value for a different reason: it is a **`Function1`**,
+and only this form lets you change its *type* from `config`. `sine { frequency
+1e3; amplitude 20e3; }` has no amplitude-and-rise-time to split in two, so an
+`appliedVoltage` + `riseTime` pair quietly limits the case to ramps.
+
+---
+
+## Step 2 — From a 2D mesh to an OpenFOAM mesh
+
+OpenFOAM needs **volume cells**, even for a planar case. Handed a 2D mesh,
+`gmshToFoam` reports
+
+```
+Cells: total:0   hex:0  prism:0  pyr:0  tet:0
+```
+
+and then dies. So the mesh must be extruded by one layer, with the two flat faces
+marked `empty`.
+
+Doing that by editing the `.geo` is the obvious route and it is a minefield —
+five separate documented failures, three of them silent. Use the converter
+instead:
+
+### 2a. Look before you convert
+
+```bash
+cd $HOME/soplasma-scratch
+tools/msh2Dto3D.py ~/Projects/SoEEDF/meshes/square_NS_Diel_point.msh --report
+```
+
+```
+  physical group          dim elements  interface becomes
+  --------------------------------------------------------------------
+  active_electrode          1      103          - patch (103 faces)
+  ground                    1      160          - patch (160 faces)
+  air_dielectric            1      338        160 patch (178 faces)
+  out                       1      352          - patch (352 faces)
+  gas                       2    71745          - cellZone -> region
+  dielectric                2     5976          - cellZone -> region
+```
+
+**The number that matters is the 160 in the `interface` column.**
+
+`air_dielectric` contains 338 edges, of which **160 are the gas/dielectric
+interface** and 178 are genuine wall. Those 160 must stay *internal* faces,
+because `splitMeshRegions` builds the region coupling from internal faces between
+cell zones. Name them as a boundary patch and the two regions simply never
+couple — and nothing errors.
+
+The script infers this: **an edge whose two adjacent faces lie in different
+physical surfaces is an interface.** You don't have to know which curve tag it is.
+
+> **Also check that no group reports 0 elements.** An empty physical group is
+> **not an error in gmsh** — it declares the group, exits 0, and you find out
+> much later when patches are missing. One such selection produced a mesh with
+> 19 lateral faces instead of thousands.
+
+### 2b. Convert
+
+```bash
+tools/msh2Dto3D.py ~/Projects/SoEEDF/meshes/square_NS_Diel_point.msh \
+    -o ~/Projects/SoEEDF/meshes/square_NS_Diel_point_extruded.msh \
+    --thickness 1e-5
+```
+
+```
+  78516 nodes, 233956 elements (77721 cells)
+  thickness 1e-05 m, front=`front` back=`back`
+  160 interface edges kept INTERNAL (not made into patches)
+```
+
+The counts decompose exactly, which is worth knowing how to check yourself:
+
+| | |
+|---|---|
+| cells, one prism per triangle | 71745 + 5976 = **77721** |
+| lateral quads, edges minus interface | 953 − 160 = **793** |
+| front + back | 2 × 77721 = **155442** |
+| **total** | **233956** ✓ |
+| nodes, 2 × 39258 | **78516** ✓ |
+
+The extrusion thickness is arbitrary — the faces are `empty`, so nothing depends
+on it.
+
+> **Why extrude the *mesh* and not the geometry?** Re-authoring the `.geo`
+> introduces two CAD traps that have each cost a run here. Under
+> `SetFactory("OpenCASCADE")`, extruding two surfaces that *share* a curve gives
+> two coincident-but-separate lateral faces — the volumes are non-conformal,
+> the interface is never built, and both regions come back with `defaultFaces`.
+> And `Coherence;` renumbers entities, which silently collapsed face counts from
+> 103/160/338/352 to 3/1/7/184. Extruding the mesh has no CAD step, so neither
+> can happen: the 2D mesh already shares nodes along the interface, and
+> duplicating them in z preserves that by construction.
+
+### 2c. Import it
+
+```bash
+cd $HOME/soplasma-scratch/tutorials/plasma/soPlasmaFoam/needleDBD
+gmshToFoam ~/Projects/SoEEDF/meshes/square_NS_Diel_point_extruded.msh 2>&1 | tail -20
+```
+
+Three things to check:
+
+**Cells are non-zero, and they are prisms.**
+```
+Cells: total:77721   hex:0  prism:77721  pyr:0  tet:0
+```
+Prisms because the base mesh is triangular. gmsh's `Recombine` makes the *lateral
+faces* quads; it never turns triangles into quads.
+
+**Both cellZones exist** — `splitMeshRegions` splits on these, so if only one
+appears, stop here:
+```
+Mapping region 7 to Foam cellZone 0
+Mapping region 8 to Foam cellZone 1
+CellZones: 0 -> 71745,  1 -> 5976
+Writing zone 0 to cellZone gas and cellSet
+Writing zone 1 to cellZone dielectric and cellSet
+```
+
+**A `defaultFaces` warning is expected and benign here.**
+```
+--> FOAM Warning : Found NNNNNN undefined faces in mesh; adding to default patch defaultFaces
+```
+Those are the interior faces plus the 160 interface faces, and `splitMeshRegions`
+consumes them in the next step. This is the *one* place `defaultFaces` is fine —
+if it survives **as a region patch after the split**, that is the failure.
+
+### 2d. Fix the boundary file
+
+Two things gmsh cannot express, so they happen on the OpenFOAM side:
+
+```bash
+../../../../tools/msh2Dto3D.py --fix-boundary constant/polyMesh/boundary
+```
+
+```
+  removed 6 `physicalType` entries
+  set `type empty;` on: front, back
+```
+
+- **`physicalType patch;`** — `gmshToFoam` writes it and `changeDictionary`
+  chokes on it later.
+- **`front`/`back` must be `empty`** — this is what makes it a standard OpenFOAM
+  2D planar case. `gmshToFoam` leaves them as `patch`.
+
+Verify:
+```bash
+grep -c physicalType constant/polyMesh/boundary        # must be 0
+grep -A2 -E '^    (front|back)$' constant/polyMesh/boundary
+```
+
+---
+
+## Step 3 — Numerics, which must come *before* the split
+
+This is the step whose *position* is the lesson. You would expect to choose
+linear solvers late, after the case exists. You cannot:
+
+```bash
+splitMeshRegions -cellZones -overwrite
+#   --> cannot find file ".../system/fvSchemes"
+```
+
+`splitMeshRegions` builds an `fvMesh`, and in OpenFOAM v2412 `fvMesh` *inherits*
+`fvSchemes` and `fvSolution` as base classes:
+
+```cpp
+class fvMesh : public polyMesh, public lduMesh, public fvSchemes,
+               public surfaceInterpolation, public fvSolution
+```
+
+Both are `MUST_READ`. So **a case with no `system/fvSchemes` cannot even be
+split**, and the numerics come third, not tenth.
+
+Write `system/fvSchemes`, `system/fvSolution` and
+`system/plasmaSimulationControls` — all three are in this case, commented.
+
+### One `fvSolution`, every backend
+
+Other beds in this repository ship **`fvSolution-foam` and `fvSolution-petsc`**
+and have `Allrun` copy one over `system/fvSolution`. That costs you two things:
+`system/fvSolution` becomes a build artefact whose edits vanish silently, and
+every *unrelated* setting in it — species tolerances, PIMPLE controls — exists
+twice and drifts.
+
+It is unnecessary, and the reason is a measured property of OpenFOAM: **a solver
+dictionary silently ignores entries it does not use.** A `PCG` block carrying
+`agglomerator`, `nCellsInCoarsestLevel` and a `petsc { options { … } }`
+sub-dictionary runs clean. So one `ePotential` block carries both backends and
+`configuration/config` picks one:
+
+```
+ePotentialSolver    GAMG;                              // GAMG | PBiCGStab | petsc
+solverLibs          ( "libROUNDSchemes.so" );
+```
+
+Switching to PETSc is those two lines — `petsc`, and add `"libpetscFoam.so"`.
+Nothing is copied and no dictionary moves. `controlDict` just says
+`libs $solverLibs;`.
+
+> **PETSc is not usable on this machine**, which is worth knowing before you
+> try: `libpetscFoam.so` *is* installed, but loading it gives
+> `libpetsc.so.3.24: cannot open shared object file`. The wrapper is there,
+> PETSc itself is not. It is a warning rather than an error, so it would cost a
+> confusing line at every start-up — which is why it is not in the default list.
+
+### Two things in those files that cost runs
+
+**Every scheme is named per species, and a missing one is fatal — not a
+fall-through to `default`.** They fail one family at a time, minutes apart:
+
+```
+Entry 'div(phi_N2p,n_N2p)'     not found in divSchemes
+Entry 'laplacian(D_N2p,n_N2p)' not found in laplacianSchemes
+Entry 'interpolate(mu_N2p)'    not found in interpolationSchemes
+```
+
+The convective flux is `phi_<species>`, **not** `particleFlux_<species>` — that
+is the registered diagnostic *field* the boundary conditions read. And note this
+case needs its ions **mobile**, because secondary emission emits nothing without
+an ion wall flux; a case copied from the streamer benchmark (all ions immobile)
+has none of these three families.
+
+**Monolithic coupling needs an assembly-aware agglomerator.** This case sets
+`useImplicit true`, so gas and dielectric are assembled into one matrix whose
+mesh is an `lduPrimitiveMeshAssembly`, not an `fvMesh`. GAMG's *default*
+agglomerator casts to `fvMesh` and the run aborts with
+
+```
+--> FOAM FATAL ERROR: Attempt to cast type lduPrimitiveMeshAssembly to type fvMesh
+```
+
+which reads like an internal error and is a configuration error. Hence
+`agglomerator assembledFaceAreaPair;`. Measured on the two-region acceptance
+case (20000 cells, per timestep):
+
+| solver | iterations/step | result |
+|---|---|---|
+| `smoothSolver`/`GaussSeidel` | 2000 (cap), residual 3e-4 | **7.3% wrong** |
+| `PCG`/`DIC` | 114 | correct |
+| `GAMG`, default agglomerator | abort | — |
+| `GAMG` + `assembledFaceAreaPair` | **11** | correct |
+
+The first row is the one to internalise: **reaching `maxIter` is not an error**,
+so ten consecutive unconverged solves were logged as ordinary ones.
+
+---
+
+## Step 4 — Split into regions
+
+```bash
+splitMeshRegions -cellZones -overwrite 2>&1 | tee log.splitMeshRegions
+```
+
+**The single most important line in the whole build:**
+
+```bash
+# NOTE -A6, not -A3. After the "Sizes of interfaces" line come a blank line,
+# the column header and the dashes -- the DATA ROW IS THE FOURTH LINE, so -A3
+# prints an empty-looking table and makes a correct split look like a failure.
+grep -A6 "Sizes of interfaces" log.splitMeshRegions
+```
+```
+Interface   Region   Region   Faces
+---------   ------   ------   -----
+0           0        1        160
+```
+
+Or, immune to miscounting — the patches are what actually matter:
+
+```bash
+grep -A3 "added patches" log.splitMeshRegions
+```
+```
+For interface between region gas and dielectric added patches
+    6   gas_to_dielectric
+    7   dielectric_to_gas
+```
+
+That 160 is the same 160 `msh2Dto3D.py --report` predicted from edge
+classification in step 2a. **If this table is empty, the two regions never
+couple** — the interface faces became a boundary patch instead of staying
+internal — and *nothing else errors*. You would get a plausible run in which the
+dielectric is electrically disconnected.
+
+Then the patches, and the cell counts:
+
+```
+For interface between region gas and dielectric added patches
+    6   gas_to_dielectric
+    7   dielectric_to_gas
+
+Region  Cells
+------  -----
+0       71745
+1       5976
+```
+
+71745 + 5976 = 77721, the prism count from step 2c. Two more checks:
+
+```bash
+# defaultFaces must NOT survive as a region patch -- THIS is the failure case,
+# unlike the benign warning in step 2c
+grep -c defaultFaces constant/gas/polyMesh/boundary constant/dielectric/polyMesh/boundary   # both 0
+```
+
+### Per-region numerics: one command, no copies
+
+`splitMeshRegions` writes **empty** per-region numerics and says so:
+
+```
+Writing dummy "gas/fvSchemes"
+Writing dummy "gas/fvSolution"
+```
+
+Two questions worth answering with measurements, because the answers are not
+what you would guess.
+
+**"Aren't these the same as `system/fvSchemes`? Can't the region use that one?"**
+No — **there is no fallback.** Delete `system/gas/fvSchemes` and any tool that
+builds the gas mesh dies at once:
+
+```
+--> FOAM FATAL ERROR: cannot find file ".../system/gas/fvSchemes"
+```
+
+It never looks at `system/fvSchemes`. That file has exactly two jobs: it lets
+`splitMeshRegions` run at all (that builds the *default*-region mesh), and it is
+the single place you edit.
+
+**"Can I leave them empty?"** No — and empty is *worse* than missing, because it
+fails late. `checkMesh -region gas` is perfectly happy with the dummy and reports
+`cells: 71745`. Then the first scheme lookup:
+
+```
+--> FOAM FATAL IO ERROR:
+Entry 'grad(cellToRegion)' not found in dictionary "system/gas/fvSchemes/gradSchemes"
+```
+
+The solver makes about twenty-five such lookups.
+
+**So the files must exist — but they need not contain anything of their own:**
+
+```bash
+../../../../tools/plasmaSetupRegions.sh
+```
+```
+  system/dielectric/{fvSchemes,fvSolution}  ->  #include ../{fvSchemes,fvSolution}
+  system/gas/{fvSchemes,fvSolution}         ->  #include ../{fvSchemes,fvSolution}
+plasmaSetupRegions: 2 region(s) point at the case-wide numerics.
+```
+
+Each is a ten-line stub whose only content is `#include "../fvSchemes"`. **One
+place to edit, no duplication, nothing to keep in sync, and no include-depth
+surgery** — a relative `#include` resolves against the directory of the file
+containing it, so `"../fvSchemes"` from `system/gas/` lands on
+`system/fvSchemes`, and the `"../configuration/config"` *inside that file* still
+resolves from `system/`. Verify both levels expanded:
+
+```bash
+foamDictionary system/gas/fvSchemes -entry divSchemes
+#   div(phi_e,n_e)  Gauss ROUNDF;      <- $electronDriftDivScheme, two levels up
+foamDictionary system/gas/fvSolution -entry solvers/ePotential/solver
+#   solver          GAMG;              <- $ePotentialSolver
+```
+
+The script takes its region list from `constant/regionProperties` via
+`foamListRegions`, so it cannot disagree with the rest of the case, and it is
+idempotent.
+
+> **Run it AFTER the split, every time.** `splitMeshRegions` overwrites whatever
+> is in `system/<region>/` with its empty dummy — measured: the stub's md5
+> changes — so writing the stubs first does not work.
+
+> The stub needs its own `FoamFile` header. Without one the reader fails with
+> `problem while reading header for object fvSchemes`; `foamDictionary` is
+> lenient about a headerless file, the solver is not. The script writes it.
+
+## Step 5 — Give each region its material
+
+`plasmaSetupRegions.sh` already created these in step 4 — it does materials as
+well as numerics:
+
+```
+plasmaSetupRegions: per-region material properties
+  constant/dielectric/electricalProperties  (dielectric: NEEDS A VALUE)
+  constant/gas/electricalProperties         (gas: epsilonR 1.0, complete)
+
+===========================================================================
+ ACTION REQUIRED before this case will run
+===========================================================================
+   constant/dielectric/electricalProperties
+```
+
+**The gas file is finished.** `epsilonR 1.0` is not a placeholder: at
+atmospheric density a gas is a vacuum to within a few parts in 10⁴, and the
+solver defaults to exactly that when the file is absent. It is written out only
+so a two-region case doesn't have properties for just one of its regions.
+
+**The dielectric file needs one edit from you.** Its `epsilonR` is deliberately
+**commented out**, with a table of common barrier materials to pick from:
+
+```bash
+$EDITOR constant/dielectric/electricalProperties
+# uncomment  epsilonR  and set it -- 3.0 for the PMMA-like barrier in this case
+```
+
+### Why it isn't just defaulted to something
+
+Because for a dielectric there is no safe default, and a wrong one is invisible.
+**εᵣ = 1 is not a placeholder, it is vacuum.** The case would mesh, converge,
+and hand you a plausible wrong answer with the barrier *electrically absent* —
+and in a DBD the barrier is the entire point, since surface charge on it shields
+the gap and makes the discharge self-limiting. Nothing in the log would say it
+had gone.
+
+A guessed-but-plausible value like 3.0 is no better: it is a made-up number for
+someone else's material, and a run that completes on a fabricated permittivity
+is exactly the kind of result nobody goes back and re-checks.
+
+So the solver stops instead, and the message distinguishes the two states:
+
+```
+Dielectric region `dielectric` has no relative permittivity.
+
+    "constant/dielectric/electricalProperties" EXISTS but sets no `epsilonR`.
+    If it was generated by tools/plasmaSetupRegions.sh the entry is commented
+    out and waiting for you:
+        epsilonR   4.6;      // uncomment, and use YOUR material's value
+```
+
+versus, if you deleted the file entirely, `Create "constant/…" containing:`.
+Failing to start beats starting and lying.
+
+`plasmaSetupRegions.sh` **never overwrites an existing file**, so it is safe to
+re-run at any time — your edited value survives. (Verified: an edited `epsilonR`
+was still there after a second run, reported as `exists, left alone`.)
+
+That is the whole material declaration. There is **no** global file listing the
+regions and their permittivities, and nothing to edit when you add a region:
+
+| what | where |
+|---|---|
+| which regions exist, and their kind | `constant/regionProperties` |
+| a region's permittivity | `constant/<region>/electricalProperties` |
+| the Poisson numerics | `system/plasmaSimulationControls` → `poisson { }` |
+| which Poisson model runs | **derived** — `multiRegionPoisson` iff a `dielectric` is listed |
+
+This is `chtMultiRegionFoam`'s convention on purpose. `constant/<region>/` is
+that region's physical description, one small file per physics — the same place
+that solver keeps `constant/<region>/thermophysicalProperties`. So **adding a
+region means adding a directory**, and if you later solve heat transfer in the
+barrier, its `thermophysicalProperties` goes next to `electricalProperties` and
+`solidThermo` reads it unchanged.
+
+The gas file is *optional* (`epsilonR` defaults to 1.0 — a gas is a vacuum to a
+few parts in 10⁴ at atmospheric density). The dielectric's is **required with no
+default**: it is the one number that makes the region a dielectric, so the
+solver stops with a message naming the file rather than guessing.
+
+Check they resolve — this also proves the include depth is right:
+
+```bash
+foamDictionary constant/gas/electricalProperties -entry epsilonR         # epsilonR 1;
+foamDictionary constant/dielectric/electricalProperties -entry epsilonR  # epsilonR 3;
+```
+
+> **`Allclean` must not delete these.** A stock multi-region `Allclean` does
+> `rm -rf constant/$region`, which was fine while that directory held only a
+> generated mesh. It now holds hand-authored material data, so one `Allclean`
+> would destroy it and the failure would surface on the *next* run as a missing
+> permittivity. Clean only `constant/$region/polyMesh`.
+
+### Why `epsilonR` matters twice in a DBD
+
+It sets how the applied voltage **divides** between gap and barrier, since the
+two are capacitors in series — a higher `epsilonR` puts more of the voltage
+across the gas. And together with the barrier thickness it fixes the barrier
+capacitance, and so how much surface charge is needed to shield the gap and
+extinguish the discharge. That self-limiting is the entire reason the geometry
+has a dielectric in it.
+
+---
+
+### Aside: a third kind, `farField` — not used here, but worth knowing
+
+This case has two regions. There is a **third** kind you will want eventually,
+and it is the cheapest speed-up available in this solver.
+
+```
+regions
+(
+    gas         (gas)
+    dielectric  (barrier)
+    farField    (air)        <- fictitious: Poisson only
+);
+```
+
+A `farField` region is **fictitious air**. Like a dielectric it solves *only*
+Poisson — no species, no chemistry, no electron energy, no photoionization —
+but `epsilonR` defaults to **1.0** and needs no file.
+
+**Why it pays.** Poisson is long-range, so a correct potential distribution can
+need a domain far larger than the discharge. Everything expensive is *not*
+long-range. So wrap a small gas region in a large `farField` region and the
+electrostatics get their big domain almost free.
+
+**It is exactly transparent, and that is measured.** At εᵣ = 1 the coupled
+interface reduces to plain continuity of V and ∂V/∂n. On the two-region analytic
+bed the interface potential comes out at the **single-medium** value — 0.5 of the
+applied voltage at the midpoint — to a relative error of **0.00e+00**. The
+interface behaves as if it were not there.
+
+Three things you still own, all on the **gas** side, on patch `gas_to_air`:
+
+| # | setting | why |
+|---|---|---|
+| 1 | keep `coupledElectricPotential`, `surfCharge none; surfChargeNbr none;` | **not** `zeroGradient` — Neumann forces `E·n = 0` and *insulates* the plasma region from the far field, destroying the reason for having it |
+| 2 | species get an outflow, e.g. `inletOutlet` with `phi particleFlux_<sp>` | the `dynamic_cast<plasmaWallBC*>` in `updateSurfaceCharge` then fails, so no charge accumulates — and no SEE, which lives in the wall-BC family |
+| 3 | put the interface where **ρ is negligible**, and check it stays so | a Poisson-only region has no space charge on the right-hand side |
+
+Number 2 the solver **checks**: a `plasmaWallBC` with `enableSurfaceCharging
+true` on a `farField` interface is fatal, because it would invent a dielectric
+surface in the middle of the gas and shield the field the region was added to
+resolve — while converging and looking fine.
+
+> **Photoionization is truncated at the gas boundary too**, since
+> `photoionizationModel` is constructed on one mesh. But that error decays as
+> `exp(−d/ℓ)` with `ℓ = 1/(min λ_j · p_O2)`, of order **1 mm** in atmospheric
+> air, so a few mm of clearance makes it negligible. That asymmetry is the whole
+> justification: Poisson needs the big domain, photoionization does not. What you
+> must not do is shrink the gas region onto the discharge — photoionization
+> truncation bites well before Poisson does.
+
+---
+
+*(Steps 6 onward are appended as the walkthrough proceeds.)*
