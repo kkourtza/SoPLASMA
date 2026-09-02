@@ -123,15 +123,39 @@ The boundary condition relies on mapping fields between separate regions. Theref
 * **`mappedWall`**
 * **`cyclic` / `AMI`**
 
-### B. Property Dictionary (`electricProperties`)
-Each region involved in the coupling (e.g., the plasma domain and the dielectric solid domain) must have its own `electricProperties` dictionary located in its `constant/` directory. 
+### B. Property Dictionary (`electricalProperties`)
 
-The BC looks for the `dielectricConstant` keyword to determine the relative permittivity ($\epsilon_r$) of that specific material:
+Each region involved in the coupling — the plasma domain and every dielectric —
+declares its own relative permittivity ($\epsilon_r$) in its **own** directory
+under `constant/`:
 
 ```cpp
-// Example: constant/<regionName>/electricProperties for a dielectric region
-dielectricConstant 4.0; // Relative permittivity (dimensionless)
+// constant/<regionName>/electricalProperties
+epsilonR    4.0;    // relative permittivity (dimensionless)
 ```
+
+This is the same location and the same shape OpenFOAM's own `chtMultiRegionFoam`
+uses for `constant/<region>/thermophysicalProperties`: `constant/<region>/` is
+that region's physical description, one small file per physics. Adding a region
+means adding a **directory**, and no global file is edited.
+
+For the **gas** the file is optional and $\epsilon_r$ defaults to `1.0`, which
+is a vacuum to within a few parts in $10^4$ at atmospheric density. For a
+**dielectric** it is required with no default: it is the one number that makes
+the region a dielectric, so the solver refuses to guess it.
+
+The BC itself does not read the file. `dielectricRegion` reads it once and
+registers an in-memory `dielectricProperties` dictionary on that region's mesh,
+which is how a patch field — which can reach its own registry but not the owning
+model — finds the permittivity of the region it lives on.
+
+> **Changed 2026-09-01.** *SUPERSEDED BY the above:* the file was documented as
+> `electricProperties` with a `dielectricConstant` keyword. Neither name was
+> right: no such file was ever read. The permittivities were all listed in a
+> single global `constant/electromagneticsProperties`, as `dielectricConstant`
+> plus one sub-dictionary per dielectric region, and `Allrun` then copied that
+> global file byte-identically into every region directory — so every copy held
+> every region's data, and those copies were never read either.
 
 ### C. Surface Charge Management
 
@@ -199,22 +223,56 @@ ePotential
 ```
 
 c. **Solver Compatibility:**
-    If using native OpenFOAM solvers, the `GAMG` (Geometric-Algebraic Multi-Grid) solver will not work with monolithic coupling. This is because the geometric grid agglomeration logic cannot handle the discontinuous connectivity of the coupled region matrices.
-
-d. **Segregated Mode (useImplicit False):**
-    If `useImplicit` is set to `false`, a non-monolithic (segregated) coupling is used. In this case, you must specify the convergence controls for the interface iterations in `fvSolution`:
+    With native OpenFOAM solvers, `GAMG` works with monolithic coupling **only if you also select an assembly-aware agglomerator**:
 
 ```cpp
-// system/fvSolution
-ePotentialControls
+ePotential
+{
+    solver          GAMG;
+    agglomerator    assembledFaceAreaPair;   // NOT the default
+    ...
+}
+```
+
+GAMG's *default* agglomerator (`faceAreaPair`) does `refCast<const fvMesh>` on the matrix's mesh, and the monolithic matrix is an `lduPrimitiveMeshAssembly`, not an `fvMesh`. The run aborts with
+
+```
+Attempt to cast type lduPrimitiveMeshAssembly to type fvMesh
+```
+
+which reads like an internal error but is a solver-configuration error. OpenFOAM ships `assembledFaceAreaPair` (`TypeName` in `src/finiteVolume/lduPrimitiveMeshAssembly/assemblyFaceAreaPairGAMGAgglomeration`) for exactly this case.
+
+> **Corrected 2026-09-01.** *SUPERSEDED BY this paragraph:* both this file and
+> `coupledElectricPotential.md` previously stated that GAMG "will not work with
+> monolithic coupling... because the geometric grid agglomeration logic cannot
+> handle the discontinuous connectivity". The agglomeration limitation is real,
+> but it belongs to the *default* agglomerator only, and it is a configuration
+> choice rather than a limitation of the coupling. Non-GAMG solvers
+> (`PBiCGStab`, `PCG`) and PETSc need no such entry.
+
+d. **Segregated Mode (useImplicit False):**
+    If `useImplicit` is set to `false`, a non-monolithic (segregated) coupling is used, and the interface iterations get their own convergence controls:
+
+```cpp
+// system/plasmaSimulationControls
+poisson
 {
     nonCoupledResidualControl
     {
-        tolerance       1e-12;
+        tolerance       1e-8;
         maxIter         1000;
     }
 }
 ```
+
+> **Corrected 2026-09-01.** *SUPERSEDED BY the block above:* this was documented
+> as `ePotentialControls { nonCoupledResidualControl { ... } }` in
+> `system/fvSolution`. **Nothing has ever read that.** `ePotentialControls`
+> appears in no source file and in no shipped case; the entries were read from
+> `<model>Coeffs` in `constant/electromagneticsProperties`, and now from the
+> `poisson` block in `system/plasmaSimulationControls`. A user following the old
+> text set a tolerance and an iteration cap that had no effect, and got the
+> defaults (`1e-6`, `100`) instead.
 
 ---
 

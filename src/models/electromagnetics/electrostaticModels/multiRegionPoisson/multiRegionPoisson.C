@@ -401,40 +401,26 @@ multiRegionPoisson::multiRegionPoisson
             << exit(FatalError);
     }
 
-    const word coeffsName(type() + "Coeffs");
+    // The `<type>Coeffs` sub-dictionary of constant/electromagneticsProperties
+    // is DEPRECATED and therefore optional. The numerics now come from
+    // system/plasmaSimulationControls (`poisson`), uniform over every region
+    // the potential is solved on, and each region's permittivity from its own
+    // constant/<region>/electricalProperties. This dictionary is consulted only
+    // as a fallback so an unmigrated case keeps running, and doing so prints
+    // where each setting has moved to.
+    const dictionary& coeffs(subOrEmptyDict(type() + "Coeffs"));
 
-    if (!found(coeffsName))
-    {
-        FatalIOErrorInFunction(*this)
-            << "Missing required dictionary '" << coeffsName << "' in "
-            << objectPath() << nl << exit(FatalIOError);
-    }
-
-    const dictionary& coeffs(subDict(coeffsName));
-
-    epsilonR_ = coeffs.get<scalar>("dielectricConstant");
+    epsilonR_ = readEpsilonR(mesh_, coeffs);
     epsilon_ = dimensionedScalar
             ("epsilon", epsilonR_ * constant::plasma::epsilon0);
 
-    EScheme_ = coeffs.getOrDefault<word>("EScheme", "reconstruct");
-    if (EScheme_ != "grad" && EScheme_ != "reconstruct")
-    {
-        FatalIOErrorInFunction(coeffs)
-            << "Unknown EScheme '" << EScheme_ << "'." << nl
-            << "Valid options are: (grad | reconstruct)" << nl
-            << exit(FatalIOError);
-    }
+    const poissonNumerics num(readPoissonNumerics(mesh_, coeffs));
 
-    PoissonScheme_ = coeffs.getOrDefault<word>("PoissonScheme", "explicit");
-    if (PoissonScheme_ != "explicit" && PoissonScheme_ != "semiImplicit")
-    {
-        FatalIOErrorInFunction(coeffs)
-            << "Unknown PoissonScheme '" << PoissonScheme_ << "'." << nl
-            << "Valid options are: (explicit | semiImplicit)" << nl
-            << exit(FatalIOError);
-    }
-
-    nNonOrthCorr_ = coeffs.getOrDefault<label>("nNonOrthogonalCorrectors", 0);
+    EScheme_ = num.EScheme;
+    PoissonScheme_ = num.scheme;
+    nNonOrthCorr_ = num.nNonOrthogonalCorrectors;
+    maxNonCoupledIterations_ = num.maxNonCoupledIterations;
+    nonCoupledTolerance_ = num.nonCoupledTolerance;
 
     // NOT read from this dictionary. The gas density has one owner --
     // `backgroundGas` in plasmaSpeciesProperties, where it is either stated or
@@ -454,33 +440,24 @@ multiRegionPoisson::multiRegionPoisson
             << exit(FatalIOError);
     }
 
-    const dictionary& nonCoupledResidualControl =
-        coeffs.subOrEmptyDict("nonCoupledResidualControl");
-
-    maxNonCoupledIterations_ =
-        nonCoupledResidualControl.getOrDefault<label>("maxIter", 100);
-
-    nonCoupledTolerance_ =
-        nonCoupledResidualControl.getOrDefault<scalar>("tolerance", 1e-6);
-
-    // Build dielectric regions
+    // Build dielectric regions.
+    //
+    // Each one now reads its own permittivity from
+    // constant/<region>/electricalProperties, so ADDING A REGION MEANS ADDING A
+    // DIRECTORY -- nothing global is edited. Previously every region needed a
+    // hand-written sub-dictionary in this file, which was a per-region property
+    // stored in a global file and was fatal if forgotten.
     forAll(dielectricMeshes_, i)
     {
-        const word& regionName = dielectricMeshes_[i].name();
-        if (!coeffs.found(regionName))
-        {
-            FatalIOErrorInFunction(coeffs)
-                << "Region '" << regionName << "' not found in "
-                << coeffsName << " dictionary." << nl
-                << "Every dielectric mesh must have a corresponding "
-                << "sub-dictionary." << exit(FatalIOError);
-        }
-        const dictionary& regionDict = coeffs.subDict(regionName);
-
         dielectrics_.set
         (
             i,
-            new dielectricRegion(dielectricMeshes_[i], regionDict)
+            new dielectricRegion
+            (
+                dielectricMeshes_[i],
+                readEpsilonR(dielectricMeshes_[i], coeffs),
+                EScheme_
+            )
         );
     }
 

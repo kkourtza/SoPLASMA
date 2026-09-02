@@ -272,22 +272,74 @@ ePotential
 ```
 
 C. **Solver Compatibility:**
-    If using native OpenFOAM solvers, the `GAMG` (Geometric-Algebraic Multi-Grid) solver will not work with monolithic coupling. This is because the geometric grid agglomeration logic cannot handle the discontinuous connectivity of the coupled region matrices.
-
-D. **Segregated Mode (useImplicit False):**
-    If `useImplicit` is set to `false`, a non-monolithic (segregated) coupling is used. In this case, you must specify the convergence controls for the interface iterations in `fvSolution`:
+    With native OpenFOAM solvers, `GAMG` works with monolithic coupling **only if you also select an assembly-aware agglomerator**:
 
 ```cpp
-// system/fvSolution
-ePotentialControls
+ePotential
+{
+    solver          GAMG;
+    agglomerator    assembledFaceAreaPair;   // NOT the default
+    ...
+}
+```
+
+GAMG's *default* agglomerator (`faceAreaPair`) does `refCast<const fvMesh>` on the matrix's mesh, and the monolithic matrix is an `lduPrimitiveMeshAssembly`, not an `fvMesh`. The run aborts with
+
+```
+Attempt to cast type lduPrimitiveMeshAssembly to type fvMesh
+```
+
+which reads like an internal error but is a solver-configuration error. OpenFOAM ships `assembledFaceAreaPair` (`TypeName` in `src/finiteVolume/lduPrimitiveMeshAssembly/assemblyFaceAreaPairGAMGAgglomeration`) for exactly this case.
+
+> **Corrected 2026-09-01.** *SUPERSEDED BY this paragraph:* both this file and
+> `coupledElectricPotential.md` previously stated that GAMG "will not work with
+> monolithic coupling... because the geometric grid agglomeration logic cannot
+> handle the discontinuous connectivity". The agglomeration limitation is real,
+> but it belongs to the *default* agglomerator only, and it is a configuration
+> choice rather than a limitation of the coupling. Non-GAMG solvers
+> (`PBiCGStab`, `PCG`) and PETSc need no such entry.
+
+**Measured 2026-09-01**, `plate2D_timeVaryingBC_implicitBoundary`, 20000 cells,
+per timestep, all four reaching the same analytic interface potential where they
+converge at all:
+
+| solver | iterations/step | `V_interface` (analytic 1/6) |
+|---|---|---|
+| `smoothSolver`/`GaussSeidel`, `maxIter 2000` | 2000 (cap), final residual 3e-4 | 0.154443 — **7.3% wrong** |
+| `PCG`/`DIC` | 114 | 0.166667 ✓ |
+| `GAMG`, default agglomerator | **abort** | — |
+| `GAMG` + `assembledFaceAreaPair` | **11** | 0.166667 ✓ |
+
+The first row is what that tutorial shipped with, and it is the more instructive
+failure: reaching `maxIter` is **not** an error, so the log reported ten
+consecutive unconverged solves as normal ones. Gauss-Seidel needs O(N) sweeps to
+carry information across a Laplace problem, so raising `maxIter` buys wall time
+for the same answer rather than fixing it.
+
+
+D. **Segregated Mode (useImplicit False):**
+    If `useImplicit` is set to `false`, a non-monolithic (segregated) coupling is used, and the interface iterations get their own convergence controls:
+
+```cpp
+// system/plasmaSimulationControls
+poisson
 {
     nonCoupledResidualControl
     {
-        tolerance       1e-12;
+        tolerance       1e-8;
         maxIter         1000;
     }
 }
 ```
+
+> **Corrected 2026-09-01.** *SUPERSEDED BY the block above:* this was documented
+> as `ePotentialControls { nonCoupledResidualControl { ... } }` in
+> `system/fvSolution`. **Nothing has ever read that.** `ePotentialControls`
+> appears in no source file and in no shipped case; the entries were read from
+> `<model>Coeffs` in `constant/electromagneticsProperties`, and now from the
+> `poisson` block in `system/plasmaSimulationControls`. A user following the old
+> text set a tolerance and an iteration cap that had no effect, and got the
+> defaults (`1e-6`, `100`) instead.
 
 ---
 
@@ -295,12 +347,34 @@ ePotentialControls
 
 ### A. Solver Mode Configuration
 
-In `system/plasmaSimulationControls` you can select between the explicit or the semiImplicit solver:
+The global Poisson numerics live in the `poisson` block of
+`system/plasmaSimulationControls`. They are uniform over the gas and every
+dielectric, because one model owns the whole coupled solve:
 
 ``` cpp
 // system/plasmaSimulationControls
-poissonSolver       semiImplicit; // Options: explicit, semiImplicit
+poisson
+{
+    scheme                      semiImplicit;   // explicit | semiImplicit
+    EScheme                     reconstruct;    // grad | reconstruct
+    nNonOrthogonalCorrectors    0;
+}
 ```
+
+`scheme` is a **discretisation scheme**, not a linear solver: the linear solver
+for `ePotential` is the `ePotential` block in `fvSolution`. Its default is
+`semiImplicit`.
+
+> **Changed 2026-09-01.** *SUPERSEDED BY the block above:* these settings were
+> previously `PoissonScheme`, `EScheme` and `nNonOrthogonalCorrectors` inside
+> `<model>Coeffs` in `constant/electromagneticsProperties`, and the case variable
+> feeding `PoissonScheme` was called `poissonSolver` — two names for one
+> setting, each suggesting the other's meaning. `constant/` is for *physical
+> properties*, so a discretisation scheme did not belong there; permittivity,
+> which is physical, moved the other way, into
+> `constant/<region>/electricalProperties`. `constant/electromagneticsProperties`
+> no longer exists. An unmigrated case still runs: the old dictionary is read as
+> a fallback and prints where each setting has moved to.
 
 ### B. Numerical Schemes (`fvSchemes`)
 
@@ -358,15 +432,8 @@ solvers
     }
 }
 
-ePotentialControls
-{
-    // Relevant only for explicit coupling
-    nonCoupledResidualControl
-    {
-        tolerance       1e-8;
-        maxIter         1000;
-    }
-}
+// nonCoupledResidualControl does NOT live here -- see section 2D. It is read
+// from the `poisson` block in system/plasmaSimulationControls.
 
 PIMPLE
 {

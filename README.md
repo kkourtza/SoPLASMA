@@ -338,6 +338,98 @@ The per-species `energyModel` key is superseded.
   error that explains both closures and what each costs.
 
 
+## Regions and materials — one place each
+
+A case declares its regions **once**, in `constant/regionProperties`, using
+OpenFOAM's own `regionProperties` class and format:
+
+```
+regions
+(
+    gas         (gas)
+    dielectric  (barrier1 barrier2)
+    farField    (air)                 // fictitious: Poisson only, epsilonR 1
+);
+```
+
+Three kinds, and the kind is a fixed keyword while the names in parentheses are
+free:
+
+| kind | solves | `epsilonR` |
+|---|---|---|
+| `gas` | species, chemistry, electron energy, Poisson | defaults to 1.0 |
+| `dielectric` | Poisson only | **required**, no default |
+| `farField` | Poisson only | defaults to 1.0 (that *is* the kind) |
+
+`farField` is a **fictitious air region** whose only job is to extend the
+*electrostatic* domain without extending the plasma one. Poisson is long-range;
+species transport, chemistry and photoionization are not. Verified exactly
+transparent: at εᵣ = 1 the coupled interface reduces to continuity of V and
+∂V/∂n, and the two-region analytic bed returns the single-medium answer to a
+relative error of 0.00e+00. The solver refuses to run if a species boundary
+condition would deposit surface charge on such an interface.
+
+Everything else follows from it:
+
+| what | where | notes |
+|---|---|---|
+| which regions exist, and their kind | `constant/regionProperties` | the single declaration |
+| a region's permittivity | `constant/<region>/electricalProperties` → `epsilonR` | one small file per region |
+| the Poisson numerics | `system/plasmaSimulationControls` → `poisson { }` | global, one block |
+| which Poisson model runs | **derived** | `multiRegionPoisson` if any `dielectric` is listed, else `singleRegionPoisson` |
+
+This is `chtMultiRegionFoam`'s convention, deliberately: `constant/<region>/` is
+that region's physical description, one small file per physics, exactly where
+that solver keeps `constant/<region>/thermophysicalProperties`. **Adding a
+region means adding a directory**, and adding a physics later (a solid heat solve
+in a barrier, say) means adding a file next to `electricalProperties` — neither
+edits anything global.
+
+The split follows OpenFOAM's: `constant/` holds *physical properties*, `system/`
+holds *how they are solved*. Permittivity is physical and is per region; a
+discretisation scheme is neither, since one model owns the whole coupled solve
+and forming `E` by a different scheme on either side of an interface would make
+the coupled flux inconsistent.
+
+**Any number of dielectrics; exactly one gas.** That is not a limit on the
+geometry — a stack `electrode|dielectric|gas|dielectric|gas|dielectric|electrode`
+is *one* gas region whose cellZone is geometrically disconnected (an OpenFOAM
+mesh region may consist of disjoint parts) plus three dielectrics, and every gap
+then shares one species set, one chemistry and one EEDF. What is genuinely
+unsupported is two gas regions holding *different mixtures*: the species list,
+mechanism and EEDF are global.
+
+### Migration note (2026-09-01)
+
+`constant/electromagneticsProperties` **no longer exists**. It held four
+different kinds of thing in one file, three of which were in the wrong place:
+
+- `electromagneticsModel` — **derived** from `regionProperties`. It was never a
+  choice: both models solve the same equation and only the topology decides
+  which applies. Stating one that contradicts the topology is now fatal; stating
+  one that agrees prints a notice and continues.
+- `dielectricConstant` and a sub-dictionary per region — **moved** to
+  `constant/<region>/electricalProperties` as `epsilonR`. Per-region data in a
+  global file meant every region's `Allrun` copy of that file held every other
+  region's data; those copies were never read.
+- `PoissonScheme`, `EScheme`, `nNonOrthogonalCorrectors`,
+  `nonCoupledResidualControl` — **moved** to the `poisson` block in
+  `system/plasmaSimulationControls`. `PoissonScheme` is now `scheme`, and its
+  default changes from `explicit` to **`semiImplicit`**. The case variable
+  feeding it was called `poissonSolver` while the entry was called
+  `PoissonScheme`: two names for one setting, each suggesting the other's
+  meaning. It selects a *scheme*; the linear solver is in `fvSolution`.
+- `backgroundDensity` — already removed, as a second definition of the gas
+  density that disagreed with `backgroundGas`.
+
+**Unmigrated cases still run.** The old file is read as a fallback and prints,
+per setting, where it has moved to. Two documentation defects were corrected in
+the same change: `nonCoupledResidualControl` was documented in a
+`system/fvSolution` block named `ePotentialControls` that **no reader has ever
+existed for**, and `GAMG` was documented as incompatible with monolithic
+coupling when it needs only `agglomerator assembledFaceAreaPair`.
+
+
 ## Contributors
 
 **Rention Pasolari** <r.pasolari@gmail.com>  

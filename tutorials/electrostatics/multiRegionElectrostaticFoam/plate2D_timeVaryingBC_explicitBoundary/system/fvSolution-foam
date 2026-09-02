@@ -16,13 +16,27 @@ FoamFile
 solvers
 {
     ePotential
-    {  
-        solver      smoothSolver;
-        smoother    GaussSeidel;
+    {
+        // PCG/DIC, not smoothSolver/GaussSeidel.
+        //
+        // This case is SEGREGATED (`useImplicit false`), so each region is
+        // solved on its own fvMesh and no assembly-aware agglomerator is
+        // needed. But the convergence problem is the same one measured on the
+        // implicit variant of this tutorial on 2026-09-01: GaussSeidel needs
+        // O(N) sweeps to carry information across a Laplace problem, so at
+        // 20000 cells every step hit `maxIter 2000` and returned a residual of
+        // 3e-4 against the requested 1e-9 -- reported as a normal solve,
+        // because reaching maxIter is not an error. There it put the interface
+        // potential 7.3% off its analytic value.
+        //
+        // The matrix is symmetric (a pure Laplacian with a permittivity jump),
+        // so PCG applies and DIC is its natural preconditioner.
+        solver          PCG;
+        preconditioner  DIC;
 
-        tolerance   1e-9;
-        relTol      0;
-        maxIter     2000;
+        tolerance       1e-9;
+        relTol          0;
+        maxIter         2000;
     }
 }
 

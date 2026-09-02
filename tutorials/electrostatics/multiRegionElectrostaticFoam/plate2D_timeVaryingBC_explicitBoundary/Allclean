@@ -6,16 +6,26 @@ cd ${0%/*} || exit 1    # Run from this directory
 
 cleanCase -noZero
 
-rm -r 0
+rm -rf 0
 
-rm -r logs
+rm -rf logs
   
-rm configuration/geometry/mesh.msh
+rm -f configuration/geometry/mesh.msh
 
+# NOT `rm -rf constant/$region`.
+#
+# That directory is no longer purely generated: constant/<region>/ now holds the
+# region's HAND-AUTHORED electricalProperties (its permittivity), following
+# OpenFOAM's per-region convention. Deleting the directory wholesale would make
+# a single Allclean destroy the case's material data, with the failure only
+# appearing on the next run as a missing permittivity.
+#
+# Only the generated mesh goes.
 for region in $(foamListRegions)
 do
     rm -rf system/$region
-    rm -rf constant/$region
+    rm -rf constant/$region/polyMesh
 done
+rm -f constant/cellToRegion
 
 

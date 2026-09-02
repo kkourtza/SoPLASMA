@@ -116,6 +116,112 @@ protected:
 
 public:
 
+    //- The GLOBAL Poisson numerics.
+    //
+    //  These are uniform over every region the potential is solved on -- the
+    //  gas and every dielectric -- because the model holds exactly one of each
+    //  and reads them once. They are therefore not per-region settings and do
+    //  not belong in a per-region file.
+    //
+    //  They live in `system/plasmaSimulationControls` under `poisson`, beside
+    //  `plasmaTimeControl` and `outerCoupling`, because they are SOLUTION
+    //  CONTROL. That is OpenFOAM's own split: `constant/` holds physical
+    //  properties, `system/` holds how they are solved. Permittivity is
+    //  physical and lives per region under `constant/<region>/`; a
+    //  discretisation scheme is not.
+    struct poissonNumerics
+    {
+        //- `explicit` treats the charge as a pure source; `semiImplicit` also
+        //  brings the conductivity in implicitly, which stabilises the
+        //  space-charge / Poisson coupling. Note this is a SCHEME, not a
+        //  linear solver -- the linear solver for ePotential is in fvSolution,
+        //  and the old case-variable name `poissonSolver` invited exactly that
+        //  confusion.
+        word scheme = "semiImplicit";
+
+        //- How E is formed from the potential: `grad` | `reconstruct`
+        word EScheme = "reconstruct";
+
+        //- Non-orthogonal correctors for the Poisson solve
+        label nNonOrthogonalCorrectors = 0;
+
+        //- Segregated-coupling Picard loop, used only when the interface is
+        //  explicit. Irrelevant under monolithic coupling.
+        label maxNonCoupledIterations = 100;
+        scalar nonCoupledTolerance = 1e-6;
+    };
+
+    //- Read the global Poisson numerics.
+    //
+    //  `legacyCoeffs` is the old `<type>Coeffs` sub-dictionary of
+    //  constant/electromagneticsProperties. It is consulted ONLY as a fallback,
+    //  so an unmigrated case keeps running, and using it prints where the
+    //  setting has moved to.
+    static poissonNumerics readPoissonNumerics
+    (
+        const fvMesh& mesh,
+        const dictionary& legacyCoeffs
+    );
+
+    //- One region's relative permittivity, from
+    //  `constant/<region>/electricalProperties`.
+    //
+    //  Per-region, per OpenFOAM's own convention -- the same place and shape as
+    //  `constant/<region>/thermophysicalProperties` in chtMultiRegionFoam. This
+    //  replaces a GLOBAL file that carried a sub-dictionary per region and was
+    //  then copied byte-identically into every region directory, so every copy
+    //  held every region's data.
+    //
+    //  `legacyCoeffs` is consulted only as a fallback: for the gas its own
+    //  `dielectricConstant`, for a dielectric the sub-dictionary named after
+    //  the region.
+    //
+    //  The KIND is looked up here rather than passed in, because the caller
+    //  iterating the dielectric mesh list has no way to know which of those
+    //  meshes are `farField`. Defaulting differs by kind:
+    //      gas        -> 1.0 (a gas is a vacuum to a few parts in 10^4)
+    //      farField   -> 1.0 (that IS the definition of the kind)
+    //      dielectric -> FATAL, since a default of 1 would be vacuum and would
+    //                    make a real barrier electrically invisible
+    static scalar readEpsilonR
+    (
+        const fvMesh& regionMesh,
+        const dictionary& legacyCoeffs
+    );
+
+    //- The KIND declared for this mesh region in constant/regionProperties.
+    //
+    //  Returns `gas` when there is no regionProperties at all, which is the
+    //  right answer for a single-region case.
+    //
+    //  Reads the `regions` entry into a HashTable<wordList> directly rather
+    //  than using Foam::regionProperties, so this header needs no meshTools
+    //  dependency.
+    static word regionKind(const fvMesh& regionMesh);
+
+    //- The region kinds this solver family implements.
+    //
+    //      gas         the plasma: species, chemistry, electron energy, Poisson
+    //      dielectric  a solid barrier: Poisson only, permittivity REQUIRED
+    //      farField    a FICTITIOUS air/vacuum region: Poisson only,
+    //                  epsilonR defaults to 1.0. Its purpose is to extend the
+    //                  ELECTROSTATIC domain without extending the plasma one --
+    //                  Poisson is long-range, so it needs a large domain, while
+    //                  species transport and photoionization do not.
+    static const wordList& knownRegionKinds();
+
+    //- Reject any region KIND that no solver here implements.
+    //
+    //  `kinds` is the top-level key list of constant/regionProperties, i.e.
+    //  `rp.sortedToc()`. Takes a wordList rather than the regionProperties
+    //  object so this header needs no meshTools dependency.
+    //
+    //  Lives here because THIS class is what degrades silently: it derives
+    //  singleRegionPoisson vs multiRegionPoisson from whether any dielectric
+    //  region exists, so a kind that matches nothing produces a case with no
+    //  dielectrics rather than an error. Both solvers call it.
+    static void validateRegionKinds(const wordList& kinds);
+
     //- Runtime type information
     TypeName("electromagneticsModel");
 

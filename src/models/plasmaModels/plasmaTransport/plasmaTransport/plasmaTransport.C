@@ -25,6 +25,7 @@
 #include "fvm.H"
 #include "fvc.H"
 #include "vibRelax.H"
+#include "electromagneticsModel.H"
 #include "janafMixture.H"
 #include "plasmaEnergy.H"
 #include "localEnergyEnergyModel.H"
@@ -1547,6 +1548,105 @@ void plasmaTransport::updateSurfaceCharge()
     const scalar dt = mesh_.time().deltaTValue();
 
     volScalarField& sigma = species_.em().surfCharge();
+
+    // A FICTITIOUS FAR FIELD MUST NOT ACCUMULATE SURFACE CHARGE.
+    //
+    // A `farField` region is air, not a barrier: it exists only to give Poisson
+    // a large domain. Depositing charge on its interface would invent a
+    // dielectric surface in the middle of the gas and shield the very field the
+    // region was added to resolve -- and it would look like a converged run.
+    //
+    // Charge only ever accumulates where a species patch field is a
+    // plasmaWallBC with `enableSurfaceCharging true` (the dynamic_cast below).
+    // So this cannot happen by accident -- but it CAN happen by copying a
+    // barrier's boundary conditions onto a far-field interface, which is the
+    // obvious mistake. Checked ONCE, here, where the patch names and the
+    // species boundary conditions are both in hand.
+    if (!farFieldChargingChecked_)
+    {
+        farFieldChargingChecked_ = true;
+
+        // Interface patch names are DERIVED by splitMeshRegions as
+        // `<thisRegion>_to_<other>`, so the far-field interfaces on the gas
+        // mesh are exactly `<gas>_to_<farFieldRegion>`.
+        IOdictionary rpDict
+        (
+            IOobject
+            (
+                "regionProperties",
+                mesh_.time().constant(),
+                mesh_.time(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE,
+                IOobject::NO_REGISTER
+            )
+        );
+
+        if (rpDict.found("regions"))
+        {
+            HashTable<wordList> regions;
+            rpDict.readEntry("regions", regions);
+
+            const wordList farFields
+            (
+                regions.found("farField") ? regions["farField"] : wordList()
+            );
+
+            for (const word& ff : farFields)
+            {
+                const word patchName(mesh_.name() + "_to_" + ff);
+                const label patchi = mesh_.boundaryMesh().findPatchID(patchName);
+
+                if (patchi < 0) continue;
+
+                for (const label i : species_.mobileSpeciesIDs())
+                {
+                    const fvPatchField<scalar>& pField =
+                        species_.numberDensity(i).boundaryField()[patchi];
+
+                    const plasmaWallBC* pBC =
+                        dynamic_cast<const plasmaWallBC*>(&pField);
+
+                    if (pBC && pBC->enableSurfaceCharging())
+                    {
+                        FatalErrorInFunction
+                            << "Species `"
+                            << species_.numberDensity(i).name()
+                            << "` has `enableSurfaceCharging true` on patch `"
+                            << patchName << "`," << nl
+                            << "    which is the interface to the FICTITIOUS"
+                            << " far-field region `" << ff << "`." << nl
+                            << nl
+                            << "    A farField region is AIR, not a barrier. It"
+                            << " exists only to give Poisson a large" << nl
+                            << "    domain. Charge deposited on its interface"
+                            << " invents a dielectric surface in the" << nl
+                            << "    middle of the gas and shields the very"
+                            << " field the region was added to resolve --" << nl
+                            << "    and the run would converge and look fine."
+                            << nl << nl
+                            << "    In etc/changeDictionary." << mesh_.name()
+                            << ", give the species an OUTFLOW condition on that"
+                            << nl
+                            << "    patch instead, e.g." << nl
+                            << "        " << patchName << nl
+                            << "        {" << nl
+                            << "            type        inletOutlet;" << nl
+                            << "            phi         particleFlux_"
+                            << species_.numberDensity(i).name().substr(2)
+                            << ";" << nl
+                            << "            inletValue  uniform <background>;"
+                            << nl
+                            << "            value       $internalField;" << nl
+                            << "        }" << nl
+                            << "    which also removes secondary emission there,"
+                            << " since SEE lives in the wall-BC family." << nl
+                            << exit(FatalError);
+                    }
+                }
+            }
+        }
+    }
 
     forAll(mesh_.boundary(), patchi)
     {

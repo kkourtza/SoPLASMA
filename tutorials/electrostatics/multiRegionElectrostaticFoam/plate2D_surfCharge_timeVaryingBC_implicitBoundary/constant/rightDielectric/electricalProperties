@@ -1,0 +1,20 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA                                                                    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant/rightDielectric";
+    object      electricalProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../../configuration/config"
+
+// The relative permittivity of the barrier material. Unlike the gas, this has
+// NO DEFAULT: it is the one number that makes a region a dielectric, so the
+// solver refuses to guess it.
+epsilonR    $epsilonRrightDielectric;
+
+// ************************************************************************* //

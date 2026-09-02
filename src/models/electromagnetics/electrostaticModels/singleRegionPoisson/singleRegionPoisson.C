@@ -105,40 +105,23 @@ singleRegionPoisson::singleRegionPoisson
             << exit(FatalError);
     }
 
-    const word coeffsName(type() + "Coeffs");
+    // The `<type>Coeffs` sub-dictionary of constant/electromagneticsProperties
+    // is DEPRECATED and therefore optional. The numerics now come from
+    // system/plasmaSimulationControls (`poisson`) and the permittivity from
+    // constant/<region>/electricalProperties; this dictionary is consulted only
+    // as a fallback so an unmigrated case keeps running, and doing so prints
+    // where each setting has moved to.
+    const dictionary& coeffs(subOrEmptyDict(type() + "Coeffs"));
 
-    if (!found(coeffsName))
-    {
-        FatalIOErrorInFunction(*this)
-            << "Missing required dictionary '" << coeffsName << "' in "
-            << objectPath() << nl << exit(FatalIOError);
-    }
-
-    const dictionary& coeffs(subDict(coeffsName));
-
-    epsilonR_ = coeffs.getOrDefault<scalar>("dielectricConstant", 1.0);
+    epsilonR_ = readEpsilonR(mesh_, coeffs);
     epsilon_ = dimensionedScalar
                             ("epsilon", epsilonR_ * constant::plasma::epsilon0);
 
-    EScheme_ = coeffs.getOrDefault<word>("EScheme", "reconstruct");
-    if (EScheme_ != "grad" && EScheme_ != "reconstruct")
-    {
-        FatalIOErrorInFunction(coeffs)
-            << "Unknown EScheme '" << EScheme_ << "'." << nl
-            << "Valid options are: (grad | reconstruct)" << nl
-            << exit(FatalIOError);
-    }
+    const poissonNumerics num(readPoissonNumerics(mesh_, coeffs));
 
-    PoissonScheme_ = coeffs.getOrDefault<word>("PoissonScheme", "explicit");
-    if (PoissonScheme_ != "explicit" && PoissonScheme_ != "semiImplicit")
-    {
-        FatalIOErrorInFunction(coeffs)
-            << "Unknown PoissonScheme '" << PoissonScheme_ << "'." << nl
-            << "Valid options are: (explicit | semiImplicit)" << nl
-            << exit(FatalIOError);
-    }
-
-    nNonOrthCorr_ = coeffs.getOrDefault<label>("nNonOrthogonalCorrectors", 0);
+    EScheme_ = num.EScheme;
+    PoissonScheme_ = num.scheme;
+    nNonOrthCorr_ = num.nNonOrthogonalCorrectors;
 
     // NOT read from this dictionary. The gas density has one owner --
     // `backgroundGas` in plasmaSpeciesProperties, where it is either stated or

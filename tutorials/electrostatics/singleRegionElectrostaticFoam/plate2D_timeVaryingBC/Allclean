@@ -6,10 +6,10 @@ cd ${0%/*} || exit 1    # Run from this directory
 
 cleanCase -noZero
 
-rm -r 0
+rm -rf 0
 rm -r constant/polyMesh
 rm system/fvSolution
-rm -r logs
+rm -rf logs
 
 rm -r processor*
 

@@ -718,6 +718,11 @@ protected:
     //- Charge-imbalance warning emitted once
     mutable bool chargeWarned_ = false;
 
+    //- The far-field surface-charging check runs once, on the first
+    //  updateSurfaceCharge(). In-class initialiser, like chargeWarned_ above,
+    //  so it needs no constructor entry.
+    bool farFieldChargingChecked_ = false;
+
     //- Largest relative charge imbalance reported so far, so the diagnostic
     //  tracks the whole run rather than whichever step happened to be first
     mutable scalar chargeRelMax_ = 0;

@@ -31,8 +31,9 @@ Description
     need of multiple synchronized pointer lists.
 
     Holds per-region storage for ePotential, E, phiE, and permittivity. Each
-    region uses a single uniform permittivity (no spatial variation), set from
-    'dielectricConstant' in the region's sub-dictionary.
+    region uses a single uniform permittivity (no spatial variation), passed in
+    by the owning model, which reads it from
+    constant/<region>/electricalProperties.
 
 \*---------------------------------------------------------------------------*/
 
@@ -60,9 +61,6 @@ protected:
     //- Reference to the mesh for this specific dielectric region
     const fvMesh& regionMesh_;
 
-    //- The dictionary containing the information for the specific region
-    dictionary regionDict_;
-
     //- Electric potential field [V]
     volScalarField ePotential_;
 
@@ -88,11 +86,21 @@ public:
 
     // Constructors
 
-        //- Construct from mesh and dictionary
-        dielectricRegion(const fvMesh& regionMesh, const dictionary& regionDict)
+        //- Construct from mesh, relative permittivity and E scheme.
+        //
+        //  Both are passed in rather than read here: epsilonR because its file
+        //  location is the owning model's business (and has a legacy fallback),
+        //  EScheme because it is a GLOBAL numerical setting -- forming E by a
+        //  different scheme on either side of an interface would make the
+        //  coupled flux inconsistent, so it cannot be per-region.
+        dielectricRegion
+        (
+            const fvMesh& regionMesh,
+            const scalar epsilonR,
+            const word& EScheme
+        )
         :
             regionMesh_(regionMesh),
-            regionDict_(regionDict),
             ePotential_
             (
                 IOobject
@@ -159,28 +167,18 @@ public:
                 dimensionSet(-1, -3, 4, 0, 0, 2, 0),
                 0.0
             ),
-            epsilonR_
-            (
-                regionDict_.getOrDefault<scalar>("dielectricConstant", 1.0)
-            ),
-            EScheme_
-            (
-                regionDict_.getOrDefault<word>("EScheme", "reconstruct")
-            )
+            epsilonR_(epsilonR),
+            EScheme_(EScheme)
         {
             epsilon_ = dimensionedScalar("epsilon", epsilonR_ * constant::plasma::epsilon0);
 
-            if (EScheme_ != "grad" && EScheme_ != "reconstruct")
-            {
-                FatalIOErrorInFunction(regionDict_)
-                    << "Unknown EScheme '" << EScheme_ << "' in region '"
-                    << regionMesh_.name() << "'." << nl
-                    << "Valid options are: (grad | reconstruct)" << nl
-                    << exit(FatalIOError);
-            }
+            // EScheme is validated once, globally, by
+            // electromagneticsModel::readPoissonNumerics().
 
-            // Register a lightweight electricProperties dictionary in this
-            // region's mesh registry
+            // Register a lightweight in-memory dictionary in this region's mesh
+            // registry. This is NOT a file: it is how the coupled-potential BC
+            // finds the permittivity of the region it lives on, since a patch
+            // field can reach its own registry but not the owning model.
             IOdictionary* epsilonDict = new IOdictionary
             (
                 IOobject
@@ -193,7 +191,7 @@ public:
                     IOobject::REGISTER
                 )
             );
-            epsilonDict->add("dielectricConstant", epsilonR_);
+            epsilonDict->add("epsilonR", epsilonR_);
             regionMesh_.thisDb().store(epsilonDict);
         }
 
@@ -234,7 +232,6 @@ public:
     // Access
 
         inline const fvMesh& mesh() const { return regionMesh_; }
-        inline const dictionary& dict() const { return regionDict_; }
         inline const volScalarField& ePotential() const { return ePotential_; }
         inline volScalarField& ePotential() { return ePotential_; }
         inline const volVectorField& E() const { return E_; }

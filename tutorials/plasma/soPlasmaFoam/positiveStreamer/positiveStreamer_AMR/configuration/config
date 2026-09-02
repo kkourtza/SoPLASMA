@@ -4,6 +4,15 @@
 
 //- Physical Constants & Plasma Parameters
 appliedVoltage                      18.75e3;    // [V]
+// NO voltageRampTime here, deliberately: this bed applies a STEP, not a ramp --
+// its electrode is `fixedValue value uniform $appliedVoltage`, so there is no
+// rise time to set and a variable for one would be read by nothing.
+//
+// NOTE this differs from the other streamer beds, which ramp over 93.75 ps
+// because (their comment) "a step change puts a very large field transient on
+// the electrode in the first timesteps". Whether this bed SHOULD ramp is a
+// physics question that has not been decided; it is flagged, not silently
+// changed. The waveform menu is in docs/models/energy/applied-voltage.md.
 
 //- Global Numerical Schemes (Macros for fvSchemes)
 driftDiffusionFluxScheme            standard;
@@ -43,7 +52,7 @@ npIonTolerance                      1e-10;
 npIonRelTolerance                   0.0;
 
 //- Solution Control
-poissonSolver                       explicit;
+poissonScheme                       explicit;
 adjustTimeStep                      false;
 limitDielectricRelaxationRatio      false;
 printDielectricRelaxationRatio      true;
@@ -54,7 +63,6 @@ maxSpeciesCo                        1;
 limitChemistryCo                    false;
 printChemistryCo                    true;
 maxChemistryCo                      0.9;
-printVoltageRiseRate                true;
 // VOLTS PER STEP, not V/s: the limiter solves for the deltaT that makes
 // the applied voltage change by this much in one step. 100 V resolves a
 // nanosecond rise on a kV-scale pulse while staying coarse enough to be a

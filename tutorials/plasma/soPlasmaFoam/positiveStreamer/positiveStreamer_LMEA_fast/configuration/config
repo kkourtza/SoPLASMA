@@ -4,6 +4,14 @@
 
 //- Physical Constants & Plasma Parameters
 appliedVoltage                      18.75e3;    // [V]
+// Rise time of the applied-voltage ramp [s]. The electrode waveform is an
+// OpenFOAM Function1, so this bed's `table` is only one of the options -- see
+// docs/models/energy/applied-voltage.md for constant / linearRamp / sine /
+// polynomial / csv / coded.
+//
+// Ramped rather than stepped ON PURPOSE: a step puts a very large field
+// transient on the electrode in the first timesteps.
+voltageRampTime                     9.375e-11;  // [s]
 
 //- Global Numerical Schemes (Macros for fvSchemes)
 driftDiffusionFluxScheme            standard;
@@ -44,7 +52,7 @@ npIonTolerance                      1e-10;
 npIonRelTolerance                   0.0;
 
 //- Solution Control
-poissonSolver                       semiImplicit;
+poissonScheme                       semiImplicit;
 adjustTimeStep                      true;
 limitDielectricRelaxationRatio      false;
 printDielectricRelaxationRatio      true;
@@ -55,7 +63,6 @@ maxSpeciesCo                        1.5;
 limitChemistryCo                    true;
 printChemistryCo                    true;
 maxChemistryCo                      0.9;
-printVoltageRiseRate                true;
 
 //- Runtime & Parallelization
 endTime                             5e-10;

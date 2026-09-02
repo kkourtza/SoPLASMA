@@ -313,7 +313,7 @@ scalar coupledElectricPotentialFvPatchScalarField::epsilon() const
     if (db().foundObject<IOdictionary>("dielectricProperties"))
     {
         epsilonR = db().lookupObject<IOdictionary>("dielectricProperties")
-            .getOrDefault<scalar>("dielectricConstant", 1.0);
+            .getOrDefault<scalar>("epsilonR", 1.0);
     }
     else if (db().time().foundObject<electromagneticsModel>
     (
