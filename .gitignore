@@ -21,8 +21,41 @@ variables
 .vscode
 
 
-# local validation/scratch run directories (not part of the source tree)
-smoke/
+# SMOKE BEDS: track the case DEFINITIONS, ignore the run output.
+#
+# These were ignored wholesale as "local validation/scratch run directories",
+# and that is exactly why they rotted. Being invisible to `git status` meant no
+# key-rename sweep ever reached them, and by 2026-09-02 all five carried FOUR
+# settings the solver had come to reject and none of them could start:
+# limitVoltageRiseRate + maxVoltageRiseRate, a dangling appliedVoltage, a
+# missing electronEnergyModel, and an unsplit chemistrySolver. They are the
+# smoke tests -- the thing that is supposed to catch a broken build -- and they
+# were themselves broken and unnoticed.
+#
+# The run output is genuinely scratch, and 614 MB of it, so only that is
+# ignored.
+#
+# NOTE the time-directory patterns deliberately do NOT use `[0-9]*`, which
+# matches `0.orig` and would ignore the initial-field TEMPLATES. That glob has
+# already destroyed 0.orig twice here; the failure surfaces much later as
+# "cannot find file .../0/ePotential", which names the wrong thing entirely.
+smoke/*/0/
+smoke/*/[0-9]*.[0-9]*/
+smoke/*/[0-9]*e-[0-9]*/
+smoke/*/logs/
+smoke/*/postProcessing/
+smoke/*/log.*
+smoke/*/run.log
+smoke/*/case.foam
+smoke/*/constant/polyMesh/
+smoke/*/constant/plasmaTables/
+# NOT `smoke/*/constant/*/`: that would silently ignore per-region
+# material files (constant/<region>/electricalProperties) if a smoke bed
+# ever became multi-region -- the same invisibility that caused this mess.
+smoke/*/system/*/
+# build artefacts: generated from fvSolution-foam / etc/changeDictionary
+smoke/*/system/fvSolution
+smoke/*/system/changeDictionaryDict
 
 # per-component build logs and local run helpers: machine-specific, and they
 # churn on every build

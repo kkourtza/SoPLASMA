@@ -1,0 +1,75 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    constant;
+    object      plasmaProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+plasmaTimeControl
+{
+    adjustTimeStep                  $adjustTimeStep;
+
+    limitDielectricRelaxationRatio  $limitDielectricRelaxationRatio;
+    printDielectricRelaxationRatio  $printDielectricRelaxationRatio;
+    maxDielectricRelaxationRatio    $maxDielectricRelaxationRatio;
+    
+    limitSpeciesCo                  $limitSpeciesCo;
+    printSpeciesCo                  $printSpeciesCo;
+    maxSpeciesConvectiveCo          $maxSpeciesCo;
+    maxSpeciesDiffusiveCo           $maxSpeciesCo;
+    
+    limitChemistryCo                $limitChemistryCo;
+    printChemistryCo                $printChemistryCo;
+    maxChemistryCo                  $maxChemistryCo;
+
+    // ONE key for the voltage rise, in VOLTS PER STEP; 0 disables.
+    //
+    // MIGRATED 2026-09-02 from `limitVoltageRiseRate false` +
+    // `maxVoltageRiseRate 1`, which the solver now REJECTS. 0 is the faithful
+    // translation, not a recommendation: under the old pair the limiter was
+    // gated on the SWITCH, so a value of 1 with the switch false was INERT.
+    // Copying the 1 across would have turned it on at 1 V/step -- against this
+    // bed's kV-scale ramp, a run that never finishes.
+    //
+    // 100 V/step is the default for new cases. Raising this from 0 is a
+    // deliberate change to the driving-term resolution, so it would invalidate
+    // any stored result from this bed; do it as its own change, with a rerun.
+    maxVoltageRisePerStep           0;
+    voltagePatchName                "active_electrode";
+}
+
+// The GLOBAL Poisson numerics -- uniform over the gas and every dielectric.
+//
+// These moved here from constant/electromagneticsProperties, which is gone.
+// They are SOLUTION CONTROL, so they belong in system/ beside the timestep and
+// outer-loop settings; constant/ holds physical properties, and permittivity --
+// which IS physical -- now lives per region in
+// constant/<region>/electricalProperties.
+poisson
+{
+    // explicit     -- the charge is a pure source term
+    // semiImplicit -- the conductivity is also brought in implicitly, which
+    //                 stabilises the space-charge / Poisson coupling
+    //
+    // This is a SCHEME. The LINEAR SOLVER for ePotential is in fvSolution. The
+    // old name for this key was `PoissonScheme` but the case variable feeding
+    // it was called `poissonSolver`, which invited exactly that confusion.
+    scheme                      $poissonScheme;
+
+    // How E is formed from the potential: grad | reconstruct
+    EScheme                     grad;
+
+    nNonOrthogonalCorrectors    $nNonOrthogonalCorrectors;
+}
+
+// ************************************************************************* //
