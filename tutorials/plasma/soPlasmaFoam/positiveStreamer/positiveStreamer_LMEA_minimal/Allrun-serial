@@ -14,8 +14,17 @@ touch case.foam
 blockMesh > log.blockMesh 2>&1 || { echo "blockMesh FAILED"; exit 1; }
 extrudeMesh > log.extrudeMesh 2>&1 || { echo "extrudeMesh FAILED"; exit 1; }
 
-# Native OpenFOAM solvers; swap in fvSolution-petsc for the PETSc path.
-cp system/fvSolution-foam system/fvSolution 2>/dev/null || true
+# Linear-solver stack, driven by `matrixSolver` in configuration/config so the
+# choice has ONE home. Previously this line hardcoded -foam, which made
+# matrixSolver look like the switch while doing nothing.
+MS=$(sed -n 's/^matrixSolver *"\{0,1\}\([a-zA-Z]*\)"\{0,1\};.*/\1/p' configuration/config | head -1)
+MS=${MS:-foam}
+if [ ! -f "system/fvSolution-$MS" ]; then
+    echo "matrixSolver '$MS': system/fvSolution-$MS does not exist." >&2
+    echo "  available: $(ls system/fvSolution-* 2>/dev/null | sed 's|system/fvSolution-||' | tr '\n' ' ')" >&2
+    exit 1
+fi
+cp "system/fvSolution-$MS" system/fvSolution
 
 mkdir -p 0 && cp -r 0.orig/* 0/
 plasmaCreateSpeciesFields > log.plasmaCreateSpeciesFields 2>&1 \

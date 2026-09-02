@@ -67,7 +67,7 @@ solvers
     {
         solver          PCG;
         preconditioner  DIC;
-        tolerance       1e-12;
+        tolerance       $TgasTolerance;
         relTol          0;
         maxIter         1000;
     }

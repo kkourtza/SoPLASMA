@@ -54,7 +54,7 @@ ePotential
             // with the reference. Kept deliberately: a step change puts a very
             // large field transient on the electrode in the first timesteps.
             type            uniformFixedValue;
-            uniformValue    table ((0 0) (9.375000e-11 18750));
+            uniformValue    table ((0 0) ($voltageRampTime $appliedVoltage));
             value           uniform 0;
         }
 
