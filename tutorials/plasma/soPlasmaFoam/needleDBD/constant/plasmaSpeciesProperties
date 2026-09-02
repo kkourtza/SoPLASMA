@@ -1,0 +1,401 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      plasmaSpeciesProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * /
+#include "../configuration/config"
+
+// Derived from the mechanism rather than repeated here. The mechanism already
+// knows which species its reactions create; listing them again is how a case
+// ends up NOT transporting an ion the chemistry produces, which breaks charge
+// conservation silently. An explicit list still works and still wins.
+// THE ELECTRON ENERGY CLOSURE. Required, with no default: LFA and LMEA are
+// different physics giving different answers, so neither is assumed.
+//
+// LMEA here. It solves an electron energy-density equation and reads every
+// electron coefficient and reaction rate at the local MEAN ENERGY rather than
+// at the local reduced field, which relaxes the assumption that the electron
+// distribution is in equilibrium with the local field -- the assumption that
+// fails in a discharge head and at boundaries, both of which this geometry has.
+//
+// Setting this ONE key is a complete configuration: it derives the electron
+// transport lookup key, the chemistry rate key and the whole energyModelCoeffs
+// block from the mechanism's own tables. It replaces the per-species
+// `energyModel localEnergy;` that used to sit in the electron block, which is
+// now rejected with an error naming this line.
+//
+// It is orthogonal to gas heating (backgroundGas/energy/solve below); all four
+// combinations work and neither implies the other.
+//
+// See BoltzmannSolver docs/models/energy/lmea.md.
+electronEnergyModel LMEA;
+
+activeSpecies fromMechanism;
+
+mechanismSpecies
+{
+    mechanism   "constant/air_plasma.foam";
+
+    // charged | chargedAndExcited | all
+    //   charged            electron + ions. The minimum for a self-consistent
+    //                      discharge -- these carry the space charge.
+    //   chargedAndExcited  adds excited states and radicals; needed once
+    //                      stepwise ionisation or quenching matters, at one
+    //                      transport equation each.
+    //   all                also transports the background gas, which is held
+    //                      fixed by construction, so this is rarely wanted.
+    include     chargedAndExcited;
+    neutralTransport immobile;
+}
+
+backgroundGas
+{
+  name  "Air";
+  // numberDensity omitted: closed by the ideal gas law from
+  // pressure and the temperature stated below.
+  // 1 bar, not 1 atm: the benchmark this case reproduces states
+  // N = 2.414e25 m^-3 at 300 K, which is 1e5 Pa. Using 101325 Pa gives
+  // 2.446e25, a 1.3% denser gas -- small, but it shifts E/N and therefore
+  // every rate coefficient, so it is not the kind of difference to leave
+  // unexplained in a validation case.
+  pressure        $gasPressure;
+  energy
+  {
+    solve   true;
+    T       $gasTemperature;
+    kappa   0.026;
+    // Read by plasmaEnergy and plasmaTransport, which each divide it by
+    // 101325 themselves. Same number as backgroundGas/pressure above.
+    pressure $gasPressure;
+  }
+}
+
+speciesProperties
+{
+  e
+  {
+    transportModel            driftDiffusion;
+    charge                    -1;
+    mass                      9.109e-31;
+
+    // 1e11 here, NOT the streamer benchmark's 1e13. This case has NO SEEDED
+    // BLOB: the discharge initiates from the geometric field enhancement at the
+    // needle tip acting on this background, so the floor is a physical initial
+    // condition rather than a numerical guard. The positive-ion floors below
+    // are rescaled with it to keep the sum equal to the electron floor --
+    // breaking that puts net space charge into the quiescent gas at t = 0.
+    //
+    // The background field is 62 Td, well below this mixture's 115-120 Td
+    // critical field, so the bulk is net-ATTACHING: left free, the background
+    // electrons decay and the seed is starved of the electrons a positive
+    // streamer needs drawn into its head. Holding them at the background value
+    // keeps that reservoir, which is what the benchmark assumes.
+    //
+    // IMPLICATION: a clamp is a source. Electrons are injected wherever
+    // attachment would have removed them, so this only conserves charge
+    // because the positive ions are clamped to the same total (below). Do not
+    // raise one without the other.
+    minNumberDensity          $floorDensity;   // NEEDLE-DBD: no seed, so this IS the initiator
+
+    // LMEA: transport the electron energy instead of taking the mean energy
+    // from the LFA table. The transport coefficients above now look up
+    // `meanE`, the field this model publishes, rather than `reducedE`.
+
+    energyModelCoeffs
+    {
+
+      // Diagnostics every 25th step: the LMEA per-term dump evaluates
+      // ddt/div/laplacian over the whole mesh once per CORRECTOR, which is
+      // negligible on the 40x40 order bed and is not on this one.
+      reportInterval          25;
+
+      // Particle coefficients: still needed, for the Joule term and the
+      // source sensitivity, which act on the ELECTRONS.
+      mobility
+      {
+        type                  fromMechanism;
+        quantity              muN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      diffusivity
+      {
+        type                  fromMechanism;
+        quantity              DLN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      // ENERGY coefficients: the real EEDF moments, not (5/3) x the particle
+      // values. Measured departure from the Maxwellian 5/3 on this air set is
+      // up to 35% in mobility and 60% in diffusion.
+      // Start from the LFA equilibrium so step 1 is consistent with the
+      // field that already exists at t=0.
+      // tabulated1D, NOT fromMechanism: meanEnergy is in eV and is NOT a
+      // reduced quantity, so the density division fromMechanism applies to
+      // muN/DLN would return ~4e-26 eV here. Same trap as the power-loss
+      // tables.
+      initialMeanEnergy
+      {
+        type                  tabulated1D;
+        file                  "constant/plasmaTables/meanEnergy_vs_reducedE";
+        lookupVariable        reducedE;
+      }
+
+      energyMobility
+      {
+        type                  fromMechanism;
+        quantity              muEpsN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      energyDiffusivity
+      {
+        type                  fromMechanism;
+        quantity              DEpsN;
+        tableDir              "constant/plasmaTables";
+        lookupVariable        meanE;
+      }
+
+      // tabulated1D, NOT fromMechanism. fromMechanism DIVIDES BY THE GAS
+      // DENSITY -- correct for muN and DLN, whose tables hold reduced
+      // quantities -- but PelasticN and PinelasticN are ALREADY per density.
+      // Running them through fromMechanism returns P/N, i.e. a loss term
+      // 2.4e25 times too small: the electrons then heat with no sink and the
+      // mean energy climbs to the clamp, which is exactly what it did.
+      powerLoss
+      {
+        elastic
+        {
+          type                tabulated1D;
+          file                "constant/plasmaTables/PelasticN_vs_meanE";
+          lookupVariable      meanE;
+        }
+        inelastic
+        {
+          type                tabulated1D;
+          file                "constant/plasmaTables/PinelasticN_vs_meanE";
+          lookupVariable      meanE;
+        }
+      }
+    }
+
+    driftDiffusionCoeffs
+    {
+      fluxScheme                $driftDiffusionFluxScheme;
+
+      // Electron transport from the Boltzmann solver's own EEDF, so the
+      // electrons and the chemistry are described by the same cross sections.
+      //
+      // The alternative -- the powerLaw fit this case used to carry -- is still
+      // available and is kept below, commented, for comparison. It is not
+      // wrong, but it is INDEPENDENT of the mechanism: nothing detects it
+      // disagreeing with the rate coefficients the same run interpolates.
+      //
+      // Tables hold mu*N and D*N; the evaluator divides by the gas density, so
+      // the values follow density automatically. They were solved at ONE
+      // mixture and gas temperature, which is the same local-field assumption
+      // the rate coefficients already make.
+      mobility
+      {
+        type                    fromMechanism;
+        quantity                muN;
+        tableDir                "constant/plasmaTables";
+        lookupVariable          meanE;
+      }
+
+      diffusivity
+      {
+        type                    fromMechanism;
+        quantity                DLN;
+        tableDir                "constant/plasmaTables";
+        lookupVariable          meanE;
+      }
+
+      // Hand-fitted alternative, kept for comparison:
+      //   mobility    { type powerLaw; lookupVariable E; amplitude 2.398;    exponent -0.26; }
+      //   diffusivity { type powerLaw; lookupVariable E; amplitude 4.3628e-3; exponent 0.22; }
+    }
+  }
+
+  // Positive-ion floors sum to the ELECTRON floor, split by the mole fractions
+  // of the gas that produces them: 0.79 + 0.21 = 1.00 x 1e13. The undisturbed
+  // background is therefore quasi-neutral by construction, so clamping cannot
+  // manufacture net space charge -- which would drive a Poisson field out of
+  // nothing. Raise one of these three and you must raise the others.
+  //
+  // Negative ions keep the 1e5 floor: they are reaction products, not
+  // background, and floors on them would put net negative charge into
+  // undisturbed gas.
+  N2p
+  {
+    transportModel            driftDiffusion;
+    charge                    +1;
+    mass                      4.6495e-26;
+    minNumberDensity          7.9e10; // 0.79 x the electron floor (N2 mole fraction)
+
+    driftDiffusionCoeffs
+    {
+      fluxScheme              $driftDiffusionFluxScheme;
+
+      // MEASURED ion transport (LXCat via tools/ionmob.py), keyed on E/N.
+      // Ions are NOT described by the electron EEDF, so this stays `reducedE`
+      // even under LMEA -- unlike the electron's own coefficients.
+      //
+      // PROVENANCE AND ITS LIMITS, from the tool's own report:
+      //   N2p : N2+ in N2 (no N2+/Air data exists), 7 disjoint sets stitched,
+      //         6-1e5 Td -- covers the streamer head
+      //   O2p : O2+ in Air, 5-250 Td   } the head runs at ~675 Td, so these
+      //   O2m : O2- in Air, 5-250 Td   } three are EXTRAPOLATED there
+      //   Om  : O-  in Air, 5-100 Td   }
+      // and D for O2p/O2m/Om is Einstein-derived from mu, exact only as
+      // E/N -> 0. Treat the oxygen ions' head transport as an estimate.
+      mobility
+      {
+        type                  fromMechanism;
+        quantity              muN_N2p;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+      diffusivity
+      {
+        type                  fromMechanism;
+        quantity              DLN_N2p;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+    }
+  }
+
+  O2p
+  {
+    transportModel            driftDiffusion;
+    charge                    +1;
+    mass                      5.3137e-26;
+    minNumberDensity          2.1e10; // 0.21 x the electron floor (O2 mole fraction)
+
+    driftDiffusionCoeffs
+    {
+      fluxScheme              $driftDiffusionFluxScheme;
+
+      // MEASURED ion transport (LXCat via tools/ionmob.py), keyed on E/N.
+      // Ions are NOT described by the electron EEDF, so this stays `reducedE`
+      // even under LMEA -- unlike the electron's own coefficients.
+      //
+      // PROVENANCE AND ITS LIMITS, from the tool's own report:
+      //   N2p : N2+ in N2 (no N2+/Air data exists), 7 disjoint sets stitched,
+      //         6-1e5 Td -- covers the streamer head
+      //   O2p : O2+ in Air, 5-250 Td   } the head runs at ~675 Td, so these
+      //   O2m : O2- in Air, 5-250 Td   } three are EXTRAPOLATED there
+      //   Om  : O-  in Air, 5-100 Td   }
+      // and D for O2p/O2m/Om is Einstein-derived from mu, exact only as
+      // E/N -> 0. Treat the oxygen ions' head transport as an estimate.
+      mobility
+      {
+        type                  fromMechanism;
+        quantity              muN_O2p;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+      diffusivity
+      {
+        type                  fromMechanism;
+        quantity              DLN_O2p;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+    }
+  }
+
+  Om
+  {
+    transportModel            driftDiffusion;
+    charge                    -1;
+    mass                      2.6569e-26;
+    minNumberDensity          1e5;
+
+    driftDiffusionCoeffs
+    {
+      fluxScheme              $driftDiffusionFluxScheme;
+
+      // MEASURED ion transport (LXCat via tools/ionmob.py), keyed on E/N.
+      // Ions are NOT described by the electron EEDF, so this stays `reducedE`
+      // even under LMEA -- unlike the electron's own coefficients.
+      //
+      // PROVENANCE AND ITS LIMITS, from the tool's own report:
+      //   N2p : N2+ in N2 (no N2+/Air data exists), 7 disjoint sets stitched,
+      //         6-1e5 Td -- covers the streamer head
+      //   O2p : O2+ in Air, 5-250 Td   } the head runs at ~675 Td, so these
+      //   O2m : O2- in Air, 5-250 Td   } three are EXTRAPOLATED there
+      //   Om  : O-  in Air, 5-100 Td   }
+      // and D for O2p/O2m/Om is Einstein-derived from mu, exact only as
+      // E/N -> 0. Treat the oxygen ions' head transport as an estimate.
+      mobility
+      {
+        type                  fromMechanism;
+        quantity              muN_Om;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+      diffusivity
+      {
+        type                  fromMechanism;
+        quantity              DLN_Om;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+    }
+  }
+
+  O2m
+  {
+    transportModel            driftDiffusion;
+    charge                    -1;
+    mass                      5.3137e-26;
+    minNumberDensity          1e5;
+
+    driftDiffusionCoeffs
+    {
+      fluxScheme              $driftDiffusionFluxScheme;
+
+      // MEASURED ion transport (LXCat via tools/ionmob.py), keyed on E/N.
+      // Ions are NOT described by the electron EEDF, so this stays `reducedE`
+      // even under LMEA -- unlike the electron's own coefficients.
+      //
+      // PROVENANCE AND ITS LIMITS, from the tool's own report:
+      //   N2p : N2+ in N2 (no N2+/Air data exists), 7 disjoint sets stitched,
+      //         6-1e5 Td -- covers the streamer head
+      //   O2p : O2+ in Air, 5-250 Td   } the head runs at ~675 Td, so these
+      //   O2m : O2- in Air, 5-250 Td   } three are EXTRAPOLATED there
+      //   Om  : O-  in Air, 5-100 Td   }
+      // and D for O2p/O2m/Om is Einstein-derived from mu, exact only as
+      // E/N -> 0. Treat the oxygen ions' head transport as an estimate.
+      mobility
+      {
+        type                  fromMechanism;
+        quantity              muN_O2m;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+      diffusivity
+      {
+        type                  fromMechanism;
+        quantity              DLN_O2m;
+        tableDir              "constant/ionTables";
+        lookupVariable        reducedE;
+      }
+    }
+  }
+}

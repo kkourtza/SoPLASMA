@@ -47,7 +47,6 @@ plasmaTimeControl
     maxChemistryCo                  $maxChemistryCo;
 
     // Dielectric relaxation. Reported but not limiting here.
-    limitDielectricRelaxationRatio  $limitDielectricRelaxationRatio;
     printDielectricRelaxationRatio  $printDielectricRelaxationRatio;
     maxDielectricRelaxationRatio    $maxDielectricRelaxationRatio;
 
@@ -59,7 +58,11 @@ plasmaTimeControl
     // `limitVoltageRiseRate` and `maxVoltageRiseRate` are REJECTED with an
     // error carrying the exact translation for your dictionary;
     // `printVoltageRiseRate` prints a notice saying it is no longer read.
-    maxVoltageRisePerStep           $maxVoltageRisePerStep;
+    // maxVoltageRisePerStep is NOT set: the code default is already 100 V/step,
+    // which is what this case wants. Stating it would restate a default and
+    // make it look like the knob to tune, while the reasoning for 100 lives at
+    // the reader. The limiter is still active -- `voltagePatchName` below is
+    // what switches it on -- and the run reports when it binds.
     voltagePatchName                "active_electrode";
 }
 

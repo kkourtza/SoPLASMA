@@ -677,4 +677,31 @@ resolve — while converging and looking fine.
 
 ---
 
+### Photoionization: nothing to write
+
+There is no `photoionizationProperties` in this case, and that is correct — the
+file is **optional** and the model defaults to `none`:
+
+```
+photoionizationModel: none (default -- no constant/gas/photoionizationProperties).
+```
+
+It used to be `MUST_READ`, so every case had to carry a file whose entire
+content was `photoionizationModel none;` — one *per region* in a multi-region
+case — and omitting it stopped the run with `cannot find file
+".../constant/gas/photoionizationProperties"`, which says nothing about
+photoionization being the thing at issue.
+
+A file required only in order to say "off" is a file that should not be
+required. `none` is the honest default here because photoionization is an
+*additional* electron source: leaving it out changes nothing else.
+
+Contrast `electronEnergyModel`, which is deliberately **required with no
+default**. The difference is not consistency for its own sake — there, LFA and
+LMEA are two different physics giving different answers, so neither can be
+assumed on your behalf. Here there is one sensible default and it is the absence
+of a model.
+
+---
+
 *(Steps 6 onward are appended as the walkthrough proceeds.)*

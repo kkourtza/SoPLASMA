@@ -60,6 +60,28 @@
 // RAMPED, not stepped: a step puts the whole 8 kV across the gap in one
 // timestep, which is unphysical and a large transient for the Poisson /
 // space-charge coupling to absorb.
+// THE DRIVE. Required: a discharge with no drive does nothing, and guessing an
+// amplitude would be inventing the physics.
+//
+// Any OpenFOAM Function1 -- constant, sine, square, csv, scale, the ramps --
+// works here with no solver change. The type menu, the parameters of each and
+// worked examples are in
+//     docs/reference/configuration-config.md#voltageramp
+// rather than here, because that text is identical in every case that has an
+// electrode and a copy per case is how it goes stale.
+//
+// WHAT IS CASE-SPECIFIC, and therefore stays:
+//
+// RAMPED, NOT STEPPED. A step puts the whole 8 kV across the gap in one
+// timestep -- unphysical, and a large transient for the Poisson / space-charge
+// coupling to absorb.
+//
+// ONE WHOLE VALUE rather than an amplitude and a rise time, so the TYPE can be
+// changed from here. `sine {...}` has no amplitude-and-rise-time to split into
+// two variables, so an `appliedVoltage` + `riseTime` pair would quietly limit
+// this case to ramps. (This is NOT because changeDictionary fails to expand a
+// nested $var -- it expands nothing, and both forms resolve when the field is
+// parsed. See the note further down.)
 voltageRamp                         table ((0 0) (100e-9 8e3));
 
 
@@ -78,13 +100,39 @@ voltageRamp                         table ((0 0) (100e-9 8e3));
 gasPressure                         1e5;      // [Pa]
 gasTemperature                      300;      // [K]
 
+// PRESSURE IS STATED ONCE, HERE, IN PASCAL.
+//
+// It used to be written three times in two files in two units:
+// `backgroundGas/pressure` [Pa], `backgroundGas/energy/pressure` [Pa] and
+// `boltzmann/pressureAtm` [atm]. All three are now one: the nested duplicate is
+// gone and the sweep density is DERIVED, because a three-body process breaks
+// E/N similarity so there is exactly ONE correct density for the sweep -- the
+// one the case runs at. `pressureAtm` is rejected with the derived value shown.
+//
+// Anything PRINTED shows Pa first with the conversions after, e.g.
+//     100000 Pa (0.986923 atm, 750.062 Torr, 1 bar)
+
 
 // ===========================================================================
 //  GEOMETRY AND MATERIALS
 // ===========================================================================
 
-epsilonRgas                         1.0;
-epsilonRdielectric                  3.0;      // the slab below the gap
+// PERMITTIVITY IS NOT HERE, deliberately.
+//
+// Each region's epsilonR lives in its own constant/<region>/electricalProperties,
+// which is the OpenFOAM convention (the same place and shape chtMultiRegionFoam
+// keeps constant/<region>/thermophysicalProperties) and the whole point of the
+// region/material layout: adding a region means adding a DIRECTORY, and nothing
+// global is edited.
+//
+// Declaring it here as well would put one value in two homes -- exactly the
+// duplication that was removed when constant/electromagneticsProperties was
+// deleted. tools/plasmaSetupRegions.sh writes those files with literal values
+// for the same reason: a generated template that depends on a config variable
+// existing is fragile.
+//
+//     constant/gas/electricalProperties          epsilonR 1.0;
+//     constant/dielectric/electricalProperties   epsilonR 3.0;   <- set this
 
 // MONOLITHIC region coupling. The gas and the dielectric potential are
 // assembled into ONE matrix and solved together, so the permittivity jump and
@@ -98,15 +146,51 @@ epsilonRdielectric                  3.0;      // the slab below the gap
 // Monolithic coupling requires an assembly-aware linear solver. See the
 // `agglomerator` entry in system/fvSolution -- with GAMG's default
 // agglomerator this aborts with "lduPrimitiveMeshAssembly to fvMesh".
-useImplicit                         true;
+// MONOLITHIC region coupling: assemble the gas and every dielectric into ONE
+// matrix and solve them together, so the permittivity jump and the surface
+// charge are satisfied exactly at every linear solve.
+//
+// NAMED FOR WHAT IT DOES. The dictionary key it feeds is `useImplicit`, which is
+// OpenFOAM's own name on fvPatchField (there is a `useImplicit_` member and a
+// `useImplicit()` accessor in the base class), so that key cannot be renamed
+// without fighting the framework's round-trip. The CASE variable is ours, and
+// "useImplicit" says nothing about WHAT is being made implicit -- it could as
+// easily mean the chemistry source, the drift term or the wall flux, all of
+// which have their own implicit/explicit choices in this solver.
+//
+// false -> SEGREGATED: each region is solved on its own mesh and sees the
+//          other's potential from the previous corrector. On this geometry that
+//          was MEASURED to plateau the outer ePotential residual near 1e-7, and
+//          at a tolerance of 1e-8 the outer loop hit its cap and every step was
+//          discarded.
+//
+// Monolithic coupling needs an assembly-aware linear solver: see the
+// `agglomerator` entry in system/fvSolution -- with GAMG's default agglomerator
+// this aborts with "lduPrimitiveMeshAssembly to fvMesh".
+monolithicRegionCoupling            true;
 
-// Which field carries the interface surface charge. Exactly ONE side of the
-// interface owns it (the gas, because the plasma deposits it); the other names
-// it as the neighbour field and owns none.
-surfChargeDict                      surfCharge;
+// surfChargeDict is GONE. The field name was never a choice -- the solver
+// registers it as the literal "surfCharge" -- so the variable had one valid
+// value and every other value silently meant "no surface charge", the BC doing
+// `if (surfChargeName_ != "none")` and quietly finding nothing.
+//
+// The real decision is WHICH SIDE OWNS IT, and that is the pairing across the
+// two etc/changeDictionary files, where both halves are visible together:
+//     .gas         surfCharge surfCharge;  surfChargeNbr none;
+//     .dielectric  surfCharge none;        surfChargeNbr surfCharge;
+// Exactly one side owns it or it is double-counted.
 
-// Secondary electron emission, both electrodes.
-seeCoefficient                      0.001;
+// SEE IS NOT HERE. It is a per-SURFACE property, so it lives in the boundary
+// conditions: `defaultSEEC` on the species patch fields (n_e and nEps_e) in
+// etc/changeDictionary.<region>, one value per emitting patch.
+//
+// A single case variable would force every emitting surface to share a value,
+// which is wrong for this geometry: a metal needle and a dielectric barrier are
+// different materials with different gamma. And dielectrics emit too -- SEE is
+// not an electrode-only phenomenon.
+//
+// The solver defaults it to 0.001 (contaminated oxide / barrier), so a patch
+// that does not state one is not silently given a clean-metal figure.
 
 // THE INITIAL CONDITION, not a numerical guard.
 //
@@ -192,22 +276,27 @@ solverLibs                          ( "libROUNDSchemes.so" );
 poissonScheme                       semiImplicit;
 nOuterCorrectors                    4;
 
-ePotentialTolerance                 1e-10;
-ePotentialRelTolerance              0.0;
-neTolerance                         1e-10;
-neRelTolerance                      0.0;
-npIonTolerance                      1e-10;
-npIonRelTolerance                   0.0;
-TgasTolerance                       1e-12;
+// FOUR VALUES, NOT TEN NAMES.
+//
+// This was ePotential/ne/npIon x Tolerance/RelTolerance plus two PIMPLE
+// variants: ten names carrying four distinct numbers, so ten places to edit and
+// nine ways for them to drift apart. `relTol 0` in particular is not a tuning
+// choice -- it means "converge on the absolute tolerance" -- and it is the same
+// decision for every field here.
+//
+// REVERSIBLE. fvSolution's named entry beats a catch-all, so a field that later
+// needs its own tolerance gets a variable back at that point rather than one
+// being carried speculatively.
+linearTol                           1e-10;    // ePotential, n_e, all species
+linearRelTol                        0.0;      // absolute convergence, all fields
 
-// OUTER (PIMPLE) tolerances. Note these are the LINEAR solver's per-field
-// tolerances inside the outer loop; the gate that decides whether the outer
-// loop has converged is `outerCoupling/tolerance` in
-// system/plasmaSimulationControls, and editing these to fix an outer-loop
-// failure changes nothing.
-ePotentialTolerancePIMPLE           1e-8;
-neTolerancePIMPLE                   1e-10;
-npIonTolerancePIMPLE                1e-10;
+// The two genuine outliers, kept separate because their values really differ.
+TgasTolerance                       1e-12;    // tighter: gas energy is stiff
+ePotentialTolerancePIMPLE           1e-8;     // looser than the species outer
+                                              // tolerance, and MUST stay >= 10x
+                                              // the linear tolerance or the
+                                              // outer loop can never meet it
+outerTol                            1e-10;    // n_e and species, outer loop
 
 
 // ===========================================================================
@@ -216,8 +305,19 @@ npIonTolerancePIMPLE                1e-10;
 
 adjustTimeStep                      true;
 deltaT                              1e-12;
-endTime                             2e-08;
+endTime                             3e-09;
 
+// 3 ns, not 20. MEASURED 2026-09-02: this case runs at ~2.8 s/step, so the
+// 2e-08 it used to ask for is about a THREE-HOUR run -- not a walkthrough.
+//
+// 3 ns is sized to the observable rather than to a round number. With ~15x tip
+// enhancement E/N reaches the ionisation range at roughly V ~ 167 V, i.e.
+// t ~ 2.1 ns on an 8 kV / 100 ns ramp, so 3 ns crosses initiation with margin
+// and finishes in well under an hour.
+//
+// RAISE IT to 2e-08 for the full physics: the barrier charging that makes a DBD
+// self-limiting happens over tens of ns, and 3 ns shows initiation only.
+//
 // The interesting window opens EARLY. With ~15x tip enhancement, E/N reaches
 // the ionisation range at roughly V ~ 167 V, i.e. t ~ 2.1 ns on an 8 kV /
 // 100 ns ramp -- long before the ramp completes. Write often enough to see it.
@@ -235,7 +335,10 @@ limitChemistryCo                    true;
 printChemistryCo                    true;
 maxChemistryCo                      0.9;
 
-limitDielectricRelaxationRatio      false;
+// limitDielectricRelaxationRatio is NOT declared: false is already the default.
+// The ratio is still REPORTED (printDielectricRelaxationRatio below), compared
+// against maxDielectricRelaxationRatio -- which is the right way round, since a
+// limiter should be measured before it is switched on.
 printDielectricRelaxationRatio      true;
 maxDielectricRelaxationRatio        5;
 
@@ -249,6 +352,11 @@ maxDielectricRelaxationRatio        5;
 // and `printVoltageRiseRate` prints a notice saying it is no longer read. Four
 // keys once described this one quantity, which is how a case sets one and is
 // surprised by another.
-maxVoltageRisePerStep               100;      // [V/step]
+// maxVoltageRisePerStep is NOT declared: 100 V/step is already the code default
+// (plasmaTimeControl.C), and restating a default makes it look like the knob to
+// tune while the reasoning for the value lives at the reader. It limits deltaT
+// so the applied voltage changes by at most that much per step; it is active
+// once `voltagePatchName` names the driven electrode, inert at constant voltage
+// where dV/step ~ 0, and 0 disables it. The run reports when it binds.
 
 // ************************************************************************* //

@@ -95,8 +95,8 @@ solvers
             }
         }
 
-        tolerance               $ePotentialTolerance;
-        relTol                  $ePotentialRelTolerance;
+        tolerance               $linearTol;
+        relTol                  $linearRelTol;
         maxIter                 2000;
     }
 
@@ -112,8 +112,8 @@ solvers
     {
         solver          PBiCGStab;
         preconditioner  DILU;
-        tolerance       $neTolerance;
-        relTol          $neRelTolerance;
+        tolerance       $linearTol;
+        relTol          $linearRelTol;
         maxIter         2000;
     }
 
@@ -145,8 +145,8 @@ solvers
         // and is what these need.
         solver          PBiCGStab;
         preconditioner  DILU;
-        tolerance       $npIonTolerance;
-        relTol          $npIonRelTolerance;
+        tolerance       $linearTol;
+        relTol          $linearRelTol;
         maxIter         2000;
     }
 
@@ -181,13 +181,13 @@ PIMPLE
         }
         n_e
         {
-            tolerance   $neTolerancePIMPLE;
+            tolerance   $outerTol;
             relTol      0;
         }
         // Every other transported species, whatever the mechanism named it.
         "n_.*"
         {
-            tolerance   $npIonTolerancePIMPLE;
+            tolerance   $outerTol;
             relTol      0;
         }
     }
