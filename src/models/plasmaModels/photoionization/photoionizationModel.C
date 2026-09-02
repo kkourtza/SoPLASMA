@@ -35,7 +35,11 @@ photoionizationModel::photoionizationModel(const fvMesh& mesh)
             "photoionizationProperties",
             mesh.time().constant(),
             mesh,
-            IOobject::MUST_READ,
+            // READ_IF_PRESENT, not MUST_READ. A case that does not model
+            // photoionization should not need a file to say so -- see New().
+            // A model that DOES need coefficients still fails clearly on its
+            // own missing `<type>Coeffs` sub-dictionary.
+            IOobject::READ_IF_PRESENT,
             IOobject::NO_WRITE
         )
     ),
@@ -70,13 +74,45 @@ autoPtr<photoionizationModel> photoionizationModel::New
             "photoionizationProperties",
             mesh.time().constant(),
             mesh,
-            IOobject::MUST_READ,
+            IOobject::READ_IF_PRESENT,
             IOobject::NO_WRITE,
             IOobject::NO_REGISTER
         )
     );
 
-    const word modelName(tmpDict.get<word>("photoionizationModel"));
+    // DEFAULTS TO `none`, and the file is therefore OPTIONAL.
+    //
+    // This was MUST_READ with a bare get<word>(), so every case had to carry a
+    // constant/<region>/photoionizationProperties whose entire content was
+    // `photoionizationModel none;` -- and in a multi-region case, one per
+    // region. Omitting it stopped the run with
+    //     cannot find file ".../constant/gas/photoionizationProperties"
+    // which says nothing about photoionization being the thing at issue.
+    //
+    // A file required only in order to say "off" is a file that should not be
+    // required: `none` is the honest default, because photoionization is an
+    // ADDITIONAL source and leaving it out changes nothing else. Contrast
+    // `electronEnergyModel`, which is deliberately required with no default --
+    // there, LFA and LMEA are two different physics and neither can be assumed.
+    // Here there is one sensible default and it is the absence of a model.
+    //
+    // Said out loud rather than silently, because a photoionization model that
+    // is off without the case saying so is worth one line at start-up.
+    const word modelName
+    (
+        tmpDict.getOrDefault<word>("photoionizationModel", "none")
+    );
+
+    if (!tmpDict.found("photoionizationModel"))
+    {
+        Info<< "photoionizationModel: none (default -- no"
+            << " constant/" << mesh.name() << "/photoionizationProperties)."
+            << nl
+            << "    Photoionization is an ADDITIONAL electron source, so"
+            << " omitting it changes nothing else. State" << nl
+            << "    `photoionizationModel nTermHelmholtz;` (or"
+            << " threeGroupEddington | threeGroupSP3) to enable it." << endl;
+    }
 
     // Look up the constructor in the table
     auto* ctorPtr = dictionaryConstructorTable(modelName);

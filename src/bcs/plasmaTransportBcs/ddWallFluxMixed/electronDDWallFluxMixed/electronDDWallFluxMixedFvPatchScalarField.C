@@ -139,7 +139,23 @@ electronDDWallFluxMixedFvPatchScalarField
     enableSEE_(dict.lookupOrDefault<bool>("enableSEE", false)),
     seeReport_(dict.lookupOrDefault<bool>("seeReport", false)),
     seeInertReported_(false),
-    defaultSEEC_(dict.lookupOrDefault<scalar>("defaultSEEC", 0.05)),
+    // 0.001, not 0.05.
+    //
+    // gamma -- the probability that an ion striking a surface releases an
+    // electron -- spans roughly 1e-3 for contaminated oxides and dielectric
+    // barriers up to 1e-1 for clean metals in vacuum. 0.05 is a clean-metal
+    // figure, and it is the wrong end of that range to default to: the surfaces
+    // this solver is aimed at are air-exposed electrodes and dielectric
+    // barriers, both contaminated.
+    //
+    // It matters because gamma is not a detail. In a barrier discharge it is
+    // what makes the discharge SELF-SUSTAINING rather than a single avalanche,
+    // so a default fifty times too high manufactures sustainment the case never
+    // asked for -- and the run looks entirely healthy.
+    //
+    // Default changed 2026-09-02. Any case that relied on the old default
+    // should state its own value; a case that already states one is unaffected.
+    defaultSEEC_(dict.lookupOrDefault<scalar>("defaultSEEC", 0.001)),
     speciesSEEC_(dict.subOrEmptyDict("speciesSEEC")),
     seec_(0), 
     mapped_(false)
