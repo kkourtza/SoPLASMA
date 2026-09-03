@@ -62,15 +62,49 @@ void singleRegionPoisson::updateDerivedFields()
 
 
     plasmaSimulationProfiler::start("Electromagnetics", "Calc reducedE");
+
+    // REGRESSION, measured 2026-09-03. Before fe827ae (2026-08-11, "One owner
+    // for the gas density") backgroundDensityUniform_ defaulted to 2.5e25 via
+    // `coeffs.getOrDefault<scalar>("backgroundDensity", 2.5e25)`. That commit
+    // removed the default and made the key fatal -- correctly, since a silent
+    // 2.5e25 in a case that never stated one is invented physics -- but left
+    // THIS division unguarded. The only caller of setBackgroundDensity() is
+    // plasmaSpecies, which does not exist in singleRegionElectrostaticFoam, so
+    // every pure-electrostatics case has died with SIGFPE in Emag_/0 since.
+    // Verified 2026-09-03 on the SHIPPED, unmodified tutorial
+    // tutorials/electrostatics/singleRegionElectrostaticFoam/plate2D_timeVaryingBC:
+    // the Poisson solve converged (residual 7.98e-10) and the crash was here.
+    //
+    // multiRegionPoisson::updateDerivedFields() was guarded at the time; this
+    // is the same guard, so the two models cannot diverge again.
+    //
+    // Leaving reducedE at ZERO is the honest answer: |E|/N has no meaning where
+    // there is no gas, and a fabricated N would propagate into every rate
+    // coefficient and mobility. Said once, because a field that silently stays
+    // zero is its own trap.
     if (backgroundDensityFieldPtr_)
     {
         reducedE_ = Emag_ / *backgroundDensityFieldPtr_;
+        reducedE_.correctBoundaryConditions();
     }
-    else
+    else if (backgroundDensityUniform_.value() > SMALL)
     {
         reducedE_ = Emag_ / backgroundDensityUniform_;
+        reducedE_.correctBoundaryConditions();
     }
-    reducedE_.correctBoundaryConditions();
+    else if (!noGasReported_)
+    {
+        noGasReported_ = true;
+
+        Info<< "singleRegionPoisson: no background gas density, so `reducedE`"
+               " stays ZERO." << nl
+            << "    |E|/N is undefined without a gas. This is expected for a"
+               " pure electrostatics" << nl
+            << "    case; if this run has a plasma, its species model has not"
+               " published a density" << nl
+            << "    and every rate coefficient keyed on reducedE would be"
+               " wrong." << endl;
+    }
     plasmaSimulationProfiler::stop("Electromagnetics", "Calc reducedE");
 
 }

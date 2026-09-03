@@ -86,6 +86,9 @@ protected:
     //- Pointer to spatially varying background density
     const volScalarField* backgroundDensityFieldPtr_;
 
+
+        //- Whether the "no background gas" notice has been printed
+        mutable bool noGasReported_ = false;
 public:
 
     //- Runtime type information
