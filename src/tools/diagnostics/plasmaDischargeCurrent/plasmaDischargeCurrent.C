@@ -24,19 +24,38 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
 :
     mesh_(mesh)
 {
-    if (!dict.found("dischargeCurrent")) return;
+    // ON BY DEFAULT, and the sub-dictionary is OPTIONAL.
+    //
+    // Sato's discharge current is the primary measurable of almost every
+    // discharge simulation -- the one number an experiment can be compared
+    // against -- so a case should not have to ask for it. It costs ONE extra
+    // Poisson solve at start-up and two surface integrals per write.
+    //
+    // `dischargeCurrent/enabled false` remains the explicit opt-out.
+    dictionary cd;
+    if (dict.found("dischargeCurrent"))
+    {
+        cd = dict.subDict("dischargeCurrent");
+    }
 
-    const dictionary& cd = dict.subDict("dischargeCurrent");
-
-    enabled_ = cd.getOrDefault<Switch>("enabled", false);
+    enabled_ = cd.getOrDefault<Switch>("enabled", true);
     if (!enabled_) return;
 
-    drivenPatch_     = cd.get<word>("drivenPatch");
+    // Both patch entries are now OPTIONAL and DERIVED when absent: the
+    // potential's own boundary conditions already say which patch is driven
+    // and which are grounded, and restating it is a second source of truth
+    // that can disagree. An explicit entry still wins.
+    drivenPatch_     = cd.getOrDefault<word>("drivenPatch", word::null);
     groundedPatches_ = cd.getOrDefault<wordList>("groundedPatches", wordList());
     perSpecies_      = cd.getOrDefault<Switch>("perSpecies", false);
     writeInterval_   = cd.getOrDefault<label>("writeInterval", 1);
     crossCheck_      = cd.getOrDefault<Switch>("crossCheck", false);
     printInterval_   = cd.getOrDefault<label>("printInterval", 0);
+
+    if (drivenPatch_.empty() || groundedPatches_.empty())
+    {
+        deriveElectrodePatches(em);
+    }
 
     // Patch validation spans ALL regions, not just the gas.
     //
@@ -122,13 +141,22 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
                    " forced to fixedValue," << nl
                 << "    which replaces the interface coupling and makes the"
                    " neighbour side abort." << nl << nl
-                << "    Name a real electrode. If the true ground sits behind a"
-                   " dielectric -- a DBD --" << nl
-                << "    then it is in another region and the single-region"
-                   " weighting solve cannot" << nl
-                << "    reach it: set `dischargeCurrent/enabled false` rather"
-                   " than pointing this" << nl
-                << "    somewhere that merely runs."
+                << "    Name a real electrode. If the true ground sits behind"
+                   " a dielectric -- a DBD -- then" << nl
+                << "    it is in ANOTHER REGION, and that is fine: the"
+                   " weighting field is solved" << nl
+                << "    MONOLITHICALLY across every region, so a ground on a"
+                   " dielectric mesh is" << nl
+                << "    reached correctly. Name that patch."
+                << nl << nl
+                << "    (SUPERSEDED 2026-09-03: this message used to say the"
+                   " single-region weighting" << nl
+                << "    solve could not reach another region and advised"
+                   " disabling the diagnostic." << nl
+                << "    That has been false since the monolithic multi-region"
+                   " assembly landed, which" << nl
+                << "    is validated to 1.1e-15 against analytic on a"
+                   " two-region series stack.)"
                 << exit(FatalError);
         }
     }
@@ -149,21 +177,231 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
 
+const Foam::volScalarField*
+Foam::plasmaDischargeCurrent::findPotentialForPatch
+(
+    const electromagneticsModel& em,
+    const word& patchName,
+    label& patchi
+) const
+{
+    patchi = em.ePotential().mesh().boundaryMesh().findPatchID(patchName);
+
+    if (patchi >= 0)
+    {
+        return &em.ePotential();
+    }
+
+    if (isA<multiRegionPoisson>(em))
+    {
+        const multiRegionPoisson& mrp = refCast<const multiRegionPoisson>(em);
+
+        for (label i = 0; i < mrp.nDielectrics(); ++i)
+        {
+            const volScalarField& ePot = mrp.dielectric(i).ePotential();
+
+            patchi = ePot.mesh().boundaryMesh().findPatchID(patchName);
+
+            if (patchi >= 0)
+            {
+                return &ePot;
+            }
+        }
+    }
+
+    patchi = -1;
+    return nullptr;
+}
+
+
+void Foam::plasmaDischargeCurrent::deriveElectrodePatches
+(
+    const electromagneticsModel& em
+)
+{
+    // THE CLASSIFICATION RULE, in one place.
+    //
+    // An electrode is a patch where the potential is IMPOSED, i.e. a Dirichlet
+    // condition -- `fixedValue` and everything derived from it, which includes
+    // `uniformFixedValue`. Everything else (zeroGradient, the interface
+    // conditions, thinDielectricPotential, empty, processor) is not an
+    // electrode and is skipped.
+    //
+    // Among the electrodes:
+    //   GROUNDED  a NON-time-varying Dirichlet that is identically zero.
+    //   DRIVEN    anything else -- a time-varying Dirichlet (a ramp, a sine, a
+    //             table) whatever its present value, or a constant non-zero
+    //             one (a DC electrode).
+    //
+    // THE TIME-VARYING TEST IS THE LOAD-BEARING PART. At t = 0 a ramp reads
+    // EXACTLY ZERO, so a value-only rule would classify the driven electrode
+    // of every ramped case as ground, leaving no drive and a singular
+    // weighting-field problem. So the discriminator is the CONDITION TYPE, not
+    // the current value: `fixedValue` is static, any other member of the
+    // family is a Function1 in disguise.
+    DynamicList<word> drivenCandidates;
+    DynamicList<word> grounded;
+
+    auto classify = [&](const volScalarField& ePot)
+    {
+        const volScalarField::Boundary& bf = ePot.boundaryField();
+
+        forAll(bf, patchi)
+        {
+            const fvPatchScalarField& pf = bf[patchi];
+
+            // Not a Dirichlet condition: not an electrode.
+            if (!isA<fixedValueFvPatchScalarField>(pf)) continue;
+
+            // A region interface is never an electrode, whatever sits on it.
+            if (isA<mappedPatchBase>(pf.patch().patch())) continue;
+
+            // Empty/wedge/processor patches carry no electrode either.
+            if (pf.patch().size() == 0 && Pstream::parRun() == false) continue;
+
+            const word& pname = pf.patch().name();
+
+            const bool timeVarying =
+                (pf.type() != fixedValueFvPatchScalarField::typeName);
+
+            const scalar peak = gMax(mag(pf));
+
+            if (!timeVarying && peak < SMALL)
+            {
+                grounded.append(pname);
+            }
+            else
+            {
+                drivenCandidates.append(pname);
+            }
+        }
+    };
+
+    classify(em.ePotential());
+
+    if (isA<multiRegionPoisson>(em))
+    {
+        const multiRegionPoisson& mrp = refCast<const multiRegionPoisson>(em);
+
+        for (label i = 0; i < mrp.nDielectrics(); ++i)
+        {
+            classify(mrp.dielectric(i).ePotential());
+        }
+    }
+
+    // --- the driven electrode -----------------------------------------------
+    if (drivenPatch_.empty())
+    {
+        if (drivenCandidates.size() == 1)
+        {
+            drivenPatch_ = drivenCandidates[0];
+        }
+        else
+        {
+            FatalErrorInFunction
+                << "dischargeCurrent is ON BY DEFAULT but the DRIVEN electrode"
+                << " could not be derived." << nl << nl
+                << "    Driven candidates found: " << drivenCandidates << nl
+                << "    Grounded patches found:  " << grounded << nl << nl
+                << (
+                       drivenCandidates.empty()
+                     ? "    NONE were found. A driven electrode is a Dirichlet"
+                       " `ePotential` condition that is\n"
+                       "    either time-varying (uniformFixedValue with a"
+                       " table/sine/ramp) or a non-zero\n"
+                       "    constant. If this case genuinely has no driven"
+                       " electrode, there is no\n"
+                       "    discharge current to measure.\n"
+                     : "    MORE THAN ONE was found, so which one the current"
+                       " is measured at is a\n"
+                       "    physical choice, not something to guess.\n"
+                   )
+                << nl
+                << "    Set it explicitly:" << nl
+                << "        dischargeCurrent { drivenPatch <name>; }" << nl
+                << "    or turn the diagnostic off:" << nl
+                << "        dischargeCurrent { enabled false; }" << nl
+                << exit(FatalError);
+        }
+    }
+
+    // --- the grounded electrodes --------------------------------------------
+    if (groundedPatches_.empty())
+    {
+        // The driven patch is never also a ground, even if a derivation quirk
+        // put it in both lists.
+        DynamicList<word> g;
+        for (const word& w : grounded)
+        {
+            if (w != drivenPatch_) g.append(w);
+        }
+
+        if (g.empty())
+        {
+            FatalErrorInFunction
+                << "dischargeCurrent is ON BY DEFAULT but no GROUNDED"
+                << " electrode could be derived." << nl << nl
+                << "    Driven patch: " << drivenPatch_ << nl
+                << "    A ground is a `fixedValue` `ePotential` condition equal"
+                << " to zero." << nl << nl
+                << "    Without a reference the weighting-field problem is"
+                   " SINGULAR: psi is determined" << nl
+                << "    only up to a constant, so e_hat and C_g are"
+                   " meaningless." << nl << nl
+                << "    Set it explicitly:" << nl
+                << "        dischargeCurrent { groundedPatches ( <name> ); }"
+                << nl
+                << "    or turn the diagnostic off:" << nl
+                << "        dischargeCurrent { enabled false; }" << nl
+                << exit(FatalError);
+        }
+
+        groundedPatches_.transfer(g);
+    }
+
+    Info<< "plasmaDischargeCurrent: electrode patches DERIVED from the"
+        << " ePotential boundary conditions" << nl
+        << "    driven   " << drivenPatch_
+        << "   (imposed, time-varying or non-zero)" << nl
+        << "    grounded " << groundedPatches_ << "   (imposed, zero)" << nl
+        << "    Override either with dischargeCurrent/{drivenPatch,"
+        << "groundedPatches}." << endl;
+}
+
+
 Foam::scalar Foam::plasmaDischargeCurrent::appliedVoltage
 (
     const electromagneticsModel& em
 ) const
 {
-    const label patchi = mesh_.boundaryMesh().findPatchID(drivenPatch_);
-    const fvPatchScalarField& pf = em.ePotential().boundaryField()[patchi];
+    // Searched across ALL regions. This used to be a gas-mesh lookup whose
+    // -1 was fed straight into boundaryField()[patchi] -- so a drive behind a
+    // barrier, which is an ordinary DBD, was undefined behaviour rather than
+    // an error.
+    label patchi = -1;
+    const volScalarField* ePotPtr =
+        findPotentialForPatch(em, drivenPatch_, patchi);
+
+    if (!ePotPtr)
+    {
+        FatalErrorInFunction
+            << "dischargeCurrent/drivenPatch `" << drivenPatch_
+            << "` was not found on any region while reading the applied"
+            << " voltage." << nl
+            << exit(FatalError);
+    }
+
+    const fvPatchScalarField& pf = ePotPtr->boundaryField()[patchi];
 
     // Area-weighted, so a non-uniform electrode potential still gives the
     // single number the circuit sees.
-    const scalar a = gSum(mesh_.boundary()[patchi].magSf());
+    const scalarField& magSf = pf.patch().magSf();
+
+    const scalar a = gSum(magSf);
 
     if (a <= VSMALL) return 0;
 
-    return gSum(mesh_.boundary()[patchi].magSf()*pf)/a;
+    return gSum(magSf*pf)/a;
 }
 
 

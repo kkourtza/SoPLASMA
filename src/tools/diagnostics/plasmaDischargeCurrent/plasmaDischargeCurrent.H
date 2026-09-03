@@ -173,6 +173,25 @@ class plasmaDischargeCurrent
         //- Area-weighted mean potential on the driven patch [V].
         scalar appliedVoltage(const electromagneticsModel& em) const;
 
+        //- Locate a named patch on ANY region. Returns the region's potential
+        //  field and the patch index, or a null pointer when not found.
+        //
+        //  The driven electrode is NOT required to be on the gas mesh: in a
+        //  DBD the drive can sit behind a barrier. appliedVoltage() used to
+        //  look the name up on the gas mesh alone and index the boundary field
+        //  with the resulting -1.
+        const volScalarField* findPotentialForPatch
+        (
+            const electromagneticsModel& em,
+            const word& patchName,
+            label& patchi
+        ) const;
+
+        //- DERIVE the driven and grounded patches from the potential's own
+        //  boundary conditions, so a case need not restate what its boundary
+        //  conditions already say. See the .C for the classification rule.
+        void deriveElectrodePatches(const electromagneticsModel& em);
+
 
 public:
 

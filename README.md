@@ -462,6 +462,29 @@ its sign, both limits, both guards, and restart round-tripping) — see
 [`docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md`](docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md).
 
 
+## Discharge current, on by default
+
+Sato's discharge current is the primary measurable of almost every discharge
+simulation — the one number an experiment can be compared against — so since
+2026-09-03 it is computed **by default** for every plasma run, with no
+configuration. It costs one extra Poisson solve at start-up.
+
+The electrode patches are **derived from the potential's own boundary
+conditions** rather than restated: a *driven* electrode is a Dirichlet
+`ePotential` condition that is time-varying or a non-zero constant; a *ground*
+is a non-time-varying Dirichlet equal to zero. The time-varying test matters,
+because at `t = 0` a ramp reads exactly zero and a value-only rule would call
+the driven electrode a ground. If the driven electrode is ambiguous the run
+aborts and lists the candidates, since which electrode the current is measured
+at is a physical choice. `dischargeCurrent { enabled false; }` is the opt-out,
+and naming the patches explicitly still wins.
+
+The ground may sit in **another region** — behind the barrier, as in any DBD.
+The weighting field is solved monolithically across every region, validated to
+`1.1e-15` against the analytic series-stack capacitance. Full reference:
+[`docs/reference/plasmaSimulationControls.md`](docs/reference/plasmaSimulationControls.md).
+
+
 ## Running the tests
 
 ```bash

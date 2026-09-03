@@ -115,10 +115,10 @@ int main(int argc, char *argv[])
     // against a different discretisation of the same physics, not merely
     // against itself: a sign error, a missing revolution factor or the wrong
     // permittivity in the surface form cannot survive it.
-    const word drivenPatch
-    (
-        plasmaDict.subDict("dischargeCurrent").get<word>("drivenPatch")
-    );
+    // Taken from the weighting field itself, not re-read from the dictionary:
+    // the patch may have been DERIVED from the boundary conditions, in which
+    // case there is no dictionary entry to read.
+    const word drivenPatch(current.weightingField().unitPatch());
 
     const scalar Cs =
         current.weightingField().surfaceCapacitance(em, drivenPatch);

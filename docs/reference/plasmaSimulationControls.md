@@ -34,6 +34,80 @@ Measured on this case, 322 steps under LMEA:
 
 Note what is *absent*: `maxSpeciesCo` never bound once.
 
+## `dischargeCurrent` — Sato's discharge current
+
+**ON BY DEFAULT since 2026-09-03, and the sub-dictionary is optional.** The
+discharge current is the primary measurable of almost every discharge
+simulation — the one number an experiment can be compared against — so a case
+does not have to ask for it. It costs **one extra Poisson solve at start-up**
+and two surface integrals per write.
+
+```
+dischargeCurrent
+{
+    enabled         true;       // DEFAULT true. `false` is the explicit opt-out
+    drivenPatch     <name>;     // DERIVED when absent (see below)
+    groundedPatches ( <name> ); // DERIVED when absent
+    perSpecies      false;      // per-species current columns
+    writeInterval   1;          // steps between CSV rows
+    printInterval   0;          // steps between log lines; 0 = never
+    crossCheck      false;      // compare against the surface-integral current
+}
+```
+
+### The electrode patches are derived, not restated
+
+The potential's own boundary conditions already say which patch is driven and
+which are grounded, so naming them again is a second source of truth that can
+disagree. The rule:
+
+| classification | condition |
+|---|---|
+| **driven** | a Dirichlet `ePotential` condition that is **time-varying** (`uniformFixedValue` with a table/sine/ramp), or a **non-zero constant** |
+| **grounded** | a **non-time-varying** Dirichlet condition equal to **zero** |
+| not an electrode | everything else — `zeroGradient`, `empty`, the region interfaces, `thinDielectricPotential`, `processor` |
+
+**The time-varying test is the load-bearing part.** At `t = 0` a ramp reads
+*exactly zero*, so a value-only rule would classify the driven electrode of
+every ramped case as ground — leaving no drive and a singular weighting-field
+problem. The discriminator is therefore the **condition type**, not the present
+value.
+
+Derivation is reported at start-up:
+
+```
+plasmaDischargeCurrent: electrode patches DERIVED from the ePotential boundary conditions
+    driven   left   (imposed, time-varying or non-zero)
+    grounded 1(right)   (imposed, zero)
+```
+
+If the driven electrode is **ambiguous** (none found, or more than one) the run
+aborts and lists the candidates, because which electrode the current is measured
+at is a physical choice rather than something to guess. Name it explicitly, or
+set `enabled false`.
+
+### The ground may be in another region
+
+In a DBD the ground sits *behind* the barrier, on the dielectric mesh. That is
+fine: the weighting field is solved **monolithically across every region**, so a
+ground on a dielectric mesh is reached correctly — validated to `1.1e-15`
+against the analytic series-stack capacitance.
+
+> **SUPERSEDED 2026-09-03.** An earlier error message claimed the single-region
+> weighting solve could not reach another region, and advised disabling the
+> diagnostic. That has been false since the monolithic multi-region assembly
+> landed. What remains true: a **region interface** can never be named as an
+> electrode, because the weighting solve forces grounded patches to `fixedValue`
+> and that would destroy the interface coupling.
+
+### What it writes
+
+`postProcessing/dischargeCurrent/current.csv`, with a header recording `C_g` and
+the wedge revolution factor, and columns
+`time, V_applied, I_total, I_cond, I_disp` (plus per-species columns under
+`perSpecies true`).
+
+
 ## `limitSpeciesCo` / `printSpeciesCo` / `maxSpeciesCo`
 
 Species Courant number — convective and diffusive. `maxSpeciesCo` feeds **both**
