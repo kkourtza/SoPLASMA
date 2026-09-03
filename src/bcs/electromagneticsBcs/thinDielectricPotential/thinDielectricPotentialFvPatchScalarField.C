@@ -147,6 +147,36 @@ thinDielectricPotentialFvPatchScalarField
             << exit(FatalIOError);
     }
 
+    // `epsilonR` DOES NOTHING ON A FREE-STANDING LAYER, so refuse it there.
+    //
+    // The layer's permittivity enters ONLY through C = eps0*epsilonR/d. With no
+    // conductor behind the sheet, C = 0 and the condition is
+    //     eps_g dV/dn = sigma
+    // in which the only permittivity is the GAS one -- read from the region,
+    // not from here. Accepting `epsilonR` in that branch would let a user set
+    // 4.6, read the case back, and believe the barrier material mattered.
+    if (!haveT && dict.found("epsilonR"))
+    {
+        FatalIOErrorInFunction(dict)
+            << "`epsilonR` has NO EFFECT on a free-standing layer, on patch "
+            << p.name() << "." << nl << nl
+            << "    Given without `thickness`, so this patch is free-standing:"
+            << " open gas or vacuum behind" << nl
+            << "    the sheet, no conductor to be a capacitor to. The condition"
+            << " is then pure Neumann," << nl
+            << "        eps_g dV/dn = sigma" << nl
+            << "    whose only permittivity is the GAS permittivity, taken from"
+            << " the region. The layer's" << nl
+            << "    own epsilonR appears only in C = eps0*epsilonR/d, and there"
+            << " is no d here." << nl << nl
+            << "    REMOVE `epsilonR` -- a free-standing patch needs only"
+            << " `surfCharge`." << nl
+            << "    Or, if the sheet IS bonded to an electrode, add BOTH"
+            << " `thickness` and `backingPotential`," << nl
+            << "    which is what makes epsilonR mean something." << nl
+            << exit(FatalIOError);
+    }
+
     this->readValueEntry(dict, IOobjectOption::MUST_READ);
 
     if (!this->readMixedEntries(dict))
@@ -278,10 +308,17 @@ void thinDielectricPotentialFvPatchScalarField::write(Ostream& os) const
 {
     fvPatchScalarField::write(os);
 
-    os.writeEntry("epsilonR", epsilonR_);
-
+    // ROUND-TRIP INVARIANT: write only what read() will ACCEPT.
+    //
+    // All three keys are backed-only -- `epsilonR` is rejected on a
+    // free-standing patch because it does nothing there -- so writing
+    // `epsilonR` unconditionally made a written field UNREADABLE: a restart
+    // from `startFrom latestTime` hit that guard and aborted. Caught 2026-09-03
+    // on needleDBD, where the generated field carried `epsilonR 1` on a
+    // free-standing patch that had never been given one.
     if (thickness_ > 0)
     {
+        os.writeEntry("epsilonR", epsilonR_);
         os.writeEntry("thickness", thickness_);
         os.writeEntry("backingPotential", backingPotential_);
     }

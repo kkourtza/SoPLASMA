@@ -430,6 +430,57 @@ existed for**, and `GAMG` was documented as incompatible with monolithic
 coupling when it needs only `agglomerator assembledFaceAreaPair`.
 
 
+## Dielectric surfaces — meshed, or collapsed onto the boundary
+
+A barrier can be represented two ways, and the choice is about cost, not physics:
+
+- **Meshed** as its own region, coupled by `coupledElectricPotential`. Laplace is
+  solved inside the barrier, so no thin-layer assumption is made. Declare the
+  region in `constant/regionProperties` and its `epsilonR` in
+  `constant/<region>/electricalProperties`; the Poisson model is then *derived*,
+  not chosen.
+- **Collapsed onto the gas boundary** by `thinDielectricPotential`, which
+  replaces the layer with its surface capacitance `C = eps0*epsilonR/d`:
+
+  ```
+  eps_g dV/dn = sigma - C (V - Vb)
+  ```
+
+  Two situations share the one condition. A **free-standing** sheet — open gas or
+  vacuum behind it, nothing to be a capacitor to — is `C = 0`, pure Neumann, and
+  needs only `surfCharge`. A **conductively backed** sheet, the classical DBD
+  stack, additionally takes `thickness` and `backingPotential`. Those two are
+  validated as a pair, and `epsilonR` is *rejected* on a free-standing patch
+  because it does nothing there.
+
+  Note that `zeroGradient` is this same condition with `sigma` forced to zero —
+  so a wall that is meant to trap charge and is left `zeroGradient` will
+  accumulate surface charge and then silently discard it.
+
+Validated against analytic ground truth (the series stack, the surface charge and
+its sign, both limits, both guards, and restart round-tripping) — see
+[`docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md`](docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md).
+
+
+## Running the tests
+
+```bash
+tools/run_electrostatics_tests.sh     # seconds; exits nonzero if any case fails
+```
+
+Runs every electrostatics-only case and checks each against the reference
+declared in its own `COMPARE.md`. It exists because all of these cases were dead
+for three weeks and nothing noticed: a commit made `backgroundDensity` fatal but
+left `reducedE = Emag/backgroundDensity` unguarded in `singleRegionPoisson`, and
+since no electrostatics-only solver has a `plasmaSpecies` to publish a density,
+every case died with SIGFPE. It was found by accident, while testing an
+unrelated boundary condition.
+
+The plasma tutorials are hours long and cannot be run casually. These are
+cheap, so there is no excuse — **a case that is not run is not tested, and it
+rots silently.**
+
+
 ## Contributors
 
 **Rention Pasolari** <r.pasolari@gmail.com>  

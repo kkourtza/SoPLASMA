@@ -30,8 +30,7 @@ boundaryField
     bottom
     {
         type            thinDielectricPotential;
-        epsilonR        __EPSR__;
-__THICK____BACK__        surfCharge      none;      // sigma = 0: this bed tests the CAPACITANCE alone
+__EPSR____THICK____BACK__        surfCharge      surfCharge;
         value           uniform 0;
     }
 

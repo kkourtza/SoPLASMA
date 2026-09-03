@@ -69,6 +69,32 @@ ePotential
             uniformValue    table ((0 0) (100e-9 8e3));
         }
 
+        air_dielectric
+        {
+            // MECHANICAL, once the case declares what this surface IS.
+            //
+            // The 178 faces left over after splitMeshRegions took the 160
+            // interface faces. They have NO dielectric mesh behind them, but
+            // they are physically INSULATING: charge that arrives must stay
+            // there rather than leave the domain. That is precisely a
+            // free-standing thin dielectric,
+            //     eps_g dV/dn = sigma,
+            // and `zeroGradient` -- what this patch used to be -- is the same
+            // equation with sigma FORCED TO ZERO. The species conditions below
+            // already carry `enableSurfaceCharging true` on this patch, so
+            // sigma was being accumulated and then silently discarded by the
+            // potential. This entry is what makes it act.
+            //
+            // FREE-STANDING, so there is no `thickness`, no `backingPotential`
+            // and no `epsilonR`: with no conductor behind the sheet C = 0, and
+            // the only permittivity in the condition is the GAS one, which
+            // comes from the region. All three keys are REJECTED here, by
+            // design -- see the BC's doc.
+            type            thinDielectricPotential;
+            value           $internalField;
+            surfCharge      surfCharge;
+        }
+
         gas_to_dielectric
         {
             // MECHANICAL: the interface condition.

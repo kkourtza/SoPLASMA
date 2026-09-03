@@ -105,10 +105,17 @@ barrier
 
 | key | default | meaning |
 |---|---|---|
-| `epsilonR` | `1.0` | relative permittivity of the *layer* |
+| `epsilonR` | `1.0` | relative permittivity of the *layer*. **Backed only** — rejected on a free-standing patch, see below |
 | `thickness` | *(absent → free-standing)* | layer thickness $d$ [m] |
 | `backingPotential` | *(absent → free-standing)* | conductor potential $V_b$ [V] |
 | `surfCharge` | `surfCharge` | name of the $\sigma$ field; `none` ⇒ $\sigma=0$ |
+
+`epsilonR` is **rejected on a free-standing patch**, because it does nothing
+there: the layer's permittivity enters *only* through $C=\varepsilon_0\varepsilon_r/d$,
+and with $C=0$ the condition $\varepsilon_g\,\partial V/\partial n=\sigma$
+contains no permittivity but the **gas** one. Accepting it would let you set
+`epsilonR 4.6`, read the case back, and believe the barrier material mattered.
+A free-standing patch therefore needs exactly one key, `surfCharge`.
 
 `thickness` and `backingPotential` are validated **as a pair** — one without the
 other is fatal. Each alone is meaningless: a thickness with nothing behind it is
@@ -122,31 +129,50 @@ two conditions cannot disagree about it.
 
 ## Validation (measured 2026-09-03)
 
-Unit bed `tutorials/electrostatics/singleRegionElectrostaticFoam/thinDielectricSeriesStack` — a 1D column, gas gap
-$L=1\,$m, $V_0=1\,$V at `top`, `sides` `zeroGradient` so the problem is exactly
-one-dimensional, $\sigma=0$ so only the capacitance is under test. Ground truth
-is analytic, so this is a stronger test than any CFD comparison: run
-`./Allrun-sweep`.
+Unit bed `tutorials/electrostatics/singleRegionElectrostaticFoam/thinDielectricSeriesStack`
+— a 1D column, gas gap $L=1\,$m, $V_0=1\,$V at `top`, `sides` `zeroGradient`
+so the problem is exactly one-dimensional. Ground truth is analytic, so this is
+a stronger test than any CFD comparison: run `./Allrun-sweep`.
 
-| case | $\varepsilon_r$ | $d$ | analytic $V_s$ | measured | rel. err |
-|---|---|---|---|---|---|
-| a | 5 | 0.5 | 0.0909090909 | 0.0909091 | 1e-7 † |
-| b | 5 | 5.0 | 0.5 | 0.5 | 0 |
-| c | 2 | 0.5 | 0.2 | 0.2 | 0 |
-| d | 5 | free-standing | 1.0 | 1.0 | 0 |
+With $V=Ay+B$ on $0\le y\le1$, $V(1)=V_0$, and the outward normal at the test
+patch being $-\hat y$ (so $\partial V/\partial n=-A$), the condition closes:
 
-† write precision (`writePrecision 6`), not solver error.
+$$V_s = \frac{\sigma + C V_b + \varepsilon_g V_0}{\varepsilon_g + C},
+\qquad\text{and for } C=0:\quad V_s = V_0 + \frac{\sigma}{\varepsilon_g}.$$
 
-Cases (a)–(c) test the capacitance **value** across both $\varepsilon_r$ and
-$d$; case (d) is the $C\to0$ Neumann limit, where zero flux everywhere but the
-driven electrode must make $V$ uniform at exactly $V_0$.
+| case | $\varepsilon_r$ | $d$ | $\sigma$ | analytic $V_s$ | measured | err/$V_0$ |
+|---|---|---|---|---|---|---|
+| a | 5 | 0.5 | 0 | 0.0909090909 | 0.0909091 | 9e-9 |
+| b | 5 | 5.0 | 0 | 0.5 | 0.5 | 0 |
+| c | 2 | 0.5 | 0 | 0.2 | 0.2 | 0 |
+| d | — | free-standing | 0 | 1.0 | 1.0 | 0 |
+| e | — | free-standing | $+\varepsilon_0$ | 2.0 | 2.0 | 0 |
+| f | — | free-standing | $-\varepsilon_0$ | 0.0 | 5.03e-9 | 5e-9 |
+| g | 5 | 0.5 | $+\varepsilon_0$ | 0.1818181818 | 0.181818 | 1.8e-7 |
+
+(a)–(c) test the capacitance **value** across both $\varepsilon_r$ and $d$;
+(d) is the $C\to0$ Neumann limit, where zero flux everywhere but the driven
+electrode must make $V$ uniform at exactly $V_0$; (e)–(f) test the **surface
+charge and its sign** — positive $\sigma$ raises the surface potential, and
+$\sigma=-\varepsilon_0$ brings it exactly to zero; (g) tests $\sigma$ and the
+capacitance acting **together**.
+
+Errors are judged against the problem's **voltage scale** $V_0$, not against the
+expected value: (d) and (f) expect exactly zero deviation and exactly zero
+potential respectively, where a relative error is undefined and a converged zero
+would read as a catastrophic failure.
 
 The $d\to0$ **Dirichlet** limit was measured separately on the `needleDBD` bed:
 `thickness 1e-12` with `backingPotential 500` gave a patch value of 500 V
 (`valueFraction` = 0.9999997), confirming the collapse to a bare electrode.
 
-The paired-key guard was checked by giving `thickness` alone — fatal, as
-intended.
+Both guards are exercised as **negative** tests in the same sweep — a guard
+nobody runs is not a guard:
+
+| test | given | must fail with |
+|---|---|---|
+| `bad_pair` | `thickness` alone | "must be given TOGETHER" |
+| `bad_eps` | `epsilonR` with no `thickness` | "has NO EFFECT on a free-standing" |
 
 ## Relation to the meshed alternative
 
