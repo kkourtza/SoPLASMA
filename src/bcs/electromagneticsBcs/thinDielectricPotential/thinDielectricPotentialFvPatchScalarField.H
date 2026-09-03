@@ -14,14 +14,6 @@ Class
     Foam::thinDielectricPotentialFvPatchScalarField
 
 Description
-    *** WORK IN PROGRESS -- NOT BUILT. ***
-    There is no .C and this file is deliberately NOT in src/bcs/Make/files, so
-    nothing compiles or links it and the type is not registered. It is the
-    INTERFACE DESIGN, kept in the code where an implementer will look for it;
-    the physics is in
-    BoltzmannSolver docs/models/poisson_equation/ (see also the memory note
-    thin-dielectric-bc). Do not use it expecting a working boundary condition.
-
     Electric potential on an UNMESHED dielectric surface: an insulating sheet
     thin enough that meshing it is not worth it, optionally backed by a
     conductor.

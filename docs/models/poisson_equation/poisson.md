@@ -457,5 +457,10 @@ PIMPLE
 | **`fixedValue`** | Dirichlet condition; sets a specific voltage. | Grounded walls (0V), DC electrodes etc. |
 | **`zeroGradient`** | Neumann condition; zero electric field flux. | Symmetry planes or ideal (non-charging) insulators. |
 | **`fixedGradient`** | Sets the normal component of the electric field ($-\nabla \phi \cdot \mathbf{n}$). | Surfaces with a known, fixed surface charge density. |
+| **`thinDielectricPotential`** | Robin condition: collapses an UNMESHED dielectric layer onto the boundary as a surface capacitance $C=\varepsilon_0\varepsilon_r/d$, with surface charging. | A barrier too thin to mesh; an insulating wall that must accumulate charge rather than let it escape. |
 
-For a detailed breakdown of the custom boundary conditions, please refer to the specialized documentation.
+For a detailed breakdown of the custom boundary conditions, please refer to the specialized documentation:
+
+- [`coupledElectricPotential`](boundary_conditions/coupledElectricPotential.md) — meshed region-to-region interface
+- [`thinDielectricPotential`](boundary_conditions/thinDielectricPotential.md) — unmeshed thin layer, free-standing or conductively backed
+- [floating electrode](../floating-electrode.md) — a conductor whose potential is unknown and whose total charge is known
