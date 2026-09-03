@@ -98,3 +98,13 @@ tutorials/**/system/changeDictionaryDict
 # The extruded mesh is reproducible in <1 s from the 2-D one by
 # tools/msh2Dto3D.py (see SoEEDF meshes/README.md). 14 MB is not worth tracking.
 tutorials/**/*_extruded.msh
+
+# Per-region STUBS written by tools/plasmaSetupRegions.sh. Ten-line files whose
+# only content is `#include "../<same name>"`, regenerated after every split
+# (splitMeshRegions overwrites them with empty dummies). Nothing to track.
+tutorials/**/constant/*/plasmaSpeciesProperties
+tutorials/**/constant/*/plasmaTransportProperties
+tutorials/**/constant/*/photoionizationProperties
+
+# Per-region system/ directories: fvSchemes and fvSolution stubs, same as above.
+tutorials/**/system/*/

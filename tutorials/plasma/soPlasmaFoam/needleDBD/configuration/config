@@ -20,69 +20,35 @@
 
 
 // ===========================================================================
-//  APPLIED VOLTAGE
+//  APPLIED VOLTAGE -- NOT HERE
 // ===========================================================================
+//
+// The drive lives on the PATCH it drives, in etc/changeDictionary.<gasRegion>:
+//
+//     active_electrode
+//     {
+//         type            uniformFixedValue;
+//         uniformValue    table ((0 0) (100e-9 8e3));
+//         value           uniform 0;
+//     }
+//
+// There is no case variable for it, deliberately, for two reasons.
+//
+// IT IS A PER-PATCH PROPERTY. It applies only to electrodes that are NOT
+// grounded -- `ground` has no waveform -- so a global variable would be a
+// global name for a quantity that is local, the same mistake as a single
+// `seeCoefficient` for surfaces made of different materials.
+//
+// AND THE CONTEXT ALREADY NAMES IT. `uniformValue` is OpenFOAM's own key on
+// `uniformFixedValue`, and the patch name says which electrode. A variable
+// would add a name where the surroundings already supply one -- and the name it
+// used to have, `voltageRamp`, was actively misleading: it named ONE
+// implementation of the intent, while the value is any Function1 and is a
+// `sine`, `square`, `csv` or `constant` more often than a ramp.
+//
+// The Function1 menu and worked examples (AC, damped AC, pulses, a measured
+// waveform from CSV) are in docs/reference/changeDictionary.md.
 
-// The waveform as ONE WHOLE VALUE. A style choice, and a good one, but the
-// reason first given here was wrong.
-//
-// CORRECTED 2026-09-02. SUPERSEDES the earlier claim that "`changeDictionary`
-// does not expand a $var nested inside a compound value", which said a table
-// written as `table ((0 0) ($riseTime $appliedVoltage))` would reach the field
-// file verbatim and kill the solver with "Illegal dictionary entry or
-// environment variable name riseTime".
-//
-// MEASURED on positiveStreamer_fixedMesh, whose electrode uses exactly that
-// nested form. `changeDictionary` expands NOTHING -- not a nested $var and not
-// a whole-value one. Both reach 0/ePotential verbatim:
-//     uniformValue    table ( ( 0 0 ) ( $voltageRampTime $appliedVoltage ) );
-// and BOTH then resolve when the field is parsed:
-//     $ foamDictionary 0/ePotential -entry \
-//           boundaryField/active_electrode/uniformValue
-//     uniformValue    table ( ( 0 0 ) ( 9.375e-11 18750 ) );
-//
-// THE ACTUAL RULE: the `#include` must be present in the file where the $var is
-// finally RESOLVED, which is the field file in 0/, not the changeDictionaryDict.
-// It gets there from 0.orig/, and `changeDictionary` preserves it. The reported
-// "Illegal dictionary entry" comes from a field file that has LOST its include
-// -- the separate, real trap that `changeDictionary` strips the `#include` it
-// used from dictionaries it rewrites in place.
-//
-// SO WHY KEEP THE WHOLE VALUE? Because the waveform is a Function1, and only
-// this form lets you change its TYPE from here. `constant`, `linearRamp`,
-// `halfCosineRamp`, `sine`, `square`, `polynomial`, `csv`, `tableFile` and
-// `coded` all work with no solver change. For an AC DBD:
-//     voltageRamp   sine { frequency 1e3; amplitude 20e3; level 0; };
-// None of those has an amplitude-and-rise-time to split into two variables, so
-// an `appliedVoltage` + `riseTime` pair would quietly limit the case to ramps.
-// See docs/models/energy/applied-voltage.md for the full menu.
-//
-// RAMPED, not stepped: a step puts the whole 8 kV across the gap in one
-// timestep, which is unphysical and a large transient for the Poisson /
-// space-charge coupling to absorb.
-// THE DRIVE. Required: a discharge with no drive does nothing, and guessing an
-// amplitude would be inventing the physics.
-//
-// Any OpenFOAM Function1 -- constant, sine, square, csv, scale, the ramps --
-// works here with no solver change. The type menu, the parameters of each and
-// worked examples are in
-//     docs/reference/configuration-config.md#voltageramp
-// rather than here, because that text is identical in every case that has an
-// electrode and a copy per case is how it goes stale.
-//
-// WHAT IS CASE-SPECIFIC, and therefore stays:
-//
-// RAMPED, NOT STEPPED. A step puts the whole 8 kV across the gap in one
-// timestep -- unphysical, and a large transient for the Poisson / space-charge
-// coupling to absorb.
-//
-// ONE WHOLE VALUE rather than an amplitude and a rise time, so the TYPE can be
-// changed from here. `sine {...}` has no amplitude-and-rise-time to split into
-// two variables, so an `appliedVoltage` + `riseTime` pair would quietly limit
-// this case to ramps. (This is NOT because changeDictionary fails to expand a
-// nested $var -- it expands nothing, and both forms resolve when the field is
-// parsed. See the note further down.)
-voltageRamp                         table ((0 0) (100e-9 8e3));
 
 
 // ===========================================================================
@@ -134,40 +100,39 @@ gasTemperature                      300;      // [K]
 //     constant/gas/electricalProperties          epsilonR 1.0;
 //     constant/dielectric/electricalProperties   epsilonR 3.0;   <- set this
 
-// MONOLITHIC region coupling. The gas and the dielectric potential are
-// assembled into ONE matrix and solved together, so the permittivity jump and
-// the surface charge are satisfied exactly at every linear solve.
+// REGION COUPLING -- NOT HERE either.
 //
-// The alternative -- explicit coupling -- lags the interface: each region sees
-// the other's potential from the previous corrector. On this geometry that was
-// MEASURED to plateau the outer ePotential residual around 1e-7, and at a
-// tolerance of 1e-8 the outer loop hit its cap and every step was discarded.
+// It is a PER-INTERFACE property: `useImplicit` sits on each
+// `coupledElectricPotential` patch, so a three-region stack could legitimately
+// couple one interface monolithically and another segregated. It lives in
+// etc/changeDictionary.<region>, on the interface patch:
 //
-// Monolithic coupling requires an assembly-aware linear solver. See the
-// `agglomerator` entry in system/fvSolution -- with GAMG's default
-// agglomerator this aborts with "lduPrimitiveMeshAssembly to fvMesh".
-// MONOLITHIC region coupling: assemble the gas and every dielectric into ONE
-// matrix and solve them together, so the permittivity jump and the surface
-// charge are satisfied exactly at every linear solve.
+//     gas_to_dielectric
+//     {
+//         type            coupledElectricPotential;
+//         useImplicit     true;     // MONOLITHIC: one matrix for both regions
+//         surfCharge      surfCharge;
+//         surfChargeNbr   none;
+//     }
 //
-// NAMED FOR WHAT IT DOES. The dictionary key it feeds is `useImplicit`, which is
-// OpenFOAM's own name on fvPatchField (there is a `useImplicit_` member and a
-// `useImplicit()` accessor in the base class), so that key cannot be renamed
-// without fighting the framework's round-trip. The CASE variable is ours, and
-// "useImplicit" says nothing about WHAT is being made implicit -- it could as
-// easily mean the chemistry source, the drift term or the wall flux, all of
-// which have their own implicit/explicit choices in this solver.
+// WHY THE KEY IS STILL CALLED `useImplicit`, having been renamed here. It is
+// OPENFOAM'S OWN name for the concept: `fvPatchField` carries a `useImplicit_`
+// member and a `useImplicit()` accessor, and -- decisively --
+// `fvPatchField::write` EMITS `useImplicit true` whenever the flag is set. So
+// accepting a better name would mean reading one spelling and writing another:
+// you would type `monolithicCoupling` and find `useImplicit` in
+// 0/gas/ePotential afterwards. Two spellings for one setting is the exact
+// defect removed from poissonSolver/PoissonScheme and
+// limitVoltageRiseRate/maxVoltageRiseRate.
 //
-// false -> SEGREGATED: each region is solved on its own mesh and sees the
-//          other's potential from the previous corrector. On this geometry that
-//          was MEASURED to plateau the outer ePotential residual near 1e-7, and
-//          at a tolerance of 1e-8 the outer loop hit its cap and every step was
-//          discarded.
+// And on a PATCH the name is precise, which it was not as a global case
+// variable: it says whether this coupling contributes to the MATRIX or is
+// lagged as a source. What was wrong was one global `useImplicit` in a solver
+// where the chemistry source, the wall flux and the Poisson scheme each have
+// their own implicit/explicit choice.
 //
-// Monolithic coupling needs an assembly-aware linear solver: see the
-// `agglomerator` entry in system/fvSolution -- with GAMG's default agglomerator
-// this aborts with "lduPrimitiveMeshAssembly to fvMesh".
-monolithicRegionCoupling            true;
+// See docs/reference/changeDictionary.md for the measured cost of the lag.
+
 
 // surfChargeDict is GONE. The field name was never a choice -- the solver
 // registers it as the literal "surfCharge" -- so the variable had one valid
@@ -202,15 +167,12 @@ monolithicRegionCoupling            true;
 // would have removed them, so this only conserves charge because the positive
 // ions are clamped to the same total, split by mole fraction. Raise one and you
 // must raise the others.
-floorDensity                        1e11;     // [m^-3]
 
 
 // ===========================================================================
 //  DISCRETISATION SCHEMES
 // ===========================================================================
 
-ddtSchemes                          backward;
-gradSchemes                         leastSquares;
 driftDiffusionFluxScheme            standard;
 
 electronDriftDivScheme                  Gauss ROUNDF;
@@ -218,8 +180,6 @@ electronDiffusionLaplacianScheme        Gauss harmonic corrected 0.33;
 electronMobilityInterpolationScheme     harmonic;
 electronDiffusivityInterpolationScheme  harmonic;
 ePotentialLaplacianScheme               Gauss linear corrected 0.33;
-ePotentialSnGradScheme                  corrected 0.33;
-snGradSpeciesScheme                     corrected 0.33;
 
 
 // ===========================================================================
@@ -263,7 +223,6 @@ ePotentialSolver                    GAMG;
 // The wrapper is present, PETSc itself is not. It is a WARNING rather than a
 // fatal error, so an unnecessary entry costs a confusing line at start-up on
 // every run.
-solverLibs                          ( "libROUNDSchemes.so" );
 
 // A SCHEME, not a linear solver -- hence the name. `explicit` treats the space
 // charge as a pure source; `semiImplicit` also brings the conductivity in
@@ -273,8 +232,6 @@ solverLibs                          ( "libROUNDSchemes.so" );
 // This key used to be called `poissonSolver` while the dictionary entry it fed
 // was called `PoissonScheme`: two names for one setting, each suggesting the
 // other's meaning.
-poissonScheme                       semiImplicit;
-nOuterCorrectors                    4;
 
 // FOUR VALUES, NOT TEN NAMES.
 //
@@ -291,8 +248,6 @@ linearTol                           1e-10;    // ePotential, n_e, all species
 linearRelTol                        0.0;      // absolute convergence, all fields
 
 // The two genuine outliers, kept separate because their values really differ.
-TgasTolerance                       1e-12;    // tighter: gas energy is stiff
-ePotentialTolerancePIMPLE           1e-8;     // looser than the species outer
                                               // tolerance, and MUST stay >= 10x
                                               // the linear tolerance or the
                                               // outer loop can never meet it
@@ -303,9 +258,6 @@ outerTol                            1e-10;    // n_e and species, outer loop
 //  TIME CONTROL
 // ===========================================================================
 
-adjustTimeStep                      true;
-deltaT                              1e-12;
-endTime                             3e-09;
 
 // 3 ns, not 20. MEASURED 2026-09-02: this case runs at ~2.8 s/step, so the
 // 2e-08 it used to ask for is about a THREE-HOUR run -- not a walkthrough.
@@ -321,26 +273,17 @@ endTime                             3e-09;
 // The interesting window opens EARLY. With ~15x tip enhancement, E/N reaches
 // the ionisation range at roughly V ~ 167 V, i.e. t ~ 2.1 ns on an 8 kV /
 // 100 ns ramp -- long before the ramp completes. Write often enough to see it.
-writeControl                        adjustableRunTime;
-writeInterval                       1e-09;
 
 // Timestep limiters. maxSpeciesCo is a RAIL rather than the control: on this
 // bed the binding limiter is the ENERGY convective Courant, which shares this
 // cap.
-limitSpeciesCo                      true;
-printSpeciesCo                      true;
 maxSpeciesCo                        100;
 
-limitChemistryCo                    true;
-printChemistryCo                    true;
-maxChemistryCo                      0.9;
 
 // limitDielectricRelaxationRatio is NOT declared: false is already the default.
 // The ratio is still REPORTED (printDielectricRelaxationRatio below), compared
 // against maxDielectricRelaxationRatio -- which is the right way round, since a
 // limiter should be measured before it is switched on.
-printDielectricRelaxationRatio      true;
-maxDielectricRelaxationRatio        5;
 
 // ONE key for the voltage rise: volts per step, 0 disables, always active when
 // a `voltagePatchName` is named. 100 V/step over an 8 kV ramp is ~80 points

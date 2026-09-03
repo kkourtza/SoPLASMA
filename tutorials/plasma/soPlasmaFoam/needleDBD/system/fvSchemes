@@ -30,12 +30,12 @@ FoamFile
 
 ddtSchemes
 {
-    default                         $ddtSchemes;
+    default                         backward;
 }
 
 gradSchemes
 {
-    default                         $gradSchemes;
+    default                         leastSquares;
 }
 
 divSchemes
@@ -107,8 +107,8 @@ interpolationSchemes
 
 snGradSchemes
 {
-    snGrad(n_e)                     $snGradSpeciesScheme;
-    snGrad(ePotential)              $ePotentialSnGradScheme;
+    snGrad(n_e)                     corrected 0.33;
+    snGrad(ePotential)              corrected 0.33;
 }
 
 fluxRequired

@@ -26,14 +26,14 @@ FoamFile
 
 plasmaTimeControl
 {
-    adjustTimeStep                  $adjustTimeStep;
+    adjustTimeStep                  true;
 
     // Species Courant. A RAIL rather than the control on this bed: the
     // binding limiter here is the energy convective Courant, which shares
     // this cap. Check which one actually bound with
     //     grep "deltaT set by:" log.soPlasmaFoam | sort | uniq -c
-    limitSpeciesCo                  $limitSpeciesCo;
-    printSpeciesCo                  $printSpeciesCo;
+    limitSpeciesCo                  true;
+    printSpeciesCo                  true;
     maxSpeciesConvectiveCo          $maxSpeciesCo;
     maxSpeciesDiffusiveCo           $maxSpeciesCo;
 
@@ -42,13 +42,13 @@ plasmaTimeControl
     // full mechanism's production and loss, because a NET rate cancels near
     // the critical field and would report a long timescale exactly where the
     // chemistry is fastest.
-    limitChemistryCo                $limitChemistryCo;
-    printChemistryCo                $printChemistryCo;
-    maxChemistryCo                  $maxChemistryCo;
+    limitChemistryCo                true;
+    printChemistryCo                true;
+    maxChemistryCo                  0.9;
 
     // Dielectric relaxation. Reported but not limiting here.
-    printDielectricRelaxationRatio  $printDielectricRelaxationRatio;
-    maxDielectricRelaxationRatio    $maxDielectricRelaxationRatio;
+    printDielectricRelaxationRatio  true;
+    maxDielectricRelaxationRatio    5;
 
     // ONE key for the voltage rise: volts per step, 0 disables. Always active
     // once `voltagePatchName` names a driven electrode, and on a
@@ -115,7 +115,7 @@ poisson
     // The old spelling was `PoissonScheme`, fed by a case variable called
     // `poissonSolver`: two names for one setting, each suggesting the other's
     // meaning.
-    scheme                      $poissonScheme;
+    scheme                      semiImplicit;
 
     // How E is formed from the potential: grad | reconstruct.
     // `reconstruct` builds E from the face fluxes, so E is consistent with the

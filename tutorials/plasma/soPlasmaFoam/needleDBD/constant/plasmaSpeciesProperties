@@ -105,7 +105,7 @@ speciesProperties
     // attachment would have removed them, so this only conserves charge
     // because the positive ions are clamped to the same total (below). Do not
     // raise one without the other.
-    minNumberDensity          $floorDensity;   // NEEDLE-DBD: no seed, so this IS the initiator
+    minNumberDensity          1e11;   // NEEDLE-DBD: no seed, so this IS the initiator
 
     // LMEA: transport the electron energy instead of taking the mean energy
     // from the LFA table. The transport coefficients above now look up

@@ -1,0 +1,234 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- boundary conditions for the GAS region                         |
+|                                                                             |
+| SKELETON. Structure and keys are present; the PHYSICS values marked CHOSEN  |
+| are yours to set. The solver will not start until they are.                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      changeDictionaryDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// HOW THIS FILE IS USED. Allrun copies it to system/gas/changeDictionaryDict
+// and runs `changeDictionary -region gas`, which REWRITES the boundaryField
+// blocks of the fields already in 0/gas/.
+//
+// IT IS A PATCH SCRIPT, and that is the whole point: this region has 38 field
+// files and 6 patches, i.e. 228 boundary entries. You name only what differs
+// from the catch-all `".*" { type calculated; }` that 0.orig carries, and a
+// regex covers the 15 species the mechanism produced. About a dozen entries
+// expand to 228.
+//
+// `type calculated` is a PLACEHOLDER -- it holds a value but cannot take part
+// in a solve. A patch that is actually solved and never got a real condition
+// fails with `cannot be called for a calculatedFvPatchField`, which is the
+// error to expect while this file is incomplete.
+//
+// PATCHES ON THIS REGION (from constant/gas/polyMesh/boundary):
+//     out                 open outer boundary
+//     air_dielectric      the barrier surface NOT part of the interface
+//                         (178 of the original 338 faces; the other 160 became
+//                         the interface -- see TUTORIAL.md step 2)
+//     active_electrode    the needle -- the DRIVEN electrode
+//     front, back         2-D symmetry planes
+//     gas_to_dielectric   the interface, created by splitMeshRegions
+//
+// Each entry is marked MECHANICAL (derivable from what the patch is -- a
+// generator will emit it) or CHOSEN (physics you supply).
+
+ePotential
+{
+    internalField   uniform 0;                          // MECHANICAL
+
+    boundaryField
+    {
+        ".*"                { type zeroGradient; }      // MECHANICAL
+        front               { type empty; }             // MECHANICAL
+        back                { type empty; }             // MECHANICAL
+
+        active_electrode
+        {
+            // MECHANICAL: a driven electrode is a time-varying Dirichlet.
+            type            uniformFixedValue;
+            value           uniform 0;
+
+            // >>> CHOSEN <<<  THE DRIVE. Any Function1 -- constant, sine,
+            // square, csv, the ramps. This is the single most important value
+            // in the case and there is no default: a discharge with no drive
+            // does nothing.
+            //
+            //     uniformValue    table ((0 0) (100e-9 8e3));    // ramp to 8 kV
+            //     uniformValue    sine { frequency 1e3; amplitude 20e3; level 0; };
+            //     uniformValue    constant 8e3;
+            //
+            // See docs/reference/changeDictionary.md for the full menu.
+            // uniformValue    <SET ME>;
+        }
+
+        gas_to_dielectric
+        {
+            // MECHANICAL: the interface condition.
+            type            coupledElectricPotential;
+            value           $internalField;
+
+            // MECHANICAL, and note the PAIRING with the .dielectric file: the
+            // GAS owns the surface charge because the plasma deposits it, so
+            // the other side owns none. Exactly one owner or it is
+            // double-counted.
+            surfCharge      surfCharge;
+            surfChargeNbr   none;
+
+            // Default true (monolithic) since 2026-09-03.
+            useImplicit     true;
+        }
+
+        "procBoundary.*"    { type processor; }          // MECHANICAL
+    }
+}
+
+surfCharge
+{
+    // MECHANICAL throughout. The field is written by
+    // plasmaTransport::updateSurfaceCharge from the species wall fluxes; these
+    // conditions only have to not interfere.
+    internalField   uniform 0;
+
+    boundaryField
+    {
+        ".*"                { type calculated; value uniform 0; }
+        front               { type empty; }
+        back                { type empty; }
+        "procBoundary.*"    { type processor; }
+    }
+}
+
+n_e
+{
+    // MECHANICAL, and NOT a free choice -- it is already stated once, as
+    // `minNumberDensity` in plasmaSpeciesProperties (1e11 here).
+    //
+    // In a case with no seeded blob the initial density IS the floor: the
+    // discharge initiates from this background in the enhanced tip field. A
+    // second, independent value here could disagree with the floor, and then
+    // the first step would clamp every cell -- a source term acting before any
+    // physics.
+    //
+    // A CANDIDATE FOR DERIVATION: the generator should take this from
+    // minNumberDensity rather than have it written twice. Left explicit for now
+    // because `$internalField` below references it.
+    internalField   uniform 1e11;
+
+    boundaryField
+    {
+        ".*"                { type zeroGradient; }      // MECHANICAL
+        front               { type empty; }             // MECHANICAL
+        back                { type empty; }             // MECHANICAL
+
+        out
+        {
+            // MECHANICAL: an open boundary is OUTFLOW, not zeroGradient --
+            // zeroGradient is NOT no-flux, which is a documented trap here.
+            type            inletOutlet;
+            phi             particleFlux_e;
+            value           $internalField;
+            // MECHANICAL: what flows back in across an open boundary is the
+            // undisturbed background, i.e. the same floor.
+            inletValue      $internalField;
+        }
+
+        // THE EMITTING SURFACES. Both the metal needle and the barrier surface
+        // emit: SEE is not electrode-only.
+        //
+        // Type, MECHANICAL:
+        //     electronDDWallFluxImplicit   implicit in the matrix (preferred)
+        //     electronDDWallFluxMixed      explicit mixed form
+        "(active_electrode|air_dielectric|gas_to_dielectric)"
+        {
+            type            electronDDWallFluxImplicit;
+            value           $internalField;
+
+            // >>> CHOSEN <<<  gamma per SURFACE. Default 0.001 (contaminated
+            // oxide / barrier); clean metal is nearer 0.1. The needle and the
+            // barrier are different materials, so split this regex if they
+            // should differ -- which they should.
+            // defaultSEEC     <SET ME>;
+
+            // Surface charging: ON for the barrier and the interface, OFF for
+            // a metal electrode. Default false. Split the regex to differ.
+            // enableSurfaceCharging  true;
+        }
+    }
+}
+
+nEps_e
+{
+    // >>> CHOSEN <<<  the initial electron ENERGY density [eV m^-3], solved
+    // under LMEA. Physically n_e x the initial mean energy, so with n_e = 1e11
+    // and a thermal start of ~0.04 eV this is ~4e9. A CANDIDATE FOR DERIVATION:
+    // the generator should compute it from n_e and an initial mean energy
+    // rather than have it stated.
+    internalField   uniform 4e9;
+    boundaryField
+    {
+        ".*"                { type zeroGradient; }      // MECHANICAL
+        front               { type empty; }             // MECHANICAL
+        back                { type empty; }             // MECHANICAL
+
+        "(active_electrode|air_dielectric|gas_to_dielectric)"
+        {
+            type            energyDDWallFluxMixed;      // MECHANICAL
+            value           $internalField;
+            // >>> CHOSEN <<<  the same gamma as n_e above. It must agree, or
+            // the emitted electrons and the energy they carry disagree.
+            // defaultSEEC     <SET ME>;
+        }
+    }
+}
+
+// EVERY OTHER SPECIES, whatever the mechanism named them. With
+// `activeSpecies fromMechanism` the case does not know the names in advance, so
+// a regex covers them; a named block above would win for one that needs
+// different treatment.
+"n_.*"
+{
+    // `"n_.*"` MATCHES n_e TOO, and that is fine: OpenFOAM resolves an EXACT
+    // key in preference to a pattern, so the `n_e` block above wins for the
+    // electron and this covers the rest. Negative lookahead is not available --
+    // OpenFOAM uses POSIX extended regex, and `n_(?!e$).*` fails with
+    // "Mismatched '(' and ')'". The same exact-beats-pattern idiom is used in
+    // fvSolution, where a named `n_e` sits above `"n_.*(Final)?"`.
+    //
+    // internalField NOT set here. Each species has its own floor in plasmaSpeciesProperties
+    // (the positive-ion floors sum to the electron floor, split by mole
+    // fraction, so the background is quasi-neutral by construction), and
+    // plasmaCreateSpeciesFields already wrote each field with it. Overriding
+    // internalField with one value for all species would break that balance
+    // and manufacture net space charge.
+    //
+    // `value` below is therefore a plain number rather than $internalField:
+    // this block spans 14 species with 14 different floors.
+    boundaryField
+    {
+        ".*"                { type zeroGradient; }      // MECHANICAL
+        front               { type empty; }             // MECHANICAL
+        back                { type empty; }             // MECHANICAL
+
+        // MECHANICAL. Ions need a wall flux (it is what feeds SEE); neutrals
+        // may not. Split into ion and neutral blocks if the mechanism's
+        // neutrals should simply reflect:
+        //     ionDDWallFluxImplicit | ionDDWallFluxMixed
+        //     neutralDDWallFluxImplicit | neutralDDWallFluxMixed
+        "(active_electrode|air_dielectric|gas_to_dielectric)"
+        {
+            type            ionDDWallFluxImplicit;
+            value           uniform 0;
+            // enableSurfaceCharging  true;   // >>> CHOSEN <<< per surface
+        }
+    }
+}
+
+// ************************************************************************* //

@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+#
+# needleDBD -- build and run the case, serial.
+#
+# ONE COMMAND. Everything below was worked out step by step in TUTORIAL.md; this
+# is that sequence, in the order that works.
+#
+# THE ORDER IS LOAD-BEARING. Four of these steps fail, some of them SILENTLY, if
+# moved. Each is commented where it happens rather than here.
+#
+# NOTE this script is layer 2 in the making: once the case generator exists it
+# will be emitted rather than written. Until then it is the reference output the
+# generator has to reproduce.
+
+cd "${0%/*}" || exit 1
+
+# NO `set -u`. OpenFOAM's own bin/tools/RunFunctions references
+# FOAM_LD_LIBRARY_PATH unbound at line 29, so `set -u` makes sourcing it fatal:
+#     RunFunctions: line 29: FOAM_LD_LIBRARY_PATH: unbound variable
+# The variables this script actually depends on are guarded individually below.
+
+: "${BOLTZMANN_DIR:=$HOME/Projects/SoEEDF}"
+export BOLTZMANN_DIR
+
+if [ -z "${WM_PROJECT_DIR:-}" ]; then
+    echo "ERROR: OpenFOAM is not sourced." >&2
+    echo "       source /usr/lib/openfoam/openfoam2412/etc/bashrc" >&2
+    exit 1
+fi
+. "$WM_PROJECT_DIR/bin/tools/RunFunctions"
+
+SoPLASMA_TOOLS=../../../../tools
+MESH=${MESH:-$BOLTZMANN_DIR/meshes/square_NS_Diel_point.msh}
+
+die() { echo "FAILED: $*" >&2; exit 1; }
+step() { echo; echo "=== $*"; }
+
+./Allclean
+mkdir -p logs
+
+# ---------------------------------------------------------------------------
+step "1. 2-D -> 3-D mesh"
+#
+# OpenFOAM needs VOLUME cells even for a planar case: handed a 2-D mesh,
+# gmshToFoam reports "Cells: total:0" and dies. The converter extrudes the MESH
+# rather than the geometry, which removes two CAD traps by construction -- no
+# kernel to choose, no `Coherence;` to renumber entities.
+#
+# It also INFERS the region interface: an edge whose two adjacent faces lie in
+# different physical surfaces must stay INTERNAL, because splitMeshRegions
+# builds the coupling from internal faces between cellZones. Name those as a
+# boundary patch and the regions never couple -- and nothing errors.
+EXTRUDED=constant/needleDBD_extruded.msh
+[ -f "$MESH" ] || die "no 2-D mesh at $MESH (override with MESH=...)"
+"$SoPLASMA_TOOLS"/msh2Dto3D.py "$MESH" -o "$EXTRUDED" --thickness 1e-5 \
+    > logs/log.msh2Dto3D 2>&1 || die "msh2Dto3D"
+grep -E "nodes|interface edges" logs/log.msh2Dto3D | sed 's/^/    /'
+
+step "2. import"
+runApplication gmshToFoam "$EXTRUDED" || die "gmshToFoam"
+# gmshToFoam writes `physicalType patch;`, which changeDictionary chokes on
+# later, and leaves front/back as `patch` when a 2-D case needs `empty`.
+"$SoPLASMA_TOOLS"/msh2Dto3D.py --fix-boundary constant/polyMesh/boundary \
+    >> logs/log.msh2Dto3D 2>&1 || die "--fix-boundary"
+
+# ---------------------------------------------------------------------------
+step "3. split into regions"
+#
+# BEFORE the split, `system/fvSchemes` and `system/fvSolution` must exist:
+# splitMeshRegions builds an fvMesh, and fvMesh INHERITS fvSchemes and
+# fvSolution as MUST_READ base classes. This is why the numerics come third in
+# the tutorial and not tenth.
+[ -f system/fvSchemes ]  || die "system/fvSchemes must exist BEFORE the split"
+[ -f system/fvSolution ] || die "system/fvSolution must exist BEFORE the split"
+runApplication splitMeshRegions -cellZones -overwrite || die "splitMeshRegions"
+
+# THE single most important check in the whole build. splitMeshRegions builds
+# the region coupling from internal faces between cellZones; if this table is
+# empty the two regions never couple and NOTHING ELSE ERRORS.
+if ! grep -A6 "Sizes of interfaces" log.splitMeshRegions | grep -qE "^0[[:space:]]"; then
+    echo "  Sizes of interfaces between regions:" >&2
+    grep -A6 "Sizes of interfaces" log.splitMeshRegions >&2
+    die "no region interface was built -- the interface faces are not internal
+     faces between cellZones. See TUTORIAL.md step 2a."
+fi
+# The data row is the FOURTH line after the header (blank, column names,
+# dashes, then the row) -- `-A3` prints an empty-looking table and makes a
+# correct split look like the exact failure this check exists to detect.
+grep -A6 "Sizes of interfaces" log.splitMeshRegions \
+    | grep -E "^[0-9]" | sed 's/^/    interface: /' 
+
+step "4. per-region numerics, materials and plasma dictionaries"
+#
+# AFTER the split, always. splitMeshRegions OVERWRITES system/<region>/ with an
+# EMPTY dummy and says so ("Writing dummy"), and empty is worse than missing
+# because it fails late: checkMesh is happy, then the first scheme lookup dies.
+#
+# The script writes ten-line #include stubs rather than copies, so there is one
+# place to edit and no include-depth surgery.
+"$SoPLASMA_TOOLS"/plasmaSetupRegions.sh > logs/log.plasmaSetupRegions 2>&1 \
+    || die "plasmaSetupRegions"
+grep -E -- "->|NEEDS A VALUE|exists" logs/log.plasmaSetupRegions | sed 's/^/    /'
+
+# ---------------------------------------------------------------------------
+step "5. ion transport tables"
+#
+# NOT produced by the Boltzmann sweep: that solves the ELECTRON energy
+# distribution, and an ion drifting through a neutral gas is a different problem
+# with a different distribution. These are MEASURED values.
+#
+# Separate directory from constant/plasmaTables on purpose -- the sweep owns
+# only its own tables, so a shared directory meant any re-sweep or Allclean
+# destroyed these and the sweep did not put them back.
+#
+# --mechanism wants the COMPILED .foam, not the master YAML: it reads a
+# `speciesCharge` block. Passing the YAML writes 0 tables and EXITS 0.
+mkdir -p constant/ionTables
+~/ct-env/bin/python "$BOLTZMANN_DIR"/tools/ionmob.py \
+    "$BOLTZMANN_DIR"/data/lxcat/ion-transport/NitrogenOxygen_Mobility.txt \
+    --mechanism constant/air_plasma.foam \
+    --background Air -o constant/ionTables \
+    > logs/log.ionmob 2>&1 || die "ionmob"
+grep -E "wrote .* table" logs/log.ionmob | sed 's/^/    /'
+# ionmob's NOTES are modelling DECISIONS, not diagnostics: substituted gas
+# pairs, stitched datasets, diffusion derived by Einstein. Read them.
+echo "    (modelling choices in logs/log.ionmob -- grep -A20 NOTES)"
+
+# ---------------------------------------------------------------------------
+step "6. initial fields"
+#
+# 0.orig holds three hand-authored templates with a catch-all boundaryField;
+# plasmaCreateSpeciesFields generates the rest from the mechanism. It is
+# region-aware and needs constant/<gas>/plasmaSpeciesProperties to exist, so it
+# runs AFTER step 4.
+rm -rf 0 && mkdir -p 0/gas 0/dielectric
+cp 0.orig/ePotential 0.orig/nEps_e 0.orig/surfCharge 0/gas/   || die "0.orig missing"
+cp 0.orig/ePotential 0/dielectric/
+# The split moved the fields one level deeper, so their #include climbs one
+# level too. Missed once: the include failed silently, $vars were never defined,
+# and the solver died reading 0/gas/ePotential.
+sed -i 's@#include[[:space:]]*"\.\./configuration@#include "../../configuration@' \
+    0/gas/* 0/dielectric/*
+runApplication plasmaCreateSpeciesFields || die "plasmaCreateSpeciesFields"
+echo "    $(ls 0/gas | wc -l) fields in 0/gas"
+
+step "7. boundary conditions"
+for r in gas dielectric; do
+    cp etc/changeDictionary.$r system/$r/changeDictionaryDict
+    sed -i 's@#include[[:space:]]*"\.\./@#include "../../@' \
+        system/$r/changeDictionaryDict
+    changeDictionary -region $r > logs/log.changeDictionary.$r 2>&1 \
+        || die "changeDictionary -region $r"
+done
+# changeDictionary STRIPS the #include from a field it rewrites, so any $var it
+# copied through verbatim is then undefined and the solver dies reading the
+# field. Re-insert it -- AFTER the FoamFile block, or the reader fails with
+# "problem while reading header".
+/usr/bin/python3 - <<'PY'
+import pathlib, re
+inc = '#include "../../configuration/config"'
+for d in ("0/gas", "0/dielectric"):
+    for f in pathlib.Path(d).iterdir():
+        if not f.is_file():
+            continue
+        t = f.read_text(errors="replace")
+        t = "\n".join(l for l in t.split("\n") if l.strip() != inc)
+        if "$" in t:
+            m = re.search(r"^FoamFile\s*\n\{.*?\n\}\s*\n", t, re.S | re.M)
+            if m:
+                t = t[:m.end()] + inc + "\n" + t[m.end():]
+        f.write_text(t)
+PY
+# A solid has no plasma: everything but the potential goes.
+find 0/dielectric -type f ! -name 'ePotential' -delete 2>/dev/null
+
+# ---------------------------------------------------------------------------
+step "8. run"
+# The Boltzmann sweep runs here, on first start, and writes
+# constant/plasmaTables. It is stamped, so later runs reuse it.
+runApplication "$(getApplication)" || die "$(getApplication) -- see log.soPlasmaFoam"
+
+echo
+echo "=== done. Worth reading:"
+echo "    grep 'electronEnergyModel'  log.soPlasmaFoam"
+echo "    grep 'MONOLITHICALLY'       log.soPlasmaFoam"
+echo "    grep -oE 'deltaT set by: +.*' log.soPlasmaFoam | sort | uniq -c | sort -rn"

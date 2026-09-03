@@ -1,0 +1,87 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- boundary conditions for the DIELECTRIC region                  |
+|                                                                             |
+| SKELETON. Structure and keys are present; the PHYSICS values marked CHOSEN  |
+| are yours to set. The solver will not start until they are.                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      changeDictionaryDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// HOW THIS FILE IS USED. Allrun copies it to
+// system/dielectric/changeDictionaryDict and runs `changeDictionary -region
+// dielectric`, which REWRITES the boundaryField blocks of the fields already in
+// 0/dielectric/. It is a PATCH SCRIPT: you name only the patches that differ
+// from the catch-all in 0.orig, and it expands over every field.
+//
+// A SOLID HAS NO PLASMA. Only ePotential is solved here, so this file is short.
+// Allrun deletes every other field from 0/dielectric.
+//
+// PATCHES ON THIS REGION (from constant/dielectric/polyMesh/boundary):
+//     out                 outer boundary of the barrier
+//     ground              the grounded electrode
+//     front, back         the 2-D symmetry planes
+//     dielectric_to_gas   the interface, created by splitMeshRegions
+//
+// Each entry below is marked:
+//     MECHANICAL  derivable from what the patch IS -- a generator will emit it
+//     CHOSEN      genuine physics you supply
+
+ePotential
+{
+    internalField   uniform 0;              // MECHANICAL
+
+    boundaryField
+    {
+        // MECHANICAL. Catch-all first; specific patches below override it.
+        // zeroGradient is Neumann, i.e. no normal field -- appropriate for an
+        // outer boundary far from the discharge, NOT for an interface.
+        ".*"                { type zeroGradient; }
+
+        // MECHANICAL. front/back are `empty` because this is a 2-D planar case;
+        // the mesh already marks them so, and the field must agree.
+        front               { type empty; }
+        back                { type empty; }
+
+        ground
+        {
+            // MECHANICAL for a grounded electrode.
+            type            fixedValue;
+            value           uniform 0;
+        }
+
+        dielectric_to_gas
+        {
+            // MECHANICAL. The interface condition: continuity of V and of the
+            // normal displacement D.n, with the jump equal to the surface
+            // charge.
+            type            coupledElectricPotential;
+            value           $internalField;
+
+            // The neighbour's field name. Default: ePotential.
+            // phiNbr          ePotential;
+
+            // MECHANICAL, but note the PAIRING: exactly ONE side of the
+            // interface owns the surface charge or it is double-counted. The
+            // gas owns it, because the plasma is what deposits it, so this side
+            // owns none and names the neighbour's.
+            surfCharge      none;
+            surfChargeNbr   surfCharge;
+
+            // Default: true (monolithic) since 2026-09-03. Stated here because
+            // it is the single most consequential numerical choice on this
+            // patch. `false` lags the interface and was measured to plateau the
+            // outer residual near 1e-7 on this geometry.
+            useImplicit     true;
+        }
+
+        "procBoundary.*"    { type processor; }   // MECHANICAL, parallel only
+    }
+}
+
+// ************************************************************************* //

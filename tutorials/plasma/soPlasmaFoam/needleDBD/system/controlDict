@@ -15,7 +15,7 @@ FoamFile
 // this case, so switching to PETSc does not mean editing a second dictionary.
 // It is passed as ONE WHOLE VALUE because a $var nested inside a list is not
 // what we want here -- the whole list is the setting.
-libs            $solverLibs;
+libs            ( "libROUNDSchemes.so" );
 
 application     soPlasmaFoam;
 
@@ -30,9 +30,9 @@ startFrom       startTime;
 startTime       0;
 
 stopAt          endTime;
-endTime         $endTime;
+endTime         3e-09;
 
-deltaT          $deltaT;
+deltaT          1e-12;
 
 // adjustableRunTime, not runTime.
 //
@@ -41,8 +41,8 @@ deltaT          $deltaT;
 // measured at 7.4e-13 s apart, which was 0.28 of an energy relaxation time and
 // enough to make a comparison meaningless. `adjustableRunTime` nudges the step
 // so the write lands exactly on the interval.
-writeControl    $writeControl;
-writeInterval   $writeInterval;
+writeControl    adjustableRunTime;
+writeInterval   1e-09;
 
 purgeWrite      0;
 
