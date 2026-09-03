@@ -104,6 +104,29 @@ int main(int argc, char *argv[])
 
     const scalar Cg = current.Cg();
 
+    // SECOND, INDEPENDENT route to the same capacitance.
+    //
+    // Sato's C_g is the ENERGY integral INT eps |grad psi|^2 dV over every
+    // region. The floating electrode instead needs the SURFACE integral
+    // INT eps grad(psi).n dA over one patch -- its self-capacitance.
+    //
+    // For a TWO-electrode system these are the same number, and both equal the
+    // analytic series capacitance. So agreement here tests the surface form
+    // against a different discretisation of the same physics, not merely
+    // against itself: a sign error, a missing revolution factor or the wrong
+    // permittivity in the surface form cannot survive it.
+    const word drivenPatch
+    (
+        plasmaDict.subDict("dischargeCurrent").get<word>("drivenPatch")
+    );
+
+    const scalar Cs =
+        current.weightingField().surfaceCapacitance(em, drivenPatch);
+
+    Info<< "  C_surface      " << Cs << " F   (INT eps grad(psi).n dA over `"
+        << drivenPatch << "`)" << endl;
+
+
     Info<< nl << "  C_g (Sato)     " << Cg << " F" << endl;
 
     int nFail = 0;
@@ -117,6 +140,26 @@ int main(int argc, char *argv[])
         Info<< "  C analytic     " << Cref << " F" << nl
             << "  relative error " << rel
             << "   (tolerance " << tol << ")" << nl << endl;
+
+        const scalar relS = mag(Cs - Cref)/max(mag(Cref), VSMALL);
+
+        Info<< "  C_surface rel. error " << relS << nl << endl;
+
+        if (relS > tol)
+        {
+            Info<< "  [FAIL] the SURFACE form of the capacitance does not"
+                << " match the analytic value." << nl
+                << "         C_surface = " << Cs << " F, analytic = " << Cref
+                << " F" << nl
+                << "         The energy form and the surface form must agree"
+                << " for a two-electrode system." << endl;
+            ++nFail;
+        }
+        else
+        {
+            Info<< "  [ok  ] the surface form agrees too (self-capacitance)"
+                << endl;
+        }
 
         if (rel <= tol)
         {

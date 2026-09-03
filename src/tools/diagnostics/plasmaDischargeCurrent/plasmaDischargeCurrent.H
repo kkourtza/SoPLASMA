@@ -53,6 +53,7 @@ SourceFiles
 #define plasmaDischargeCurrent_H
 
 #include "fvCFD.H"
+#include "unitPotentialField.H"
 #include "fvMesh.H"
 #include "wordList.H"
 #include "OFstream.H"
@@ -93,8 +94,13 @@ class plasmaDischargeCurrent
         //- The unit-voltage potential, per region. Kept because C_g integrates
         //  over the dielectrics too, and because they are worth writing out
         //  when a weighting field looks wrong.
-        autoPtr<volScalarField> psiHatGas_;
-        PtrList<volScalarField> psiHatDiel_;
+        //
+        //  SHARED with the floating electrode since 2026-09-03: both need a
+        //  monolithic unit-potential solve, differing only in which patch is
+        //  held at 1. The interface-BC retargeting and the Krylov solver
+        //  defaults inside it were each found by a measured wrong answer, so a
+        //  second copy would have inherited neither.
+        autoPtr<unitPotentialField> psiHat_;
 
         //- Gap capacitance INT eps |e_hat|^2 dV [F], a constant of the mesh.
         scalar Cg_ = 0;
@@ -153,7 +159,9 @@ class plasmaDischargeCurrent
         //  EXTENSIVE quantity -- charge, capacitance, current -- must be
         //  scaled to the full revolution. A 5 degree wedge would otherwise
         //  understate the current by 72x.
-        static scalar wedgeRevolutionFactor(const fvMesh& m);
+        //  MOVED 2026-09-03 to unitPotentialField::wedgeRevolutionFactor,
+        //  a static member, so the floating electrode shares one copy. Call it
+        //  as unitPotentialField::wedgeRevolutionFactor(mesh).
 
         //- Cached value of the above.
         scalar revolutionFactor_ = 1.0;
@@ -184,6 +192,14 @@ public:
 
         //- Gap capacitance [F]. Zero when disabled.
         inline scalar Cg() const { return Cg_; }
+
+        //- The shared unit-potential field, for callers that need a DIFFERENT
+        //  functional of psi_hat than Sato's energy integral -- notably the
+        //  surface integral that gives a patch's self-capacitance.
+        inline const unitPotentialField& weightingField() const
+        {
+            return psiHat_();
+        }
 
         //- The geometric weighting field [1/m].
         const volVectorField& eHat() const { return eHat_(); }
