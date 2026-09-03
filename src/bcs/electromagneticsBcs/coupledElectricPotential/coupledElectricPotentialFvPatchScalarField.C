@@ -217,11 +217,34 @@ coupledElectricPotentialFvPatchScalarField
         valueFraction() = 1.0;
     }
 
-    bool boolVal(false);
-    if (dict.readIfPresent("useImplicit", boolVal))
-    {
-        this->useImplicit(boolVal);
-    }
+    // MONOLITHIC BY DEFAULT ON A REGION INTERFACE.
+    //
+    // A case with a dielectric interface must not fall into SEGREGATED coupling
+    // by omission. Segregated lags the interface -- each region sees the other's
+    // potential from the previous corrector -- and it is a fallback for solver
+    // limitations, not a modelling choice anyone makes on purpose.
+    //
+    // The failure it produces does not look like a boundary-condition problem.
+    // MEASURED on the needle-DBD geometry: segregated coupling plateaus the
+    // outer ePotential residual near 1e-7, so at `outerCoupling/tolerance 1e-8`
+    // the loop hits its cap and retryStep DISCARDS EVERY STEP -- a case that
+    // makes no progress while every residual looks plausible. Measured cost on
+    // the two-region analytic bed even when it does converge: 8.8e-5 relative
+    // error in the interface potential against 2.0e-6 monolithic, the latter
+    // being the write-precision floor.
+    //
+    // So the default is `true`. Omission has one honest meaning here, which is
+    // the test for defaulting; segregated remains available and must be ASKED
+    // for. Every shipped case states this key explicitly, so no stored result
+    // moves. Default changed 2026-09-03.
+    //
+    // NOTE this requires an assembly-aware linear solver. With GAMG that means
+    // `agglomerator assembledFaceAreaPair` in fvSolution -- see the guard in
+    // multiRegionPoisson, which turns the otherwise cryptic
+    // "lduPrimitiveMeshAssembly to fvMesh" abort into an actionable message.
+    bool boolVal(true);
+    dict.readIfPresent("useImplicit", boolVal);
+    this->useImplicit(boolVal);
 
     if (dict.found("source"))
     {

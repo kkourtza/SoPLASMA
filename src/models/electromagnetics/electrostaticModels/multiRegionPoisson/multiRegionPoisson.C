@@ -494,6 +494,67 @@ multiRegionPoisson::multiRegionPoisson
         coupled_ = true;
         Info<< "    Implicit coupling detected." << endl;
 
+        // THE LINEAR SOLVER MUST BE ASSEMBLY-AWARE, and the failure otherwise
+        // does not name the cause.
+        //
+        // Monolithic coupling assembles every region into one matrix whose mesh
+        // is an `lduPrimitiveMeshAssembly`, not an `fvMesh`. GAMG's DEFAULT
+        // agglomerator (`faceAreaPair`) does `refCast<const fvMesh>` on it and
+        // the run aborts with
+        //
+        //     Attempt to cast type lduPrimitiveMeshAssembly to type fvMesh
+        //
+        // which reads like an internal error and is a solver-configuration
+        // error. OpenFOAM ships `assembledFaceAreaPair` for exactly this case
+        // (TypeName in src/finiteVolume/lduPrimitiveMeshAssembly).
+        //
+        // Checked here because monolithic is now the DEFAULT for a region
+        // interface, so a case that never mentioned coupling can meet this --
+        // and the abort would give it no way to connect the two.
+        {
+            const dictionary& sol =
+                mesh_.solution().subOrEmptyDict("solvers");
+            const dictionary eq = sol.subOrEmptyDict("ePotential");
+            const word lin(eq.getOrDefault<word>("solver", word::null));
+
+            if (lin == "GAMG")
+            {
+                const word agg
+                (
+                    eq.getOrDefault<word>("agglomerator", "faceAreaPair")
+                );
+
+                if (agg != "assembledFaceAreaPair")
+                {
+                    FatalErrorInFunction
+                        << "ePotential uses `solver GAMG` with `agglomerator "
+                        << agg << "`, but the regions are coupled" << nl
+                        << "    MONOLITHICALLY, so the matrix is an"
+                        << " lduPrimitiveMeshAssembly rather than an fvMesh."
+                        << nl << nl
+                        << "    Add to the `ePotential` block in fvSolution:"
+                        << nl
+                        << "        agglomerator    assembledFaceAreaPair;"
+                        << nl << nl
+                        << "    Without it the solve aborts with \"Attempt to"
+                        << " cast type lduPrimitiveMeshAssembly to type" << nl
+                        << "    fvMesh\", which names neither the solver nor"
+                        << " the coupling." << nl << nl
+                        << "    Alternatives that need no agglomerator:"
+                        << " PBiCGStab/DILU (the operator is NOT symmetric"
+                        << nl
+                        << "    under `poissonScheme semiImplicit`), or"
+                        << " PCG/DIC under `explicit`." << nl << nl
+                        << "    Or ask for segregated coupling explicitly with"
+                        << " `useImplicit false` on the interface" << nl
+                        << "    patches -- note that lags the interface and was"
+                        << " measured to plateau the outer residual" << nl
+                        << "    near 1e-7 on a needle geometry." << nl
+                        << exit(FatalError);
+                }
+            }
+        }
+
         // Validate all mapped patches are consistent
         forAll(ePotential_.boundaryField(), patchI)
         {
