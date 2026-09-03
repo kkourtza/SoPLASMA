@@ -74,9 +74,12 @@ echo "=== 2-D antisymmetric induction: V_f = 0 BY SYMMETRY (Q = 0)"
 run_one sym 0 0.0 "$ZG_TOP" "$SYM_XLOW" "$SYM_XHIGH" || fail=1
 
 # --- NEGATIVE test: the plasma guard must FIRE -----------------------------
-# Q(t) = Q0 + INT I_plasma dt' is NOT implemented, so a run with space charge
-# must be REFUSED rather than silently holding Q at Q0.
-echo "=== negative test: a plasma run must be refused"
+# Q(t) = Q0 + INT I_plasma dt' is fed by plasmaTransport::updateSurfaceCharge,
+# which an ELECTROSTATICS solver never calls. So space charge here means the
+# ledger is unfed, and the run must be REFUSED rather than silently holding Q
+# at Q0. This is the runtime check that "the call site exists" has actually
+# become "the call site is reached".
+echo "=== negative test: space charge with an UNFED ledger must be refused"
 rm -rf run_plasma; mkdir run_plasma
 cp -r 0.orig system configuration run_plasma/
 cp run_plasma/system/fvSolution-foam run_plasma/system/fvSolution
@@ -91,10 +94,10 @@ q=pathlib.Path('run_plasma/0/chargeDensity'); t=q.read_text()
 q.write_text(t.replace('internalField   uniform 0;','internalField   uniform 1e-6;'))"
 ( cd run_plasma && blockMesh > log.blockMesh 2>&1 \
     && singleRegionElectrostaticFoam > log.solve 2>&1 )
-if grep -q 'floating electrode in a PLASMA run is not supported' run_plasma/log.solve; then
-    echo "  plasma  guard FIRED as required"
+if grep -q 'charge ledger is NOT BEING FED' run_plasma/log.solve; then
+    echo "  unfed   guard FIRED as required"
 else
-    echo "  plasma  GUARD DID NOT FIRE -- a plasma run would silently hold Q at Q0"
+    echo "  unfed   GUARD DID NOT FIRE -- Q would silently stay at Q0"
     fail=1
 fi
 

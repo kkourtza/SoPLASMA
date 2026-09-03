@@ -113,6 +113,63 @@ class floatingElectrode
         //- Whether the start-up report has been printed
         bool reported_;
 
+        //- Present plasma current onto the conductor [A]
+        scalar Iplasma_;
+
+        //- Whether the charge ledger has ever been fed
+        bool chargeFed_;
+
+        //- Q at the end of the last ACCEPTED step [C].
+        //
+        //  THE STEP-DISCARD INVARIANT. Q is accumulated solution state, so a
+        //  step that is thrown away and re-run must not leave its charge
+        //  behind. Two mechanisms, deliberately both:
+        //
+        //    * BASELINED -- addPlasmaCurrent() computes Q = Qbase + I*dt
+        //      rather than Q += I*dt, so calling it twice within one step
+        //      recomputes instead of accumulating. This is the same pattern
+        //      surfCharge uses (it resets from its own oldTime before
+        //      accumulating).
+        //    * RESTORED -- discardStep() puts Q back to Qbase explicitly, at
+        //      the point in the solver where transport and energy are already
+        //      restored, so correctness does not depend on how a retry treats
+        //      timeIndex.
+        scalar Qbase_;
+
+        //- timeIndex Qbase_ belongs to
+        label QbaseIndex_;
+
+        //- |Q_after - Q_target| / C_self, the CLOSURE RESIDUAL of Gauss's law
+        //  after the correction. See correct(): it must be at solver level,
+        //  and it is the check that psi came from the right operator.
+        scalar closure_;
+
+        //- postProcessing/floatingElectrode/floating.csv
+        autoPtr<OFstream> csv_;
+
+        //- ONE ROW PER TIMESTEP, carrying the CONVERGED values.
+        //
+        //  correct() runs once per OUTER ITERATION, so an unguarded write
+        //  produced 129 rows for 18 steps -- and because Q is updated only on
+        //  the final outer iteration while V_f moves on every one, the I and Q
+        //  in such a row were not necessarily from the same update. That made
+        //  the file impossible to reconcile against Q = INT I dt, which is the
+        //  one thing it exists to show.
+        //
+        //  Writing on the FIRST correction of a step instead records a
+        //  NON-converged V_f. So each step's values are BUFFERED and emitted
+        //  when the step advances, which is the only point at which the
+        //  converged value is known.
+        label pendingIndex_;
+        scalar pendingTime_;
+        scalar pendingVf_;
+        scalar pendingQ_;
+        scalar pendingI_;
+        scalar pendingClosure_;
+
+        //- Emit the buffered row, if any
+        void flushPending();
+
 
     // Private Member Functions
 
@@ -138,8 +195,9 @@ public:
         );
 
 
-    //- Destructor
-    ~floatingElectrode() = default;
+    //- Destructor. Flushes the buffered final row -- otherwise the last
+    //  timestep, which is usually the interesting one, never reaches the file.
+    ~floatingElectrode();
 
 
     // Member Functions
@@ -156,8 +214,20 @@ public:
             const volScalarField* effEpsGas
         );
 
-        //- Add the plasma charge delivered over dt [C]
-        void addCharge(const scalar dQ) { Q_ += dQ; }
+        //- Discard this step's charge accumulation. Called from the solver's
+        //  step-rejection block, beside transport.discardStep().
+        void discardStep();
+
+        //- Feed the charge ledger:  Q(t) = Q0 + INT I_plasma dt'.
+        //
+        //  Called from plasmaTransport::updateSurfaceCharge, which owns the
+        //  species wall fluxes -- the SAME fluxes that build the local surface
+        //  charge on a dielectric, and the same dt. Anywhere else and the two
+        //  accountings could disagree about either.
+        void addPlasmaCurrent(const scalar I, const scalar dt);
+
+        //- Write one CSV row: t, V_f, Q, I_plasma, C_self, closure
+        void write();
 
 
     // Access
@@ -167,6 +237,8 @@ public:
         inline scalar Q() const { return Q_; }
         inline scalar Q0() const { return Q0_; }
         inline scalar Cself() const { return Cself_; }
+        inline scalar Iplasma() const { return Iplasma_; }
+        inline scalar closure() const { return closure_; }
 };
 
 

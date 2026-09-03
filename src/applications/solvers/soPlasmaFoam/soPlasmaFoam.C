@@ -444,6 +444,16 @@ int main(int argc, char *argv[])
             transport.discardStep();
             if (energy) energy->discardStep();
 
+            // A floating electrode's total charge is accumulated solution
+            // state -- Q(t) = Q0 + INT I_plasma dt' -- so it belongs here too.
+            // It is ALSO baselined internally (Q = Qbase + I*dt, never
+            // Q += I*dt), so this restore is the belt to that braces rather
+            // than the only defence.
+            if (floatingElectrode* fe = em->floatingElectrodePtr())
+            {
+                fe->discardStep();
+            }
+
             // The relaxation coordinator must forget the abandoned attempt's
             // iterate history too, or the retry starts from a residual that
             // describes a step that was thrown away.

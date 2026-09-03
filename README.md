@@ -493,10 +493,13 @@ myProbe { type floatingElectrodePotential; initialCharge 0; value uniform 0; }
 ```
 
 Validated against analytic ground truth, including a 2-D antisymmetric induction
-case where `V_f = 0` follows from symmetry alone. **A floating electrode in a
-plasma run is refused for now**: the constraint is exact but the charge ledger
-`Q(t) = Q0 + ∫I_plasma dt` is not yet wired, and holding `Q` at `Q0` would give a
-plausible, wrong floating potential rather than an error. Details and the
+case where `V_f = 0` follows from symmetry alone. In a **plasma**, the charge
+ledger `Q(t) = Q0 + ∫I_plasma dt` is fed from the species wall fluxes, and the
+electrode charges negative as probe theory requires. Because the default Poisson
+scheme is semi-implicit, `psi` is rebuilt every step from the operator the solve
+actually used — and the run *verifies* that by checking Gauss's law closes after
+each correction (measured 2.8e-14 V). `V_f`, `Q` and `I_plasma` are written per
+step to `postProcessing/floatingElectrode/floating.csv`. Details and the
 measured tests:
 [`docs/models/poisson_equation/floating-electrode.md`](docs/models/poisson_equation/floating-electrode.md).
 

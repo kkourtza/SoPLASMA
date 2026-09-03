@@ -27,7 +27,19 @@ Foam::floatingElectrode::floatingElectrode
     psi_(nullptr),
     cacheValid_(false),
     builtAtMeshEvent_(-1),
-    reported_(false)
+    reported_(false),
+    Iplasma_(0),
+    chargeFed_(false),
+    Qbase_(0),
+    QbaseIndex_(-1),
+    closure_(0),
+    csv_(nullptr),
+    pendingIndex_(-1),
+    pendingTime_(0),
+    pendingVf_(0),
+    pendingQ_(0),
+    pendingI_(0),
+    pendingClosure_(0)
 {
     wordList driven, grounded, floating;
     em.classifyElectrodePatches(driven, grounded, floating);
@@ -97,6 +109,15 @@ Foam::floatingElectrode::floatingElectrode
 
     // A restart resumes at the potential it had reached.
     Vf_ = fep->floatingPotential();
+}
+
+
+Foam::floatingElectrode::~floatingElectrode()
+{
+    if (Pstream::master())
+    {
+        flushPending();
+    }
 }
 
 
@@ -231,52 +252,36 @@ void Foam::floatingElectrode::correct
         build(em, effEpsGas);
     }
 
-    // THE PLASMA CHARGE LEDGER IS NOT IMPLEMENTED YET (2026-09-03).
+    // THE LEDGER MUST ACTUALLY BE FED.
     //
-    // Q(t) = Q0 + INT I_plasma dt' requires the net charge flux onto the
-    // conductor from the species wall fluxes. addCharge() is the entry point
-    // and NOTHING CALLS IT, so Q is held at Q0 for the whole run.
+    // Q(t) = Q0 + INT I_plasma dt' is supplied from OUTSIDE this class, by
+    // plasmaTransport::updateSurfaceCharge. If space charge exists but nothing
+    // has ever called addPlasmaCurrent(), the electrode is silently holding Q0
+    // while a discharge deposits charge on it -- which produces an entirely
+    // plausible and entirely wrong floating potential rather than an error.
     //
-    // With no plasma that is exactly right and the constraint is exact --
-    // validated against the analytic closed form to 4.5e-09 of the voltage
-    // scale. WITH a plasma it is WRONG, and wrong quietly: the electrode would
-    // hold its initial charge while the discharge deposited charge on it, and
-    // the resulting floating potential would look entirely plausible.
-    //
-    // So the plasma case is REFUSED rather than approximated. A floating
-    // electrode charges negative in a plasma -- that is the whole physical
-    // point of one -- and a run that cannot represent it must not pretend to.
-    const bool haveSpaceCharge =
-        gMax(mag(em.chargeDensity().primitiveField())) > 0;
-
-    if (effEpsGas || haveSpaceCharge)
+    // Checked at RUNTIME rather than trusted, because "the call site exists"
+    // and "the call site is reached" are different claims, and the second one
+    // is the one that matters.
+    if (gMax(mag(em.chargeDensity().primitiveField())) > 0 && !chargeFed_)
     {
-        FatalErrorInFunction
-            << "A floating electrode in a PLASMA run is not supported yet."
-            << nl << nl
-            << "    Detected: "
-            << (effEpsGas ? "a semi-implicit Poisson operator (so a"
-                            " conductivity was supplied)" : "")
-            << (effEpsGas && haveSpaceCharge ? " and " : "")
-            << (haveSpaceCharge ? "non-zero space charge" : "")
-            << "." << nl << nl
-            << "    The constraint itself is exact and validated, but the"
-               " CHARGE LEDGER is not wired:" << nl
-            << "        Q(t) = Q0 + INT I_plasma dt'" << nl
-            << "    needs the net charge flux onto the conductor from the"
-               " species wall fluxes, and" << nl
-            << "    nothing supplies it. Q would stay at Q0 for the whole run"
-               " while the discharge" << nl
-            << "    deposited charge on the electrode -- giving a plausible"
-               " but wrong floating" << nl
-            << "    potential rather than an error." << nl << nl
-            << "    A floating electrode in a plasma charges NEGATIVE, to"
-               " roughly -(kTe/2e) ln(2 pi me/mi)," << nl
-            << "    and that behaviour is exactly what the missing term"
-               " produces." << nl << nl
-            << "    Electrostatics-only runs are fully supported. See"
-               " docs/models/poisson_equation/floating-electrode.md" << nl
-            << exit(FatalError);
+        if (mesh_.time().timeIndex() > mesh_.time().startTimeIndex() + 1)
+        {
+            FatalErrorInFunction
+                << "The floating electrode's charge ledger is NOT BEING FED."
+                << nl << nl
+                << "    There is space charge in the domain, but nothing has"
+                   " called addPlasmaCurrent()," << nl
+                << "    so Q is still Q0 = " << Q0_ << " C after "
+                << mesh_.time().timeIndex() << " steps." << nl << nl
+                << "    Q(t) = Q0 + INT I_plasma dt' is supplied by"
+                   " plasmaTransport::updateSurfaceCharge." << nl
+                << "    A solver that does not call it cannot represent a"
+                   " floating electrode in a plasma:" << nl
+                << "    the conductor would keep its initial charge while the"
+                   " discharge charged it up." << nl
+                << exit(FatalError);
+        }
     }
 
     // The field has just been solved with the patch at Vf_. Whatever charge
@@ -330,6 +335,51 @@ void Foam::floatingElectrode::correct
         }
     }
 
+    // CLOSURE OF GAUSS'S LAW, verified rather than assumed.
+    //
+    // After the correction the conductor must hold EXACTLY the charge the
+    // ledger says it holds. Re-measuring is cheap and it is the one check that
+    // catches the subtle failure mode of this whole design: if psi were built
+    // from a DIFFERENT operator than the solve used -- the true eps under a
+    // semi-implicit scheme, say -- then V + dV_f*psi is NOT a solution, the
+    // charge does not land on target, and everything else still looks
+    // plausible.
+    //
+    // Normalised by C_self*1V, i.e. expressed as the potential error it
+    // corresponds to, so the number is readable against the voltage scale
+    // rather than being an absolute charge nobody can judge.
+    {
+        const scalar Qafter = measureCharge(em);
+
+        closure_ = mag(Qafter - Q_)/max(Cself_, VSMALL);
+
+        // Loose enough not to trip on the linear solver's own tolerance,
+        // tight enough that a wrong operator (which gives an O(1) relative
+        // error) cannot pass.
+        const scalar Vscale = max(mag(Vf_), scalar(1));
+
+        if (closure_ > 1e-3*Vscale)
+        {
+            FatalErrorInFunction
+                << "Gauss's law does not close on floating conductor `"
+                << patchName_ << "`." << nl << nl
+                << "    charge target   " << Q_ << " C" << nl
+                << "    charge measured " << Qafter << " C" << nl
+                << "    discrepancy     " << closure_
+                << " V equivalent (Q error / C_self)" << nl << nl
+                << "    The superposition V += dV_f*psi is exact ONLY if psi"
+                   " solves the SAME operator as" << nl
+                << "    the field it corrects. Under `scheme semiImplicit`"
+                   " that operator is" << nl
+                << "    eps + dt*sigma, NOT eps. A discrepancy of order the"
+                   " potential itself means psi" << nl
+                << "    was built from the wrong one." << nl
+                << exit(FatalError);
+        }
+    }
+
+    write();
+
     if (!reported_)
     {
         reported_ = true;
@@ -343,6 +393,120 @@ void Foam::floatingElectrode::correct
                               : "once (explicit operator, static mesh)")
             << endl;
     }
+}
+
+
+
+
+void Foam::floatingElectrode::addPlasmaCurrent
+(
+    const scalar I,
+    const scalar dt
+)
+{
+    const label ti = mesh_.time().timeIndex();
+
+    // A NEW step: the charge standing now is the accepted baseline.
+    if (ti != QbaseIndex_)
+    {
+        QbaseIndex_ = ti;
+        Qbase_      = Q_;
+    }
+
+    // BASELINED, not accumulated -- see Qbase_. A retried step recomputes.
+    Iplasma_   = I;
+    Q_         = Qbase_ + I*dt;
+    chargeFed_ = true;
+
+    // KEEP THE CSV ROW SELF-CONSISTENT.
+    //
+    // correct() runs at the START of a step, using the charge standing at the
+    // END of the previous one, and buffers the row. This -- the ledger update
+    // -- runs at the END of the same step. Without this the row for step k
+    // carried step k's TIME beside step k-1's CHARGE: a one-step lead of the
+    // label over the data, which is exactly the trap that made an earlier
+    // reconciliation of Q against INT I dt miss by 11.5% and look like a
+    // quadrature error.
+    if (pendingIndex_ == ti)
+    {
+        pendingQ_    = Q_;
+        pendingI_    = Iplasma_;
+        pendingTime_ = mesh_.time().timeOutputValue();
+    }
+}
+
+
+void Foam::floatingElectrode::discardStep()
+{
+    // Undo this step's charge, and forget the row buffered for it: both belong
+    // to an attempt that is being thrown away.
+    Q_        = Qbase_;
+    Iplasma_  = 0;
+    pendingIndex_ = -1;
+}
+
+
+void Foam::floatingElectrode::flushPending()
+{
+    if (pendingIndex_ < 0 || !csv_) return;
+
+    csv_() << pendingTime_ << ','
+           << pendingVf_ << ','
+           << pendingQ_ << ','
+           << pendingI_ << ','
+           << pendingClosure_ << endl;
+}
+
+
+void Foam::floatingElectrode::write()
+{
+    if (!Pstream::master()) return;
+
+    if (!csv_)
+    {
+        const fileName dir
+        (
+            mesh_.time().globalPath()/"postProcessing"/"floatingElectrode"
+        );
+
+        mkDir(dir);
+
+        csv_.reset(new OFstream(dir/"floating.csv"));
+
+        // The floating potential is a RESULT, and it is the single most
+        // informative number about such an electrode -- written every step so
+        // the settling behaviour can be READ rather than assumed. A floating
+        // electrode in a plasma should charge NEGATIVE and settle near
+        //     V_f - V_plasma ~ -(kTe/2e) ln(2 pi me/mi)
+        // which is a few times -kTe/e. One that charges POSITIVE, or that
+        // keeps drifting without settling, means the sign of I_plasma is wrong
+        // or the electron flux to the wall is unresolved.
+        csv_() << "# floating conductor `" << patchName_ << "`" << nl
+               << "# C_self = " << Cself_ << " F, Q0 = " << Q0_ << " C" << nl
+               << "# one row per TIMESTEP, converged values" << nl
+               << "# Q is integrated as Q += I*dt, a FIRST-ORDER rectangle"
+                  " rule, so reconciling this" << nl
+               << "# file against a trapezoid of I will differ at O(dt)."
+               << nl
+               << "# closure is |Q_measured - Q_target|/C_self, in volts"
+               << nl
+               << "time,V_f,Q,I_plasma,closure" << endl;
+    }
+
+    const label ti = mesh_.time().timeIndex();
+
+    if (ti != pendingIndex_)
+    {
+        // The step has advanced, so the buffered row is now final.
+        flushPending();
+        pendingIndex_ = ti;
+    }
+
+    pendingTime_    = mesh_.time().timeOutputValue();
+    pendingVf_      = Vf_;
+    pendingQ_       = Q_;
+    pendingI_       = Iplasma_;
+    pendingClosure_ = closure_;
 }
 
 

@@ -1,16 +1,8 @@
 # The floating electrode
 
-**Status: IMPLEMENTED and VALIDATED for electrostatics (2026-09-03).**
-The design below is what the implementation satisfies; all three tests at the
-end pass against analytic ground truth.
-
-> **NOT YET SUPPORTED: a floating electrode in a PLASMA run.** The constraint is
-> exact, but the charge ledger `Q(t) = Q₀ + ∫I_plasma dt'` is not wired — the
-> net charge flux from the species wall fluxes is not accumulated, so `Q` would
-> stay at `Q₀` for the whole run. That case is **refused with a fatal error**
-> rather than approximated, because it would otherwise produce an entirely
-> plausible and entirely wrong floating potential. See *Implementation status*
-> below.
+**Status: IMPLEMENTED and VALIDATED, electrostatics and plasma (2026-09-03).**
+The design below is what the implementation satisfies; all three analytic tests
+pass, and the charge ledger and Gauss closure are verified on a plasma case.
 
 ## What it is
 
@@ -175,10 +167,11 @@ behaviour above can be checked rather than assumed.
 | `psi` and `C_self` | **done** — via the shared `unitPotentialField`, the same monolithic unit-potential solve Sato's current uses |
 | the closed form `V_f = (Q − Q_ρ)/C_self` | **done**, as an exact post-solve correction |
 | rebuild of `psi`/`C_self` when the operator moves | **done** — every step under `semiImplicit`, cached under `explicit` on a static mesh |
-| `Q(t) = Q₀ + ∫I_plasma dt'` | **NOT DONE.** `addCharge()` is the entry point and nothing calls it |
+| `Q(t) = Q₀ + ∫I_plasma dt'` | **done** — fed from `plasmaTransport::updateSurfaceCharge`, which owns the species wall fluxes; verified to 7.5e-12 on a plasma case |
+| the step-discard invariant for `Q` | **done** — baselined (`Q = Q_base + I·dt`, never `Q += I·dt`) *and* restored by `discardStep()` |
 | more than one floating conductor | **not supported** — fatal. Two of them couple, so the constraint becomes an N×N mutual-capacitance matrix |
 | a floating conductor inside a dielectric region | **not supported** — fatal |
-| per-step reporting of `V_f`, `Q`, `I_plasma` | **not done** — `V_f` is written into the field file and reported once at start-up |
+| per-step reporting of `V_f`, `Q`, `I_plasma` | **done** — `postProcessing/floatingElectrode/floating.csv`, one row per step |
 
 ### How it is applied: a correction, not two solves
 
@@ -262,6 +255,79 @@ Two further invariants are checked in the same sweep:
 3. **A charged, plasma-free electrode.** Set `Q₀ ≠ 0` with no plasma: the
    potential must be exactly `Q₀/C_self` above the induced value, and the field
    must match the analytic solution for an isolated charged conductor.
+
+## The plasma case: the charge ledger and Gauss closure
+
+`Q(t) = Q₀ + ∫I_plasma dt'` is fed from `plasmaTransport::updateSurfaceCharge`,
+which owns the species wall fluxes — **the same fluxes** that build the local
+surface charge on a dielectric, and the same `dt`. Computing the current
+anywhere else would let the two accountings disagree about either.
+
+A conductor has **no local σ**: charge redistributes, so only the total is
+meaningful. Its wall fluxes therefore feed `Q(t)` instead of a `surfCharge`
+field, and they are counted *regardless* of `enableSurfaceCharging` — which
+governs the local σ a metal cannot have. Setting `enableSurfaceCharging true` on
+a floating conductor is a contradiction and is refused rather than quietly
+reinterpreted.
+
+### Why `psi` must be rebuilt every step, and the check that proves it
+
+Under `scheme semiImplicit` — **the default** — the operator is `ε + Δt·σ`, not
+`ε`, and both factors change every step. Superposition `V += dV_f·psi` is exact
+*only* if `psi` solves the same operator as the field it corrects, so `psi` and
+`C_self` are rebuilt every step there.
+
+This is verified rather than asserted. After each correction the conductor must
+hold exactly the charge the ledger says it holds, and that residual is reported
+as a **closure** in volts (`|Q_measured − Q_target|/C_self`). If `psi` came from
+the wrong operator the closure is of order the potential itself; a mismatch
+aborts the run.
+
+### Measured 2026-09-03
+
+Case `tutorials/plasma/soPlasmaFoam/needleDBD_floatingStrip` — `needleDBD` with
+`air_dielectric` (178 faces) reinterpreted as an isolated metal strip, chosen
+because that patch already carries real species wall-flux conditions.
+`./Allrun-derive` copies the parent's mesh, tables and fields rather than
+regenerating them, so the two cases cannot drift apart.
+
+| quantity | measured | meaning |
+|---|---|---|
+| `C_self` | 7.03018250107e-16 F | the strip's self-capacitance |
+| `psi` rebuild | every step | semiImplicit operator, as required |
+| max closure | **2.82e-14 V** | Gauss's law closes at machine level |
+| ledger consistency | **7.5e-12** rel. | worst `|Q_k − (Q_{k-1} + I_k Δt_k)|/|Q_k|` |
+| `I_plasma` | −2.42e-12 A | **negative** — electrons arriving |
+| `Q` | −2.37e-22 C | **negative** — charging negative, as expected |
+| `V_f` | 7.24693 V | induction-dominated at this time |
+
+**Honest limits of that case.** At `1e-10 s` the charge contributes
+`Q/C_self = −3.4e-07 V` out of 7.25 V — about 2×10⁷ times smaller than the
+induced part. So it validates the **ledger** and the **closure**, *not* the
+settling to a floating potential; the probe-theory estimate above needs a far
+longer run. And only `n_e` has a wall-flux condition on that patch in
+`needleDBD` (`nEps_e` and every ion are `zeroGradient` there), so `I_plasma` is
+**electron-only** — which makes the negative sign expected rather than
+surprising, though it still checks the sign convention.
+
+### The step-discard invariant
+
+`Q` is accumulated solution state, so a step that is thrown away and re-run must
+not leave its charge behind. Both mechanisms are used deliberately: `Q` is
+**baselined** (`Q = Q_base + I·Δt`, never `Q += I·Δt`, so calling the update
+twice in one step recomputes instead of accumulating — the same pattern
+`surfCharge` uses) **and restored** by `discardStep()`, called from the solver's
+rejection block beside `transport.discardStep()`, so correctness does not depend
+on how a retry treats `timeIndex`.
+
+### A diagnostic that could not be reconciled
+
+The CSV first wrote one row per *outer iteration* — 129 rows for 18 steps — and
+because `correct()` runs at the start of a step while the ledger updates at the
+end, a row carried step *k*'s time beside step *k−1*'s charge. Reconciling `Q`
+against `∫I dt` then missed by **11.5%**, which looks exactly like a quadrature
+error and is not one. It now emits one row per step with all quantities from the
+same step, which is what makes the 7.5e-12 above meaningful.
 
 ## Relation to the other kinds
 

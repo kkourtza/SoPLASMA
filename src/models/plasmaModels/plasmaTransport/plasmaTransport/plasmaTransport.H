@@ -722,6 +722,10 @@ protected:
     //  updateSurfaceCharge(). In-class initialiser, like chargeWarned_ above,
     //  so it needs no constructor entry.
     bool farFieldChargingChecked_ = false;
+    //- Whether the floating-conductor surface-charging contradiction has
+    //  been checked. Same one-shot pattern as farFieldChargingChecked_.
+    bool floatingChargingChecked_ = false;
+
 
     //- Largest relative charge imbalance reported so far, so the diagnostic
     //  tracks the whole run rather than whichever step happened to be first

@@ -317,6 +317,14 @@ public:
             return floating_ ? &floating_() : nullptr;
         }
 
+        //- The floating electrode, or nullptr. Non-const, for the charge
+        //  ledger: plasmaTransport feeds I_plasma in from the species wall
+        //  fluxes, which is the only place they exist.
+        floatingElectrode* floatingElectrodePtr()
+        {
+            return floating_ ? &floating_() : nullptr;
+        }
+
         //- Classify the potential's IMPOSED-VALUE patches, across EVERY
         //  region, into the three things a conductor can be.
         //

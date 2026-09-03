@@ -11,6 +11,7 @@
       See: <http://www.gnu.org/licenses/>.
 \*---------------------------------------------------------------------------*/
 
+#include "floatingElectrode.H"
 #include "plasmaTransport.H"
 #include "plasmaReactionRates.H"
 #include "plasmaChemistry.H"
@@ -1648,6 +1649,65 @@ void plasmaTransport::updateSurfaceCharge()
         }
     }
 
+    // THE FLOATING CONDUCTOR'S CHARGE IS GLOBAL, NOT LOCAL.
+    //
+    // A metal redistributes charge over its own relaxation time (eps/sigma
+    // ~ 1e-18 s), so only its TOTAL charge is meaningful -- there is no local
+    // sigma on it. Its wall fluxes therefore feed Q(t) = Q0 + INT I_plasma dt'
+    // instead of a surfCharge field.
+    //
+    // Fed from HERE, beside the local surface charge, deliberately: both use
+    // the same species wall fluxes and the same dt, and computing the current
+    // anywhere else would let the two accountings disagree about either.
+    floatingElectrode* fe = species_.em().floatingElectrodePtr();
+
+    const label floatPatchi =
+        fe ? mesh_.boundaryMesh().findPatchID(fe->patchName()) : -1;
+
+    scalar Ifloat = 0;
+
+    // A LOCAL SURFACE CHARGE ON A CONDUCTOR IS A CONTRADICTION, so it is
+    // refused rather than silently reinterpreted. Checked once.
+    if (fe && floatPatchi >= 0 && !floatingChargingChecked_)
+    {
+        floatingChargingChecked_ = true;
+
+        for (const label i : species_.mobileSpeciesIDs())
+        {
+            const fvPatchField<scalar>& pField =
+                species_.numberDensity(i).boundaryField()[floatPatchi];
+
+            const plasmaWallBC* pBC =
+                dynamic_cast<const plasmaWallBC*>(&pField);
+
+            if (pBC && pBC->enableSurfaceCharging())
+            {
+                FatalErrorInFunction
+                    << "Species `" << species_.numberDensity(i).name()
+                    << "` has `enableSurfaceCharging true` on patch `"
+                    << fe->patchName() << "`," << nl
+                    << "    which is a FLOATING CONDUCTOR." << nl << nl
+                    << "    A metal has no LOCAL surface charge: charge"
+                       " redistributes over its own" << nl
+                    << "    relaxation time, eps/sigma ~ 1e-18 s, so only its"
+                       " TOTAL charge is meaningful." << nl
+                    << "    That total is tracked as"
+                       " Q(t) = Q0 + INT I_plasma dt' and is what the" << nl
+                    << "    floatingElectrodePotential condition consumes."
+                    << nl << nl
+                    << "    The arriving charge IS counted -- it is what"
+                       " charges the conductor -- but as a" << nl
+                    << "    global quantity. Set `enableSurfaceCharging false`"
+                       " on this patch; the wall" << nl
+                    << "    flux conditions themselves stay exactly as they"
+                       " are, since a floating" << nl
+                    << "    electrode is metal and emits like any other"
+                       " electrode." << nl
+                    << exit(FatalError);
+            }
+        }
+    }
+
     forAll(mesh_.boundary(), patchi)
     {
         const fvPatch& p = mesh_.boundary()[patchi];
@@ -1670,9 +1730,24 @@ void plasmaTransport::updateSurfaceCharge()
             const plasmaWallBC* pBC =
                 dynamic_cast<const plasmaWallBC*>(&pField);
 
-            if (!pBC || !pBC->enableSurfaceCharging()) continue;
+            if (!pBC) continue;
 
             if (!particleFlux_.set(i)) continue;
+
+            if (patchi == floatPatchi)
+            {
+                // A CONDUCTOR, so this arriving charge is GLOBAL. It is
+                // counted regardless of `enableSurfaceCharging`, which governs
+                // the LOCAL sigma this patch cannot have -- and a contradictory
+                // `enableSurfaceCharging true` here is refused below rather
+                // than quietly reinterpreted.
+                Ifloat += species_.speciesCharge(i).value()
+                        * gSum(particleFlux_[i].boundaryField()[patchi]);
+
+                continue;
+            }
+
+            if (!pBC->enableSurfaceCharging()) continue;
 
             sigmaPatch += species_.speciesCharge(i).value()
                        * particleFlux_[i].boundaryField()[patchi]
@@ -1680,6 +1755,11 @@ void plasmaTransport::updateSurfaceCharge()
         }
 
         sigma.correctBoundaryConditions();
+    }
+
+    if (fe)
+    {
+        fe->addPlasmaCurrent(Ifloat, dt);
     }
 
     Info << "Surface charge updated." << endl;
