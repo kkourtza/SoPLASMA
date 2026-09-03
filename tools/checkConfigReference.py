@@ -141,6 +141,18 @@ NOT_USER_FACING = {
     "regions", "cellToRegion",
 }
 
+# Keys read ONLY in order to REJECT them, so a case that states one is stopped
+# with a translation. They are not options and must not be documented as such;
+# the reference should describe them as removed, if at all.
+REJECTED_KEYS = {
+    "limitVoltageRiseRate",   # -> maxVoltageRisePerStep, plasmaTimeControl.C:538
+    "maxVoltageRiseRate",     # -> maxVoltageRisePerStep, same block
+    "pressureAtm",            # -> derived from backgroundGas/pressure
+    "backgroundDensity",      # -> derived from backgroundGas
+    "chemistrySolver",        # -> reactions + solver
+    "energyModel",            # -> electronEnergyModel
+}
+
 KEY_RE = re.compile(
     r"""(?:
             \.?(?:getOrDefault|lookupOrDefault)  # defaulted read
@@ -176,6 +188,15 @@ def scan_source(src: Path):
             if dflt is not None:
                 rec["default"] = dflt.strip().strip('"')
                 rec["required"] = False
+            elif f'found("{key}")' in text or f"found(\"{key}\")" in text:
+                # A `get<>()` GUARDED by a found() check in the same file is not
+                # required -- it is optional with a default computed elsewhere.
+                # Measured: minDeltaT (derived from the step span) and
+                # onNonConvergence (derived from adjustTimeStep) both read this
+                # way, and both were mislabelled REQUIRED, which would have put
+                # a wrong "REQUIRED" in the reference for every such option.
+                rec["required"] = False
+                rec["default"] = "<derived; see the reader>"
     return found
 
 
@@ -372,7 +393,7 @@ def main() -> int:
             stale.append((k, d, s, f"documented {d['default']}, source has {s['default']}"))
 
     for k in sorted(src):
-        if k not in doc and k not in NOT_USER_FACING:
+        if k not in doc and k not in NOT_USER_FACING and k not in REJECTED_KEYS:
             undoc.append(k)
 
     w = 0
