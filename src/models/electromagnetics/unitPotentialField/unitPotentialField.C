@@ -236,6 +236,26 @@ const Foam::volScalarField& Foam::unitPotentialField::gas() const
 
 void Foam::unitPotentialField::solve(const electromagneticsModel& em)
 {
+    solveImpl(em, nullptr);
+}
+
+
+void Foam::unitPotentialField::solve
+(
+    const electromagneticsModel& em,
+    const volScalarField& effEpsGas
+)
+{
+    solveImpl(em, &effEpsGas);
+}
+
+
+void Foam::unitPotentialField::solveImpl
+(
+    const electromagneticsModel& em,
+    const volScalarField* effEpsGas
+)
+{
     // UNIT potential, deliberately: psi = 1 on the chosen patch makes the field
     // time-independent even under a ramped or AC drive, which is what makes
     // computing it once legitimate. The applied voltage re-enters only where
@@ -291,7 +311,9 @@ void Foam::unitPotentialField::solve(const electromagneticsModel& em)
         {
             fvScalarMatrix gasEqn
             (
-                fvm::laplacian(epsGas, gas_(), psiScheme)
+                effEpsGas
+              ? fvm::laplacian(*effEpsGas, gas_(), psiScheme)
+              : fvm::laplacian(epsGas, gas_(), psiScheme)
             );
 
             // Dimensions taken FROM the equation, not hardcoded. The real
@@ -333,7 +355,9 @@ void Foam::unitPotentialField::solve(const electromagneticsModel& em)
             // refused below when dielectrics are present.
             fvScalarMatrix psiEqn
             (
-                fvm::laplacian(epsGas, gas_(), psiScheme)
+                effEpsGas
+              ? fvm::laplacian(*effEpsGas, gas_(), psiScheme)
+              : fvm::laplacian(epsGas, gas_(), psiScheme)
             );
             psiEqn.solve(psiSolverDict);
             gas_().correctBoundaryConditions();

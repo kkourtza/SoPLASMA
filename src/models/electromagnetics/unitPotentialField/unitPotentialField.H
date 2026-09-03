@@ -104,6 +104,14 @@ class unitPotentialField
         //- Linear-solver settings for this one-shot cold solve
         dictionary solverDict() const;
 
+        //- The shared solve. `effEpsGas` null means use the model's constant
+        //  gas permittivity.
+        void solveImpl
+        (
+            const electromagneticsModel& em,
+            const volScalarField* effEpsGas
+        );
+
         //- No copying: it owns registered fields
         unitPotentialField(const unitPotentialField&) = delete;
         void operator=(const unitPotentialField&) = delete;
@@ -132,7 +140,28 @@ public:
 
         //- Solve the unit-potential problem with the model's permittivities.
         //  Safe to call repeatedly: it re-solves in place.
+        //
+        //  Correct for an EXPLICIT Poisson scheme, where the operator is eps.
         void solve(const electromagneticsModel& em);
+
+        //- Solve with an EFFECTIVE gas permittivity.
+        //
+        //  REQUIRED under `scheme semiImplicit`, where the real operator is
+        //  eps + dt*sigma_electrical rather than eps. Superposition is exact
+        //  only if psi solves THE SAME OPERATOR as the field it corrects, so
+        //  passing the true eps there would silently break it -- and since
+        //  both dt and sigma change every step, psi and its capacitance must
+        //  be rebuilt every step too.
+        //
+        //  Dielectrics keep their CONSTANT eps: an insulator has no
+        //  conductivity, so eps_eff = eps there. This mirrors
+        //  multiRegionPoisson exactly, which builds effEps for the gas and
+        //  uses reg.epsilon() for each dielectric.
+        void solve
+        (
+            const electromagneticsModel& em,
+            const volScalarField& effEpsGas
+        );
 
         //- INT eps |grad psi|^2 dV summed over EVERY region, with each
         //  region's own wedge revolution factor applied [F].

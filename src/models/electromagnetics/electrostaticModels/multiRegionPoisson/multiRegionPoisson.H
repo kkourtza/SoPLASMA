@@ -204,6 +204,17 @@ public:
         { 
             return dielectrics_[i]; 
         }
+
+        //- Non-const access to a dielectric region.
+        //
+        //  Needed by the floating-electrode superposition correction, which
+        //  adds dV_f*psi to the potential in EVERY region -- psi is continuous
+        //  across the interfaces by construction of the monolithic solve, so
+        //  correcting only the gas would leave a jump at the dielectric face.
+        inline dielectricRegion& dielectric(const label i)
+        {
+            return dielectrics_[i];
+        }
         const dielectricRegion& dielectric(const word& name) const;
 
         //- Access specific dielectric permittivity (by index or name)

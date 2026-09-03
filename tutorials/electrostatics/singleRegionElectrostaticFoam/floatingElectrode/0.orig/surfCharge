@@ -1,0 +1,49 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| Surface charge density. __SIGMA__ is substituted per case by Allrun-sweep.  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      surfCharge;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 -2 1 0 0 1 0];
+
+internalField   uniform 0;
+
+boundaryField
+{
+    bottom
+    {
+        type    fixedValue;
+        value   uniform 0;
+    }
+
+    top
+    {
+        type    fixedValue;
+        value   uniform 0;
+    }
+    xLow
+    {
+        type    fixedValue;
+        value   uniform 0;
+    }
+
+    xHigh
+    {
+        type    fixedValue;
+        value   uniform 0;
+    }
+
+    frontAndBack
+    {
+        type    empty;
+    }
+}
+
+// ************************************************************************* //

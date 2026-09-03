@@ -47,6 +47,7 @@ SourceFiles
 #ifndef electromagneticsModel_H
 #define electromagneticsModel_H
 
+#include "floatingElectrode.H"
 #include "fvMesh.H"
 #include "fvMatrices.H"
 #include "fvc.H"
@@ -89,6 +90,16 @@ protected:
 
     //- Electric potential field [V]
     volScalarField ePotential_;
+
+        //- The floating-electrode constraint, when the case has one.
+        //
+        //  Constructed LAZILY on the first solve, not in this constructor: on
+        //  a multi-region model the dielectric regions do not exist until the
+        //  derived constructor has run, and the classification scans them.
+        mutable autoPtr<floatingElectrode> floating_;
+
+        //- Whether the case has been searched for a floating conductor
+        mutable bool floatingChecked_ = false;
 
     //- Electric field [V/m]
     volVectorField E_;
@@ -275,6 +286,61 @@ public:
     // Field access
     
         const volScalarField& ePotential() const { return ePotential_; }
+
+        //- Non-const access to the potential.
+        //
+        //  Deliberately named apart from ePotential() so every mutation of the
+        //  solved field is greppable. Its one legitimate user is the
+        //  floating-electrode constraint, which adds dV_f*psi AFTER the solve;
+        //  that is an exact superposition, not a fix-up, because psi solves the
+        //  homogeneous problem.
+        volScalarField& ePotentialRef() { return ePotential_; }
+
+        //- Apply the floating-electrode constraint, if the case has one.
+        //
+        //  MUST be called after every Poisson solve and BEFORE the derived
+        //  fields are formed, because it changes the potential. Pass the
+        //  effective gas permittivity under `scheme semiImplicit` and nullptr
+        //  under `explicit`, so psi is built from the same operator the solve
+        //  used -- superposition is exact only then.
+        //
+        //  Called from BOTH Poisson models. A correction applied in only one
+        //  of two sibling models is this project's most repeated defect, so
+        //  the call sites are enumerated here: singleRegionPoisson::solve()
+        //  and solve(sigma,...), multiRegionPoisson::solve() and
+        //  solve(sigma,...).
+        void correctFloatingElectrode(const volScalarField* effEpsGas);
+
+        //- The floating electrode, or nullptr
+        const floatingElectrode* floatingElectrodePtr() const
+        {
+            return floating_ ? &floating_() : nullptr;
+        }
+
+        //- Classify the potential's IMPOSED-VALUE patches, across EVERY
+        //  region, into the three things a conductor can be.
+        //
+        //  ONE OWNER for this rule. Sato's discharge current needs the driven
+        //  and grounded lists; the floating electrode needs the floating one
+        //  AND the other two (as the patches its unit-potential problem holds
+        //  at zero). Two copies of a classification rule is two rules.
+        //
+        //      driven    a Dirichlet condition that is TIME-VARYING, or a
+        //                NON-ZERO constant
+        //      grounded  a NON-time-varying Dirichlet equal to ZERO
+        //      floating  a conductor whose potential is UNKNOWN
+        //      (skipped) everything else -- zeroGradient, empty, processor,
+        //                the region interfaces, thinDielectricPotential
+        //
+        //  The time-varying test is load-bearing: at t = 0 a ramp reads
+        //  EXACTLY ZERO, so a value-only rule would call the driven electrode
+        //  of every ramped case a ground.
+        void classifyElectrodePatches
+        (
+            wordList& driven,
+            wordList& grounded,
+            wordList& floating
+        ) const;
         const volVectorField& E() const { return E_; }
         const volScalarField& Emag() const { return Emag_; }
         const surfaceScalarField& phiE() const { return phiE_; }

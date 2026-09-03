@@ -1,0 +1,104 @@
+#!/bin/bash
+#------------------------------------------------------------------------------
+# floatingElectrode vs the analytic closed form. See COMPARE.md. 2026-09-03.
+#
+#  1-D cases  top driven at V0 = 1 V, x faces zeroGradient (so exactly 1-D),
+#             bottom floating:   V_f = V0 + Q/(eps0*A),  A = 0.1 m^2
+#
+#  sym case   xLow = +1 V, xHigh = -1 V, top zeroGradient, bottom floating with
+#             Q = 0. The configuration is ANTISYMMETRIC under x -> 1-x with
+#             V -> -V, and a conductor spanning the whole bottom edge is forced
+#             to ONE value. V_f = 0 preserves that antisymmetry and gives zero
+#             net induced charge, so V_f = 0 EXACTLY -- by symmetry, not by
+#             construction. This is a genuinely 2-D induction problem, so it is
+#             the real test of the Q_rho term.
+#------------------------------------------------------------------------------
+cd "${0%/*}" || exit 1
+
+EPS0=8.854187817620389e-12
+AREA=0.1
+NL=$'\n'
+fail=0
+
+ZG_X="    xLow${NL}    {${NL}        type    zeroGradient;${NL}    }${NL}${NL}    xHigh${NL}    {${NL}        type    zeroGradient;${NL}    }${NL}"
+DRIVEN_TOP="    top${NL}    {${NL}        type    fixedValue;${NL}        value   uniform 1.0;${NL}    }${NL}"
+ZG_TOP="    top${NL}    {${NL}        type    zeroGradient;${NL}    }${NL}"
+SYM_XLOW="    xLow${NL}    {${NL}        type    fixedValue;${NL}        value   uniform 1.0;${NL}    }${NL}"
+SYM_XHIGH="${NL}    xHigh${NL}    {${NL}        type    fixedValue;${NL}        value   uniform -1.0;${NL}    }${NL}"
+
+run_one () {  # name Q0 expectedVf topEntry xlowEntry xhighEntry
+    local n=$1 q=$2 exp=$3 top=$4 xl=$5 xh=$6
+    rm -rf run_$n; mkdir run_$n
+    cp -r 0.orig system configuration run_$n/
+    cp run_$n/system/fvSolution-foam run_$n/system/fvSolution
+    mv run_$n/0.orig run_$n/0
+    Q0=$q TOP=$top XLOW=$xl XHIGH=$xh /usr/bin/python3 -c "
+import os,pathlib
+p=pathlib.Path('run_$n/0/ePotential'); s=p.read_text()
+for k in ('Q0','TOP','XLOW','XHIGH'): s=s.replace('__'+k+'__',os.environ[k])
+p.write_text(s)"
+    ( cd run_$n && blockMesh > log.blockMesh 2>&1 \
+        && singleRegionElectrostaticFoam > log.solve 2>&1 )
+    local T=$(ls run_$n | grep -xE '[0-9]+' | sort -n | tail -1)
+    EXPECTED=$exp /usr/bin/python3 -c "
+import re,sys,os
+try: s=open('run_$n/$T/ePotential').read()
+except Exception as ex: print('  $n   RUN FAILED (%s)'%ex); sys.exit(1)
+m=re.search(r'^\s*bottom\s*\n\s*\{(.*?)\n\s*\}', s, re.S|re.M)
+if not m: print('  $n   no bottom patch'); sys.exit(1)
+b=m.group(1)
+fp=re.search(r'floatingPotential\s+([-\d.eE+]+)', b)
+v=re.search(r'\bvalue\s+(?:nonuniform[^(]*\((.*?)\)|uniform\s+([-\d.eE+]+))', b, re.S)
+xs=[float(x) for x in (v.group(1) or v.group(2)).split()]
+mn,mx=min(xs),max(xs)
+Vf=float(fp.group(1)) if fp else 0.5*(mn+mx)
+exp=float(os.environ['EXPECTED']); VSCALE=1.0
+absErr=abs(Vf-exp); err=absErr/max(abs(exp),VSCALE)
+spread=mx-mn
+ok = err<2e-6 and spread<1e-12
+print('  %-4s V_f=%-14.9g analytic=%-6.6g |err|=%.2e  spread=%.1e  %s'
+      %('$n',Vf,exp,absErr,spread,'PASS' if ok else 'FAIL'))
+if spread>=1e-12: print('        NOT AN EQUIPOTENTIAL: faces disagree by %.3e V'%spread)
+sys.exit(0 if ok else 1)"
+    local rc=$?
+    grep -m1 'self-capacitance' run_$n/log.solve | sed 's/^/      /'
+    return $rc
+}
+
+echo "=== 1-D: V_f = V0 + Q/(eps0*A),  V0 = 1 V,  A = 0.1 m^2"
+run_one q0 0                                                1.0 "$DRIVEN_TOP" "$ZG_X" "" || fail=1
+run_one qp "$(/usr/bin/python3 -c "print(${EPS0}*${AREA})")"  2.0 "$DRIVEN_TOP" "$ZG_X" "" || fail=1
+run_one qm "$(/usr/bin/python3 -c "print(-${EPS0}*${AREA})")" 0.0 "$DRIVEN_TOP" "$ZG_X" "" || fail=1
+
+echo "=== 2-D antisymmetric induction: V_f = 0 BY SYMMETRY (Q = 0)"
+run_one sym 0 0.0 "$ZG_TOP" "$SYM_XLOW" "$SYM_XHIGH" || fail=1
+
+# --- NEGATIVE test: the plasma guard must FIRE -----------------------------
+# Q(t) = Q0 + INT I_plasma dt' is NOT implemented, so a run with space charge
+# must be REFUSED rather than silently holding Q at Q0.
+echo "=== negative test: a plasma run must be refused"
+rm -rf run_plasma; mkdir run_plasma
+cp -r 0.orig system configuration run_plasma/
+cp run_plasma/system/fvSolution-foam run_plasma/system/fvSolution
+mv run_plasma/0.orig run_plasma/0
+TOP=$DRIVEN_TOP XLOW=$ZG_X /usr/bin/python3 -c "
+import os,pathlib
+p=pathlib.Path('run_plasma/0/ePotential'); s=p.read_text()
+s=s.replace('__Q0__','0').replace('__TOP__',os.environ['TOP'])
+s=s.replace('__XLOW__',os.environ['XLOW']).replace('__XHIGH__','')
+p.write_text(s)
+q=pathlib.Path('run_plasma/0/chargeDensity'); t=q.read_text()
+q.write_text(t.replace('internalField   uniform 0;','internalField   uniform 1e-6;'))"
+( cd run_plasma && blockMesh > log.blockMesh 2>&1 \
+    && singleRegionElectrostaticFoam > log.solve 2>&1 )
+if grep -q 'floating electrode in a PLASMA run is not supported' run_plasma/log.solve; then
+    echo "  plasma  guard FIRED as required"
+else
+    echo "  plasma  GUARD DID NOT FIRE -- a plasma run would silently hold Q at Q0"
+    fail=1
+fi
+
+echo
+echo "    1-D C_self must be eps0*A/L = $(/usr/bin/python3 -c "print(${EPS0}*${AREA}/1.0)") F"
+echo; [ $fail -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
+exit $fail

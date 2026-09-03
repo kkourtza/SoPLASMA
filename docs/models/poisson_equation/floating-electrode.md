@@ -1,8 +1,16 @@
 # The floating electrode
 
-**Status: SPECIFIED, not implemented (2026-09-03).** This document is the
-design; the derivation below is what the implementation must satisfy, and the
-three limits at the end are its tests.
+**Status: IMPLEMENTED and VALIDATED for electrostatics (2026-09-03).**
+The design below is what the implementation satisfies; all three tests at the
+end pass against analytic ground truth.
+
+> **NOT YET SUPPORTED: a floating electrode in a PLASMA run.** The constraint is
+> exact, but the charge ledger `Q(t) = Q₀ + ∫I_plasma dt'` is not wired — the
+> net charge flux from the species wall fluxes is not accumulated, so `Q` would
+> stay at `Q₀` for the whole run. That case is **refused with a fatal error**
+> rather than approximated, because it would otherwise produce an entirely
+> plausible and entirely wrong floating potential. See *Implementation status*
+> below.
 
 ## What it is
 
@@ -159,9 +167,90 @@ informative number about such an electrode. It should be written per timestep
 alongside the discharge current, with `Q(t)` and `I_plasma(t)`, so the settling
 behaviour above can be checked rather than assumed.
 
+## Implementation status
+
+| piece | state |
+|---|---|
+| the equipotential constraint | **done** — `floatingElectrodePotential` (a BC that carries the value) plus `Foam::floatingElectrode` (which determines it) |
+| `psi` and `C_self` | **done** — via the shared `unitPotentialField`, the same monolithic unit-potential solve Sato's current uses |
+| the closed form `V_f = (Q − Q_ρ)/C_self` | **done**, as an exact post-solve correction |
+| rebuild of `psi`/`C_self` when the operator moves | **done** — every step under `semiImplicit`, cached under `explicit` on a static mesh |
+| `Q(t) = Q₀ + ∫I_plasma dt'` | **NOT DONE.** `addCharge()` is the entry point and nothing calls it |
+| more than one floating conductor | **not supported** — fatal. Two of them couple, so the constraint becomes an N×N mutual-capacitance matrix |
+| a floating conductor inside a dielectric region | **not supported** — fatal |
+| per-step reporting of `V_f`, `Q`, `I_plasma` | **not done** — `V_f` is written into the field file and reported once at start-up |
+
+### How it is applied: a correction, not two solves
+
+The derivation above suggests solving twice — once with the patch at zero for
+`V_ρ`, then superposing. The implementation instead runs the *ordinary* solve
+with the patch at its current value `V_f_old` and removes the residual charge
+error afterwards:
+
+```
+dV_f = (Q_target − Q_measured)/C_self
+V_f += dV_f
+V   += dV_f · psi          in EVERY region
+```
+
+This is algebraically identical — `L(psi) = 0`, so adding `dV_f·psi` keeps the
+field a solution while shifting the patch value by exactly `dV_f` — and it
+leaves the main Poisson solve untouched. It is **exact, not iterative**: one
+correction lands on `Q_target` by construction, because `Q(V_f)` is exactly
+linear. Applying it to every region matters: `psi` is continuous across the
+interfaces by construction of the monolithic solve, so correcting only the gas
+would leave a jump at the dielectric face.
+
+### The sign convention, which is where this breaks
+
+`Q = +∮ε·snGrad(V) dA`, with **no** leading minus. The patch normal points out
+of the fluid and *into* the metal, while a Gauss surface enclosing the electrode
+has its outward normal pointing into the fluid, so `n_enclosing = −n_patch`.
+`C_self` uses the identical convention, and it must: `dV_f` divides one by the
+other, so a sign slip in either drives the charge *away* from its target and the
+run diverges rather than being slightly wrong. The first version of `C_self` did
+have it backwards and returned exactly `−C`, caught immediately by the
+two-electrode test in `testDischargeCurrent`.
+
 ## The three tests it must pass
 
 Each is analytic, cheap, and would catch a sign error immediately.
+
+**All three pass. Measured 2026-09-03**, unit bed
+`tutorials/electrostatics/singleRegionElectrostaticFoam/floatingElectrode`
+(`./Allrun-sweep`; also run by `tools/run_electrostatics_tests.sh`).
+
+1-D column, gap `L = 1 m`, plate area `A = 0.1 m²`, `top` driven at `V₀ = 1 V`,
+`bottom` the floating conductor, `sides` `zeroGradient` so the problem is
+exactly 1-D. Analytic `V_f = V₀ + Q/(ε₀A)`:
+
+| case | `Q₀` [C] | analytic `V_f` | measured | err |
+|---|---|---|---|---|
+| `q0` | 0 | 1.0 | 1.0 | 0 |
+| `qp` | `+ε₀A` | 2.0 | 2.0 | 0 |
+| `qm` | `−ε₀A` | 0.0 | −2.72e-08 | 2.7e-8 |
+| `sym` | 0, antisymmetric 2-D | 0.0 | 4.52e-09 | 4.5e-9 |
+
+`C_self` measured `8.85419e-13 F` against analytic `ε₀A/L =
+8.854187817620389e-13 F`.
+
+**`sym` is the real test of the induced-charge term `Q_ρ`.** `xLow = +1 V`,
+`xHigh = −1 V`, `top` `zeroGradient`, and the floating conductor spans the whole
+bottom edge. The configuration is antisymmetric under `x → 1−x` with `V → −V`,
+so `V_f = 0` *by symmetry* — and its `C_self` is `5.4639e-12 F`, a completely
+different number from the 1-D cases, which is what shows the result is not an
+artefact of the 1-D formula.
+
+Note also that the 1-D cases are **not degenerate**: `Q_ρ = −ε₀A ≠ 0` there, so
+the induced-charge term is exercised even in the simplest case.
+
+Two further invariants are checked in the same sweep:
+
+- **The conductor is an equipotential.** The spread of `V` over its faces is
+  `0.0e+00` exactly in every case — not a tolerance that was relaxed.
+- **The plasma guard fires.** A case with non-zero space charge is refused, so
+  the missing charge ledger cannot silently produce a wrong answer.
+
 
 1. **`Q₀ = 0`, no plasma.** With no space charge and no flux, `Q_ρ` is whatever
    the other electrodes induce and `V_f = −Q_ρ/C_self`. For a symmetric

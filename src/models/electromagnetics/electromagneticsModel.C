@@ -11,6 +11,9 @@
       See: <http://www.gnu.org/licenses/>.
 \*---------------------------------------------------------------------------*/
 
+#include "multiRegionPoisson.H"
+#include "mappedPatchBase.H"
+#include "fixedValueFvPatchFields.H"
 #include "electromagneticsModel.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
@@ -670,5 +673,106 @@ autoPtr<electromagneticsModel> electromagneticsModel::New
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 } // End namespace Foam
+
+
+
+void Foam::electromagneticsModel::classifyElectrodePatches
+(
+    wordList& driven,
+    wordList& grounded,
+    wordList& floating
+) const
+{
+    DynamicList<word> dr, gr, fl;
+
+    auto classify = [&](const volScalarField& ePot)
+    {
+        const volScalarField::Boundary& bf = ePot.boundaryField();
+
+        forAll(bf, patchi)
+        {
+            const fvPatchScalarField& pf = bf[patchi];
+
+            // Not an imposed-value condition: not a conductor.
+            if (!isA<fixedValueFvPatchScalarField>(pf)) continue;
+
+            // A region interface is never an electrode, whatever sits on it.
+            if (isA<mappedPatchBase>(pf.patch().patch())) continue;
+
+            const word& pname = pf.patch().name();
+
+            // FLOATING first, because it IS a fixedValue by inheritance and
+            // would otherwise be classified as a driven or grounded electrode
+            // -- its stored value is simply the last equipotential it reached.
+            //
+            // Compared BY TYPE NAME rather than with isA<>, deliberately: the
+            // condition lives in libplasmaBcs, which depends on THIS library,
+            // so including its header here would be circular. The name is part
+            // of the condition's public interface (its TypeName), so this is a
+            // stable contract rather than a guess.
+            if (pf.type() == "floatingElectrodePotential")
+            {
+                fl.append(pname);
+                continue;
+            }
+
+            const bool timeVarying =
+                (pf.type() != fixedValueFvPatchScalarField::typeName);
+
+            const scalar peak = gMax(mag(pf));
+
+            if (!timeVarying && peak < SMALL)
+            {
+                gr.append(pname);
+            }
+            else
+            {
+                dr.append(pname);
+            }
+        }
+    };
+
+    classify(ePotential_);
+
+    if (isA<multiRegionPoisson>(*this))
+    {
+        const multiRegionPoisson& mrp =
+            refCast<const multiRegionPoisson>(*this);
+
+        for (label i = 0; i < mrp.nDielectrics(); ++i)
+        {
+            classify(mrp.dielectric(i).ePotential());
+        }
+    }
+
+    driven.transfer(dr);
+    grounded.transfer(gr);
+    floating.transfer(fl);
+}
+
+
+
+
+void Foam::electromagneticsModel::correctFloatingElectrode
+(
+    const volScalarField* effEpsGas
+)
+{
+    if (!floatingChecked_)
+    {
+        floatingChecked_ = true;
+
+        if (floatingElectrode::present(*this))
+        {
+            floating_.reset(new floatingElectrode(mesh_, *this));
+        }
+    }
+
+    if (floating_)
+    {
+        floating_->correct(*this, effEpsGas);
+    }
+}
+
 
 // ************************************************************************* //

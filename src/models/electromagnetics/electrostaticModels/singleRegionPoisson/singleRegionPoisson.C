@@ -200,6 +200,11 @@ void singleRegionPoisson::solve()
         plasmaSimulationProfiler::stop("Electromagnetics", "Solve ePotentialEqn");
     }
 
+    // The floating-electrode constraint changes the potential, so it must
+    // come BEFORE the derived fields are formed from it. Explicit scheme here,
+    // so the operator is eps and psi needs no effective permittivity.
+    correctFloatingElectrode(nullptr);
+
     // plasmaSimulationProfiler::start("emupdateDerivedFields");
     updateDerivedFields();
     // plasmaSimulationProfiler::stop("emupdateDerivedFields");
@@ -241,6 +246,9 @@ void singleRegionPoisson::solve
 
         ePotentialEqn.solve();
     }
+
+    // semiImplicit: psi MUST be built from the same operator, eps + dt*sigma.
+    correctFloatingElectrode(&effEps);
 
     updateDerivedFields();
 }

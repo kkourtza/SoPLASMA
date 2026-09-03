@@ -626,6 +626,10 @@ void multiRegionPoisson::solve()
         solveSegregated();
     }
 
+    // Explicit scheme: the operator is eps, so psi needs no effective
+    // permittivity. Before updateDerivedFields, which reads the potential.
+    correctFloatingElectrode(nullptr);
+
     updateDerivedFields();
 }
 
@@ -649,6 +653,19 @@ void multiRegionPoisson::solve
     else
     {
         solveSegregated(electricalConductivity, diffusiveChargeSource);
+    }
+
+    // semiImplicit: rebuilt from the SAME operator the solve used. The
+    // expression must match solveCoupled/solveSegregated exactly -- gas gets
+    // eps + dt*sigma, dielectrics keep their constant eps (an insulator has no
+    // conductivity), which unitPotentialField's overload does.
+    {
+        const volScalarField effEps
+        (
+            epsilon_ + mesh_.time().deltaT()*electricalConductivity
+        );
+
+        correctFloatingElectrode(&effEps);
     }
 
     updateDerivedFields();

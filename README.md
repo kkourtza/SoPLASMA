@@ -462,6 +462,45 @@ its sign, both limits, both guards, and restart round-tripping) — see
 [`docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md`](docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md).
 
 
+## Electrodes: the three things a conductor can know
+
+```
+                        potential          charge
+  driven electrode      known (waveform)   whatever the supply gives
+  grounded electrode    known (0)          whatever flows to ground
+  floatingElectrode     UNKNOWN            KNOWN (conserved)
+```
+
+A **floating electrode** is a conductor connected to nothing — a probe, an
+isolated pin, a floating guard ring, one disconnected segment of a segmented
+electrode. The usual boundary condition is inverted: the charge is known and the
+potential is solved for.
+
+Because Poisson is linear in `V`, this closes in **closed form** rather than by
+iteration. With `psi` the unit-potential field (1 on the floating conductor, 0
+on every known electrode) and `C_self = ∮ε∇psi·n dA` its self-capacitance,
+
+```
+V_f = (Q − Q_rho) / C_self
+```
+
+exactly, with no relaxation parameter and no convergence criterion. Declare it
+with one entry and no potential — supplying a potential would make it a driven
+electrode, so it is rejected:
+
+```
+myProbe { type floatingElectrodePotential; initialCharge 0; value uniform 0; }
+```
+
+Validated against analytic ground truth, including a 2-D antisymmetric induction
+case where `V_f = 0` follows from symmetry alone. **A floating electrode in a
+plasma run is refused for now**: the constraint is exact but the charge ledger
+`Q(t) = Q0 + ∫I_plasma dt` is not yet wired, and holding `Q` at `Q0` would give a
+plausible, wrong floating potential rather than an error. Details and the
+measured tests:
+[`docs/models/poisson_equation/floating-electrode.md`](docs/models/poisson_equation/floating-electrode.md).
+
+
 ## Discharge current, on by default
 
 Sato's discharge current is the primary measurable of almost every discharge

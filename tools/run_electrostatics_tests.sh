@@ -53,6 +53,18 @@ else
 fi
 ( cd "$ES/$name" && ./Allclean > /dev/null 2>&1 )
 
+# --- 1b. the floating-electrode closed form ---------------------------------
+name="singleRegionElectrostaticFoam/floatingElectrode"
+if ( cd "$ES/$name" && ./Allrun-sweep > log.suite 2>&1 ); then
+    n=$(grep -c 'PASS' "$ES/$name/log.suite" || true)
+    report "$name" PASS "$n checks"
+    pass=$((pass+1))
+else
+    report "$name" FAIL "see $ES/$name/log.suite"
+    fail=$((fail+1))
+fi
+( cd "$ES/$name" && ./Allclean > /dev/null 2>&1 )
+
 # --- 2. the three series-stack cases with an ANALYTIC reference -------------
 for name in \
     multiRegionElectrostaticFoam/plate2D_timeVaryingBC_explicitBoundary \

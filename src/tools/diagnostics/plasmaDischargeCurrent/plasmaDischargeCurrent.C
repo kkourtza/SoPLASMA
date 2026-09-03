@@ -219,75 +219,20 @@ void Foam::plasmaDischargeCurrent::deriveElectrodePatches
     const electromagneticsModel& em
 )
 {
-    // THE CLASSIFICATION RULE, in one place.
+    // THE CLASSIFICATION RULE HAS ONE OWNER:
+    // electromagneticsModel::classifyElectrodePatches(). It is shared with the
+    // floating electrode, which needs the floating list and needs these two as
+    // the patches its unit-potential problem holds at zero.
     //
-    // An electrode is a patch where the potential is IMPOSED, i.e. a Dirichlet
-    // condition -- `fixedValue` and everything derived from it, which includes
-    // `uniformFixedValue`. Everything else (zeroGradient, the interface
-    // conditions, thinDielectricPotential, empty, processor) is not an
-    // electrode and is skipped.
-    //
-    // Among the electrodes:
-    //   GROUNDED  a NON-time-varying Dirichlet that is identically zero.
-    //   DRIVEN    anything else -- a time-varying Dirichlet (a ramp, a sine, a
-    //             table) whatever its present value, or a constant non-zero
-    //             one (a DC electrode).
-    //
-    // THE TIME-VARYING TEST IS THE LOAD-BEARING PART. At t = 0 a ramp reads
-    // EXACTLY ZERO, so a value-only rule would classify the driven electrode
-    // of every ramped case as ground, leaving no drive and a singular
-    // weighting-field problem. So the discriminator is the CONDITION TYPE, not
-    // the current value: `fixedValue` is static, any other member of the
-    // family is a Function1 in disguise.
-    DynamicList<word> drivenCandidates;
-    DynamicList<word> grounded;
+    // Moved there 2026-09-03 when floatingElectrodePotential arrived: that
+    // condition IS a fixedValue by inheritance, so a copy of the rule living
+    // here would have classified a floating conductor as a DRIVEN electrode
+    // and measured the discharge current at it.
+    wordList drivenCandidates;
+    wordList grounded;
+    wordList floating;
 
-    auto classify = [&](const volScalarField& ePot)
-    {
-        const volScalarField::Boundary& bf = ePot.boundaryField();
-
-        forAll(bf, patchi)
-        {
-            const fvPatchScalarField& pf = bf[patchi];
-
-            // Not a Dirichlet condition: not an electrode.
-            if (!isA<fixedValueFvPatchScalarField>(pf)) continue;
-
-            // A region interface is never an electrode, whatever sits on it.
-            if (isA<mappedPatchBase>(pf.patch().patch())) continue;
-
-            // Empty/wedge/processor patches carry no electrode either.
-            if (pf.patch().size() == 0 && Pstream::parRun() == false) continue;
-
-            const word& pname = pf.patch().name();
-
-            const bool timeVarying =
-                (pf.type() != fixedValueFvPatchScalarField::typeName);
-
-            const scalar peak = gMax(mag(pf));
-
-            if (!timeVarying && peak < SMALL)
-            {
-                grounded.append(pname);
-            }
-            else
-            {
-                drivenCandidates.append(pname);
-            }
-        }
-    };
-
-    classify(em.ePotential());
-
-    if (isA<multiRegionPoisson>(em))
-    {
-        const multiRegionPoisson& mrp = refCast<const multiRegionPoisson>(em);
-
-        for (label i = 0; i < mrp.nDielectrics(); ++i)
-        {
-            classify(mrp.dielectric(i).ePotential());
-        }
-    }
+    em.classifyElectrodePatches(drivenCandidates, grounded, floating);
 
     // --- the driven electrode -----------------------------------------------
     if (drivenPatch_.empty())
@@ -302,7 +247,9 @@ void Foam::plasmaDischargeCurrent::deriveElectrodePatches
                 << "dischargeCurrent is ON BY DEFAULT but the DRIVEN electrode"
                 << " could not be derived." << nl << nl
                 << "    Driven candidates found: " << drivenCandidates << nl
-                << "    Grounded patches found:  " << grounded << nl << nl
+                << "    Grounded patches found:  " << grounded << nl
+                << "    Floating conductors:     " << floating
+                << "   (never a current-measuring electrode)" << nl << nl
                 << (
                        drivenCandidates.empty()
                      ? "    NONE were found. A driven electrode is a Dirichlet"
@@ -335,6 +282,7 @@ void Foam::plasmaDischargeCurrent::deriveElectrodePatches
         {
             if (w != drivenPatch_) g.append(w);
         }
+
 
         if (g.empty())
         {
