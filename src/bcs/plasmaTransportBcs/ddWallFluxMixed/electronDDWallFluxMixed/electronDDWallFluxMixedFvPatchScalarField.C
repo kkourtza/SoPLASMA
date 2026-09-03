@@ -12,6 +12,8 @@
 \*---------------------------------------------------------------------------*/
 
 #include "addToRunTimeSelectionTable.H"
+#include "mappedPatchBase.H"
+#include "IOdictionary.H"
 
 #include "plasmaTransport.H"
 #include "electronDDWallFluxMixedFvPatchScalarField.H"
@@ -101,6 +103,50 @@ electronDDWallFluxMixedFvPatchScalarField::calcEffectiveWallVelocity
     return tVel;
 }
 
+
+namespace
+{
+
+//- Gamma from the MATERIAL of the region behind an interface patch, or -1.
+//
+//  Secondary emission is a surface property, but for a MESHED barrier the
+//  emitting surface IS that region, so gamma belongs to its material
+//  declaration in constant/<region>/electricalProperties -- not to a boundary
+//  condition on the far side of the interface, where it would be the same
+//  number written twice.
+//
+//  dielectricRegion registers `gammaSEE` on its own mesh registry alongside
+//  `epsilonR`. An interface patch is a mappedPatchBase, so the gas side can
+//  reach the neighbour's registry through it and read what the material says.
+//
+//  Returns -1 when there is nothing to read: not an interface patch, or the
+//  neighbour's material does not state a gamma. The caller then keeps its own
+//  value rather than being handed a fabricated one.
+Foam::scalar neighbourMaterialSEEC(const Foam::fvPatch& p)
+{
+    using namespace Foam;
+
+    const auto* mppPtr = isA<mappedPatchBase>(p.patch());
+    if (!mppPtr || !mppPtr->sameWorld())
+    {
+        return -1;
+    }
+
+    const polyMesh& nbrMesh = mppPtr->sampleMesh();
+
+    if (!nbrMesh.foundObject<IOdictionary>("dielectricProperties"))
+    {
+        return -1;
+    }
+
+    const IOdictionary& props =
+        nbrMesh.lookupObject<IOdictionary>("dielectricProperties");
+
+    return props.getOrDefault<scalar>("gammaSEE", -1);
+}
+
+} // End anonymous namespace
+
 // * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
 
 // Standard Constructor
@@ -155,7 +201,18 @@ electronDDWallFluxMixedFvPatchScalarField
     //
     // Default changed 2026-09-02. Any case that relied on the old default
     // should state its own value; a case that already states one is unaffected.
-    defaultSEEC_(dict.lookupOrDefault<scalar>("defaultSEEC", 0.001)),
+    // PRECEDENCE: an explicit `defaultSEEC` wins; otherwise the neighbouring
+    // region's MATERIAL; otherwise 0.001 (contaminated oxide / barrier).
+    //
+    // So a meshed barrier needs gamma stated ONCE, with its material, and the
+    // interface picks it up -- while a hand-written case can still override per
+    // patch, and a patch with no material behind it keeps the default.
+    defaultSEEC_
+    (
+        dict.found("defaultSEEC")
+      ? dict.get<scalar>("defaultSEEC")
+      : (neighbourMaterialSEEC(p) > 0 ? neighbourMaterialSEEC(p) : 0.001)
+    ),
     speciesSEEC_(dict.subOrEmptyDict("speciesSEEC")),
     seec_(0), 
     mapped_(false)

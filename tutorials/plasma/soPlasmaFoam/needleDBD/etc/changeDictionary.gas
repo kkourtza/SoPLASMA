@@ -66,7 +66,7 @@ ePotential
             //     uniformValue    constant 8e3;
             //
             // See docs/reference/changeDictionary.md for the full menu.
-            // uniformValue    <SET ME>;
+            uniformValue    table ((0 0) (100e-9 8e3));
         }
 
         gas_to_dielectric
@@ -148,18 +148,32 @@ n_e
         //     electronDDWallFluxMixed      explicit mixed form
         "(active_electrode|air_dielectric|gas_to_dielectric)"
         {
-            type            electronDDWallFluxImplicit;
+            type            electronDDWallFluxMixed;
             value           $internalField;
+            // MECHANICAL. `T` is a FIELD NAME, not a temperature: the
+            // electron temperature field the wall flux evaluates the thermal
+            // speed from.
+            T               T_e;
 
-            // >>> CHOSEN <<<  gamma per SURFACE. Default 0.001 (contaminated
-            // oxide / barrier); clean metal is nearer 0.1. The needle and the
-            // barrier are different materials, so split this regex if they
-            // should differ -- which they should.
-            // defaultSEEC     <SET ME>;
+            // MECHANICAL, and it MUST match the nEps_e block below.
+            // energyDDWallFlux carries its OWN includeDriftFlux, defaulting to
+            // false and independent of n_e's, so setting it on one leaves the
+            // other SINGULAR at a sharp electrode -- measured, the guard fired
+            // at (D/delta + uEff)/(D/delta) = -0.0624 AFTER n_e was corrected,
+            // an identical symptom to the original failure. A partial fix looks
+            // like a failed one.
+            includeDriftFlux true;
 
-            // Surface charging: ON for the barrier and the interface, OFF for
-            // a metal electrode. Default false. Split the regex to differ.
-            // enableSurfaceCharging  true;
+            // DERIVED from the material where there is one: gamma is registered
+            // by the dielectric region from its electricalProperties, and the
+            // gas-side condition reads it through the mapped patch. State
+            // `defaultSEEC` here only to OVERRIDE that, or on a patch with no
+            // meshed region behind it.
+            // defaultSEEC     <optional override>;
+
+            // Charge accumulates on insulating surfaces, not on metal. Split
+            // this regex when the needle and the barrier must differ.
+            enableSurfaceCharging true;
         }
     }
 }
@@ -181,10 +195,10 @@ nEps_e
         "(active_electrode|air_dielectric|gas_to_dielectric)"
         {
             type            energyDDWallFluxMixed;      // MECHANICAL
-            value           $internalField;
-            // >>> CHOSEN <<<  the same gamma as n_e above. It must agree, or
-            // the emitted electrons and the energy they carry disagree.
-            // defaultSEEC     <SET ME>;
+            value           uniform 0;
+            T               T_e;                        // MECHANICAL
+            includeDriftFlux true;                      // MUST match n_e above
+            enableSurfaceCharging true;
         }
     }
 }
@@ -224,9 +238,12 @@ nEps_e
         //     neutralDDWallFluxImplicit | neutralDDWallFluxMixed
         "(active_electrode|air_dielectric|gas_to_dielectric)"
         {
-            type            ionDDWallFluxImplicit;
+            type            ionDDWallFluxMixed;
             value           uniform 0;
-            // enableSurfaceCharging  true;   // >>> CHOSEN <<< per surface
+            T               T_gas;                      // MECHANICAL: ions are
+                                                        // at the gas temperature
+            includeDriftFlux true;
+            enableSurfaceCharging true;
         }
     }
 }

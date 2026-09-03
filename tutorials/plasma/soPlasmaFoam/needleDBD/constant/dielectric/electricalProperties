@@ -46,6 +46,20 @@ FoamFile
 // barrier capacitance, hence how much surface charge is needed to extinguish
 // the discharge.
 
- epsilonR    3.0;
+epsilonR    3.0;
+// gammaSEE is NOT stated, deliberately.
+//
+// Secondary emission travels with the MATERIAL: state it here and the gas-side
+// interface condition reads it through the mapped patch, so gamma is written
+// once instead of once per patch. VERIFIED 2026-09-03: `gammaSEE 0.05` here
+// appeared as `defaultSEEC 0.05` on gas_to_dielectric, against a built-in
+// default of 0.001.
+//
+// Left unstated because no defensible NUMBER is available yet -- gamma for a
+// contaminated oxide spans about 1e-3 to 1e-2 and the case has no material
+// declared, so any value written here would be invented. The built-in 0.001
+// applies until the material library lands and this becomes
+//     material borosilicate;
+// carrying epsilonR and gamma together with a citation.
 
 // ************************************************************************* //

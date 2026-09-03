@@ -192,6 +192,44 @@ public:
                 )
             );
             epsilonDict->add("epsilonR", epsilonR_);
+
+            // GAMMA TRAVELS WITH THE MATERIAL, not with the patch.
+            //
+            // Secondary emission IS a surface property, unlike permittivity --
+            // but for a MESHED barrier the emitting surface IS this region, so
+            // its gamma belongs to the region's material declaration and not to
+            // a boundary condition on the far side of the interface.
+            //
+            // Registered here so the gas-side wall-flux condition can read it
+            // through the mapped patch, which is what stops gamma being stated
+            // twice: once as the material and once as `defaultSEEC`.
+            //
+            // Read from the SAME file as epsilonR. Absent means "not stated",
+            // and the wall condition keeps its own default rather than being
+            // handed a fabricated value.
+            {
+                IOdictionary props
+                (
+                    IOobject
+                    (
+                        "electricalProperties",
+                        regionMesh_.time().constant(),
+                        regionMesh_,
+                        IOobject::READ_IF_PRESENT,
+                        IOobject::NO_WRITE,
+                        IOobject::NO_REGISTER
+                    )
+                );
+
+                if (props.found("gammaSEE"))
+                {
+                    epsilonDict->add
+                    (
+                        "gammaSEE", props.get<scalar>("gammaSEE")
+                    );
+                }
+            }
+
             regionMesh_.thisDb().store(epsilonDict);
         }
 
