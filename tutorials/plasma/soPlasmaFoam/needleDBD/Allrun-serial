@@ -133,15 +133,19 @@ step "6. initial fields"
 # 0.orig: the two generators below derive every boundary condition from the
 # SEMANTIC description in configuration/boundaries plus the mesh topology.
 #
-# THE ORDER IS LOAD-BEARING, in one direction only:
-#   plasmaSetupBoundaries       writes 0/<region>/{ePotential,surfCharge} from
-#                               configuration/boundaries and the shipped
-#                               boundary-role library.
-#   plasmaCreateSpeciesFields   writes every species field, AND READS
-#                               0/gas/ePotential to learn what each patch is.
-# Reversed, every patch classifies as `open` and no species gets a wall flux
-# anywhere -- measured 2026-09-04, and caught only because the generator prints
-# its classification.
+#   plasmaSetupBoundaries       writes 0/<region>/{ePotential,surfCharge}
+#   plasmaCreateSpeciesFields   writes every species field and nEps_e
+#
+# Both derive from configuration/boundaries and the shipped boundary-role
+# library, so THE ORDER DOES NOT MATTER -- verified 2026-09-04: all 17 generated
+# files are identical whichever runs first.
+#
+# It briefly DID matter. The species generator used to read 0/gas/ePotential and
+# map the ELECTROSTATICS condition type back to a semantic class, so the
+# potential had to exist first, and reversing the two silently classified every
+# patch as `open` with no wall flux anywhere. That was deriving one module's
+# answer from another's; both now derive from the DESCRIPTION, and the
+# dependency is gone rather than merely documented.
 rm -rf 0 && mkdir -p 0/gas 0/dielectric logs
 
 runApplication plasmaSetupBoundaries     || die "plasmaSetupBoundaries"

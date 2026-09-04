@@ -11,6 +11,7 @@ EXE_INC = \
 
 EXE_LIBS = \
     -L$(FOAM_USER_LIBBIN) -lplasmaSpecies \
+    -lplasmaElectromagnetics \
     -lOpenFOAM \
     -lfiniteVolume \
     -lmeshTools

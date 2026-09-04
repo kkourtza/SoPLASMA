@@ -61,6 +61,7 @@ Author
 #include "IOdictionary.H"
 #include "volFields.H"
 #include "plasmaSpecies.H"
+#include "boundaryRoleLibrary.H"
 #include "emptyPolyPatch.H"
 #include "wedgePolyPatch.H"
 #include "symmetryPolyPatch.H"
@@ -95,23 +96,20 @@ enum patchRole
 };
 
 
-//- Read a field FILE as a plain dictionary.
+//- Classify every patch of a region from the CASE'S OWN DESCRIPTION.
 //
-//  Deliberately not as a volScalarField: constructing the real boundary
-//  conditions here would run their constructors, and the wall-flux conditions
-//  look up `plasmaTransport` in the registry -- which does not exist in a
-//  field-generation utility. Only the `type` of each patch entry is wanted.
-static dictionary readFieldFileAsDict(const fileName& path)
-{
-    IFstream is(path);
-
-    if (!is.good()) return dictionary::null;
-
-    return dictionary(is);
-}
-
-
-//- Classify every patch of the gas mesh.
+//  THE DIRECTION MATTERS. This used to read 0/<region>/ePotential and map the
+//  ELECTROSTATICS boundary-condition type back to a semantic class --
+//  `thinDielectricPotential` meant a charging surface, `uniformFixedValue`
+//  meant a conductor. That is deriving one module's answer from another
+//  module's answer, and it is backwards under G2: both modules must derive from
+//  the DESCRIPTION. It also forced an ordering (the potential had to be
+//  generated first) that no longer exists.
+//
+//  Three things are still derived rather than declared, and a case may not
+//  state them: MECHANICAL patches come from the mesh, region INTERFACES from
+//  the topology, and everything else from configuration/boundaries via the
+//  shared role library.
 static void classifyPatches
 (
     const fvMesh& mesh,
@@ -119,10 +117,7 @@ static void classifyPatches
     HashTable<patchRole>& roles
 )
 {
-    // The interface patch names splitMeshRegions derives are
-    // `<thisRegion>_to_<other>`, so the far-field and dielectric interfaces on
-    // the gas mesh are known from the region declarations alone.
-    wordList farFields, dielectrics;
+    wordList farFields, dielectrics, gases;
     {
         IOdictionary rp
         (
@@ -142,34 +137,21 @@ static void classifyPatches
             HashTable<wordList> regions;
             rp.readEntry("regions", regions);
 
-            if (regions.found("farField"))   farFields  = regions["farField"];
+            if (regions.found("farField"))   farFields   = regions["farField"];
             if (regions.found("dielectric")) dielectrics = regions["dielectric"];
+            if (regions.found("gas"))        gases       = regions["gas"];
         }
     }
 
-    // The potential's boundary conditions say which patches are electrodes and
-    // which are dielectric surfaces. Read from the FILE, which the case has
-    // already written by this point.
-    const dictionary ePot
-    (
-        readFieldFileAsDict
-        (
-            runTime.timePath()/mesh.name()/"ePotential"
-        )
-    );
-
-    const dictionary& ePotBf =
-        ePot.found("boundaryField")
-      ? ePot.subDict("boundaryField")
-      : dictionary::null;
+    const dictionary decl(boundaryRoleLibrary::caseDeclaration(runTime));
 
     forAll(mesh.boundary(), patchi)
     {
         const polyPatch& pp = mesh.boundaryMesh()[patchi];
         const word& name = pp.name();
 
-        // 1. MECHANICAL patches keep whatever they are. These are not
-        //    physical surfaces and a flux condition on one is meaningless.
+        // 1. MECHANICAL -- from the MESH. A mechanical constraint is not a
+        //    physical description, and a flux condition on one is meaningless.
         if
         (
             isA<emptyPolyPatch>(pp)
@@ -184,72 +166,79 @@ static void classifyPatches
             continue;
         }
 
-        // 2. A FAR-FIELD interface is fictitious AIR, not a surface. Nothing
-        //    is absorbed there and nothing may accumulate -- depositing charge
-        //    would invent a dielectric surface in the middle of the gas and
-        //    shield the very field the region was added to resolve.
-        bool isFarField = false;
+        // 2. A REGION INTERFACE -- from the TOPOLOGY.
+        bool isInterface = false;
+
         for (const word& ff : farFields)
         {
-            if (name == mesh.name() + "_to_" + ff) isFarField = true;
+            if (name == mesh.name() + "_to_" + ff)
+            {
+                // Fictitious AIR, not a surface: nothing is absorbed and
+                // nothing may accumulate. Charge deposited here would invent a
+                // dielectric surface in the middle of the gas and shield the
+                // very field the region was added to resolve.
+                roles.insert(name, prOpen);
+                isInterface = true;
+            }
         }
-        if (isFarField)
-        {
-            roles.insert(name, prOpen);
-            continue;
-        }
+        if (isInterface) continue;
 
-        // 3. A DIELECTRIC interface is a barrier surface: it absorbs and it
-        //    charges.
-        bool isDielectric = false;
         for (const word& d : dielectrics)
         {
-            if (name == mesh.name() + "_to_" + d) isDielectric = true;
+            if (name == mesh.name() + "_to_" + d)
+            {
+                roles.insert(name, prSurfaceCharging);
+                isInterface = true;
+            }
         }
-        if (isDielectric)
+        for (const word& g : gases)
         {
-            roles.insert(name, prSurfaceCharging);
-            continue;
+            if (name == mesh.name() + "_to_" + g)
+            {
+                roles.insert(name, prSurfaceCharging);
+                isInterface = true;
+            }
+        }
+        if (isInterface) continue;
+
+        // 3. DECLARED by the case, and translated by the role library.
+        if (!decl.found(name))
+        {
+            FatalErrorInFunction
+                << "Patch `" << name << "` of region `" << mesh.name()
+                << "` is not described." << nl << nl
+                << "    Add a block to configuration/boundaries saying what it"
+                   " IS. A patch is NOT" << nl
+                << "    declared only when it is a mechanical constraint"
+                   " (empty, wedge, symmetry," << nl
+                << "    processor) or a region interface -- both are derived."
+                   " This one is neither." << nl << nl
+                << "    Available kinds: " << boundaryRoleLibrary::kinds()
+                << nl
+                << "    `plasmaSetupBoundaries -listKinds` describes them."
+                << nl
+                << exit(FatalError);
         }
 
-        // 4. Otherwise ask the POTENTIAL what this patch is.
-        word ePotType;
-        if (ePotBf.found(name) && ePotBf.subDict(name).found("type"))
-        {
-            ePotType = ePotBf.subDict(name).get<word>("type");
-        }
+        const word kind(decl.subDict(name).get<word>("kind"));
 
-        // SIGMA ACCUMULATES WHERE THE POTENTIAL CONSUMES IT.
-        //
-        // `thinDielectricPotential` reads a surface charge, so charge that
-        // lands there must stay there. A metal electrode does not: the arriving
-        // charge is conducted away through the circuit, and a floating
-        // conductor redistributes it into a TOTAL charge Q(t) rather than a
-        // local sigma. Accumulating sigma on either would double-count it.
-        if (ePotType == "thinDielectricPotential")
-        {
-            roles.insert(name, prSurfaceCharging);
-        }
-        else if
+        const word surf
         (
-            ePotType == "fixedValue"
-         || ePotType == "uniformFixedValue"
-         || ePotType == "floatingElectrodePotential"
-        )
-        {
-            roles.insert(name, prConductor);
-        }
-        else if (isA<wallPolyPatch>(pp))
-        {
-            // A wall the potential says nothing special about: still a solid
-            // surface, so it absorbs. Charge is not accumulated, because
-            // nothing would read it.
-            roles.insert(name, prConductor);
-        }
-        else
-        {
-            roles.insert(name, prOpen);
-        }
+            boundaryRoleLibrary::surfaceClass
+            (
+                kind,
+                "configuration/boundaries, patch `" + name + "`"
+            )
+        );
+
+        roles.insert
+        (
+            name,
+            surf == "chargingSurface" ? prSurfaceCharging
+          : surf == "conductor"       ? prConductor
+          : surf == "mechanical"      ? prMechanical
+          :                             prOpen
+        );
     }
 }
 
