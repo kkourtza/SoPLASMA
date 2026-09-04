@@ -28,12 +28,15 @@ Foam::floatingElectrode::floatingElectrode
     cacheValid_(false),
     builtAtMeshEvent_(-1),
     reported_(false),
-    Iplasma_(0),
+    Icollected_(0),
+    IperSpecies_(),
+    speciesNames_(),
     chargeFed_(false),
     Qbase_(0),
     QbaseIndex_(-1),
     closure_(0),
     csv_(nullptr),
+    headerWritten_(false),
     pendingIndex_(-1),
     pendingTime_(0),
     pendingVf_(0),
@@ -256,7 +259,7 @@ void Foam::floatingElectrode::correct
     //
     // Q(t) = Q0 + INT I_plasma dt' is supplied from OUTSIDE this class, by
     // plasmaTransport::updateSurfaceCharge. If space charge exists but nothing
-    // has ever called addPlasmaCurrent(), the electrode is silently holding Q0
+    // has ever called addCollectedCurrent(), the electrode is silently holding Q0
     // while a discharge deposits charge on it -- which produces an entirely
     // plausible and entirely wrong floating potential rather than an error.
     //
@@ -271,7 +274,7 @@ void Foam::floatingElectrode::correct
                 << "The floating electrode's charge ledger is NOT BEING FED."
                 << nl << nl
                 << "    There is space charge in the domain, but nothing has"
-                   " called addPlasmaCurrent()," << nl
+                   " called addCollectedCurrent()," << nl
                 << "    so Q is still Q0 = " << Q0_ << " C after "
                 << mesh_.time().timeIndex() << " steps." << nl << nl
                 << "    Q(t) = Q0 + INT I_plasma dt' is supplied by"
@@ -398,12 +401,19 @@ void Foam::floatingElectrode::correct
 
 
 
-void Foam::floatingElectrode::addPlasmaCurrent
+void Foam::floatingElectrode::addCollectedCurrent
 (
-    const scalar I,
+    const wordList& names,
+    const scalarList& I,
     const scalar dt
 )
 {
+    speciesNames_ = names;
+    IperSpecies_  = I;
+
+    scalar Itot = 0;
+    forAll(I, i) { Itot += I[i]; }
+
     const label ti = mesh_.time().timeIndex();
 
     // A NEW step: the charge standing now is the accepted baseline.
@@ -414,9 +424,9 @@ void Foam::floatingElectrode::addPlasmaCurrent
     }
 
     // BASELINED, not accumulated -- see Qbase_. A retried step recomputes.
-    Iplasma_   = I;
-    Q_         = Qbase_ + I*dt;
-    chargeFed_ = true;
+    Icollected_ = Itot;
+    Q_          = Qbase_ + Itot*dt;
+    chargeFed_  = true;
 
     // KEEP THE CSV ROW SELF-CONSISTENT.
     //
@@ -430,7 +440,8 @@ void Foam::floatingElectrode::addPlasmaCurrent
     if (pendingIndex_ == ti)
     {
         pendingQ_    = Q_;
-        pendingI_    = Iplasma_;
+        pendingI_    = Icollected_;
+        pendingPerSpecies_ = IperSpecies_;
         pendingTime_ = mesh_.time().timeOutputValue();
     }
 }
@@ -440,8 +451,8 @@ void Foam::floatingElectrode::discardStep()
 {
     // Undo this step's charge, and forget the row buffered for it: both belong
     // to an attempt that is being thrown away.
-    Q_        = Qbase_;
-    Iplasma_  = 0;
+    Q_          = Qbase_;
+    Icollected_ = 0;
     pendingIndex_ = -1;
 }
 
@@ -450,11 +461,62 @@ void Foam::floatingElectrode::flushPending()
 {
     if (pendingIndex_ < 0 || !csv_) return;
 
+    if (!headerWritten_)
+    {
+        headerWritten_ = true;
+
+            csv_() << "# floating conductor `" << patchName_ << "`" << nl
+                   << "# C_self = " << Cself_ << " F, Q0 = " << Q0_ << " C" << nl
+                   << "#" << nl
+                   << "# I_collected IS NOT THE DISCHARGE CURRENT." << nl
+                   << "#   I_collected  net charge flux onto THIS ONE conductor,"
+                      " summed over species [A]." << nl
+                   << "#                A CONDUCTION current only. It is what"
+                      " charges this electrode," << nl
+                   << "#                and it is what Q(t) integrates." << nl
+                   << "#   Sato's I_total, in"
+                      " postProcessing/dischargeCurrent/current.csv," << nl
+                   << "#                is the current in the EXTERNAL CIRCUIT:"
+                      " weighted over the whole" << nl
+                   << "#                domain and INCLUDING the displacement"
+                      " term. In a barrier discharge" << nl
+                   << "#                it is dominated by displacement while"
+                      " I_collected can be zero." << nl
+                   << "#                The two are different quantities and"
+                      " neither checks the other." << nl
+                   << "#" << nl
+                   << "# one row per TIMESTEP, converged values" << nl
+                   << "# Q is integrated as Q += I*dt, a FIRST-ORDER rectangle"
+                      " rule, so reconciling this" << nl
+                   << "# file against a trapezoid of I will differ at O(dt)."
+                   << nl
+                   << "# closure is |Q_measured - Q_target|/C_self, in volts"
+                   << nl
+                   << "time,V_f,Q,I_collected,closure";
+
+            // PER-SPECIES BREAKDOWN, so "do the ions actually contribute?" is a
+            // question the output answers rather than one the reader has to infer
+            // from a total that moved.
+            forAll(speciesNames_, i)
+            {
+                csv_() << ",I_" << speciesNames_[i];
+            }
+
+            csv_() << endl;
+    }
+
     csv_() << pendingTime_ << ','
            << pendingVf_ << ','
            << pendingQ_ << ','
            << pendingI_ << ','
-           << pendingClosure_ << endl;
+           << pendingClosure_;
+
+    forAll(pendingPerSpecies_, i)
+    {
+        csv_() << ',' << pendingPerSpecies_[i];
+    }
+
+    csv_() << endl;
 }
 
 
@@ -479,18 +541,8 @@ void Foam::floatingElectrode::write()
         // electrode in a plasma should charge NEGATIVE and settle near
         //     V_f - V_plasma ~ -(kTe/2e) ln(2 pi me/mi)
         // which is a few times -kTe/e. One that charges POSITIVE, or that
-        // keeps drifting without settling, means the sign of I_plasma is wrong
+        // keeps drifting without settling, means the sign of I_collected is wrong
         // or the electron flux to the wall is unresolved.
-        csv_() << "# floating conductor `" << patchName_ << "`" << nl
-               << "# C_self = " << Cself_ << " F, Q0 = " << Q0_ << " C" << nl
-               << "# one row per TIMESTEP, converged values" << nl
-               << "# Q is integrated as Q += I*dt, a FIRST-ORDER rectangle"
-                  " rule, so reconciling this" << nl
-               << "# file against a trapezoid of I will differ at O(dt)."
-               << nl
-               << "# closure is |Q_measured - Q_target|/C_self, in volts"
-               << nl
-               << "time,V_f,Q,I_plasma,closure" << endl;
     }
 
     const label ti = mesh_.time().timeIndex();
@@ -505,8 +557,9 @@ void Foam::floatingElectrode::write()
     pendingTime_    = mesh_.time().timeOutputValue();
     pendingVf_      = Vf_;
     pendingQ_       = Q_;
-    pendingI_       = Iplasma_;
+    pendingI_       = Icollected_;
     pendingClosure_ = closure_;
+    pendingPerSpecies_ = IperSpecies_;
 }
 
 

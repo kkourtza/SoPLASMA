@@ -535,6 +535,23 @@ void Foam::plasmaDischargeCurrent::update
                   << nl
                   << "# C_g = " << Cg_ << " F, revolution factor "
                   << revolutionFactor_ << nl
+                  << "#" << nl
+                  << "# I_total IS THE EXTERNAL-CIRCUIT CURRENT: the current an"
+                     " ammeter in series with" << nl
+                  << "# the electrode would read. It is weighted over the WHOLE"
+                     " domain by Sato's" << nl
+                  << "# equation and it INCLUDES the displacement term"
+                     " (I_total = I_cond + I_disp)." << nl
+                  << "# In a barrier discharge it is dominated by I_disp." << nl
+                  << "#" << nl
+                  << "# DO NOT CONFUSE IT with I_collected in" << nl
+                  << "# postProcessing/floatingElectrode/floating.csv, which is"
+                     " the net charge flux" << nl
+                  << "# onto ONE conductor -- a conduction current only, local"
+                     " to that patch, and the" << nl
+                  << "# thing that charges a floating electrode. Neither is a"
+                     " check on the other." << nl
+                  << "#" << nl
                   << "time,V_applied,I_total,I_cond,I_disp";
 
             if (crossCheck_)

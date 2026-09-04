@@ -1664,7 +1664,11 @@ void plasmaTransport::updateSurfaceCharge()
     const label floatPatchi =
         fe ? mesh_.boundaryMesh().findPatchID(fe->patchName()) : -1;
 
-    scalar Ifloat = 0;
+    // PER SPECIES, not just the total: "do the ions actually contribute to
+    // the charging of a floating electrode?" should be answerable from the
+    // output rather than inferred from a total that moved.
+    DynamicList<word>   floatNames;
+    DynamicList<scalar> floatI;
 
     // A LOCAL SURFACE CHARGE ON A CONDUCTOR IS A CONTRADICTION, so it is
     // refused rather than silently reinterpreted. Checked once.
@@ -1741,8 +1745,12 @@ void plasmaTransport::updateSurfaceCharge()
                 // the LOCAL sigma this patch cannot have -- and a contradictory
                 // `enableSurfaceCharging true` here is refused below rather
                 // than quietly reinterpreted.
-                Ifloat += species_.speciesCharge(i).value()
-                        * gSum(particleFlux_[i].boundaryField()[patchi]);
+                floatNames.append(species_.numberDensity(i).name());
+                floatI.append
+                (
+                    species_.speciesCharge(i).value()
+                  * gSum(particleFlux_[i].boundaryField()[patchi])
+                );
 
                 continue;
             }
@@ -1759,7 +1767,7 @@ void plasmaTransport::updateSurfaceCharge()
 
     if (fe)
     {
-        fe->addPlasmaCurrent(Ifloat, dt);
+        fe->addCollectedCurrent(floatNames, floatI, dt);
     }
 
     Info << "Surface charge updated." << endl;

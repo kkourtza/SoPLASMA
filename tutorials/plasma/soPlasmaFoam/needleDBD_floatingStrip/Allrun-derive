@@ -73,17 +73,23 @@ fi
 
 /usr/bin/python3 - "$HERE/run" <<'PY'
 import sys, pathlib
-rows=[]
 p = pathlib.Path(sys.argv[1])/"postProcessing/floatingElectrode/floating.csv"
+hdr, rows = None, []
 for line in open(p):
-    if line.startswith('#') or line.startswith('time'): continue
-    rows.append([float(x) for x in line.strip().split(',')])
+    line = line.strip()
+    if not line or line.startswith('#'): continue
+    if line.startswith('time'):
+        hdr = line.split(','); continue
+    # variable column count: the per-species columns follow the fixed five
+    rows.append([float(x) for x in line.split(',')])
+assert hdr is not None, "no header row in floating.csv"
 
 fail = 0
 
 # 1. the ledger: Q_k must be Q_k-1 + I_k dt_k, the rectangle rule it uses
 worst = 0.0; pt = 0.0; pQ = 0.0
-for t, Vf, Q, I, c in rows:
+for r in rows:
+    t, Vf, Q, I, c = r[0], r[1], r[2], r[3], r[4]
     pred = pQ + I*(t - pt)
     if abs(Q) > 1e-30: worst = max(worst, abs(Q - pred)/abs(Q))
     pt, pQ = t, Q
@@ -100,7 +106,20 @@ def check(name, ok, got, want):
 
 check("ledger self-consistency", worst < 1e-9,  f"{worst:.2e} rel",  "< 1e-9")
 check("Gauss closure",           closure < 1e-9, f"{closure:.2e} V", "< 1e-9 V")
-check("I_plasma sign",           I < 0,          f"{I:.3e} A",       "negative: electrons")
+check("I_collected sign",           I < 0,          f"{I:.3e} A",       "negative: electrons")
+
+# PER-SPECIES: the point of the breakdown is that "do the ions contribute?" is
+# answered BY THE OUTPUT, not inferred from a total that moved -- the total also
+# moves because ions now absorb at every surface, which changes the discharge.
+eIdx = hdr.index("I_n_e") if "I_n_e" in hdr else None
+ionIdx = [i for i, k in enumerate(hdr)
+          if k.startswith("I_") and k not in ("I_collected", "I_n_e")]
+Iions = sum(rows[-1][i] for i in ionIdx)
+print("  per-species, last step:")
+for i in ([eIdx] if eIdx is not None else []) + ionIdx:
+    print(f"      {hdr[i]:<10} {rows[-1][i]:+.4e} A")
+check("ions contribute", abs(Iions) > 0,
+      f"{Iions:+.3e} A over {len(ionIdx)} ion(s)", "non-zero ion current")
 check("Q sign",                  Q < 0,          f"{Q:.3e} C",       "negative: charges negative")
 print(f"  {'V_f at t_end':<26} {Vf:.6g} V             (induction-dominated here"
       f", charge term {Q/7.03018250107e-16:.1e} V)")

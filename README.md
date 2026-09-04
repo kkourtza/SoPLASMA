@@ -504,6 +504,53 @@ measured tests:
 [`docs/models/poisson_equation/floating-electrode.md`](docs/models/poisson_equation/floating-electrode.md).
 
 
+## Species boundary conditions are derived, not written per case
+
+You declare what a boundary *is* — through the potential's boundary conditions
+and `constant/regionProperties` — and `plasmaCreateSpeciesFields` derives what
+every species does there:
+
+| patch | charged species | `nEps_e` | surface charge |
+|---|---|---|---|
+| interface to a **dielectric** region | wall flux | energy wall flux | **accumulates** |
+| a `thinDielectricPotential` surface | wall flux | energy wall flux | **accumulates** |
+| a metal electrode (driven or grounded) | wall flux | energy wall flux | no |
+| a `floatingElectrodePotential` conductor | wall flux | energy wall flux | no — becomes `Q(t)` |
+| interface to a **farField** region | zeroGradient | zeroGradient | never |
+| `empty` / `wedge` / `symmetry` / `processor` | kept as-is | kept as-is | — |
+
+The condition follows the species **charge the mechanism declares**: the
+electron gets one *with* secondary emission, every other charged species one
+*without* (an ion arriving is not itself an emission event), and neutrals get
+none. `nEps_e` is generated the same way but never accumulates surface charge —
+an energy density is not a charge density.
+
+**σ accumulates where the potential consumes it.** A dielectric surface charges
+because something reads that charge; a metal electrode does not, because the
+arriving charge is conducted away through the circuit, and a floating conductor
+redistributes it into a *total* charge rather than a local σ.
+
+Why this replaced hand-written per-species blocks: restating what the potential
+already says is a second source of truth, and it drifted. `needleDBD` ended up
+with a wall flux on `n_e` and `zeroGradient` on `nEps_e` — the pairing that
+leaves the energy equation singular at a sharp electrode — because its
+`0.orig/nEps_e` was a copy of the *streamer* case's template, naming `axis`,
+`wedge_0` and `grounded_electrode`, patches that mesh does not have.
+
+An explicit block in `etc/changeDictionary.*` still wins: it is applied after
+the generator. `wallFluxFamily Mixed | Implicit` in
+`system/plasmaSimulationControls` selects the family (`Mixed` by default).
+
+## Two currents, and they are not the same thing
+
+| | where | what it is |
+|---|---|---|
+| **`I_total`** | `postProcessing/dischargeCurrent/current.csv` | the **external-circuit** current from Sato's equation — weighted over the whole domain, and `I_cond + I_disp`, so it *includes* displacement. In a DBD it is dominated by `I_disp`. |
+| **`I_collected`** | `postProcessing/floatingElectrode/floating.csv` | the net charge flux onto **one** conductor — a **conduction** current only, local to that patch. It is what charges a floating electrode and what `Q(t)` integrates, and it is broken down per species. |
+
+Neither is a check on the other, and both CSV headers say so.
+
+
 ## Discharge current, on by default
 
 Sato's discharge current is the primary measurable of almost every discharge

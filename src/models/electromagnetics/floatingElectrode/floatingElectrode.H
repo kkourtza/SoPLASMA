@@ -113,8 +113,27 @@ class floatingElectrode
         //- Whether the start-up report has been printed
         bool reported_;
 
-        //- Present plasma current onto the conductor [A]
-        scalar Iplasma_;
+        //- Net charge arrival rate on THIS conductor [A].
+        //
+        //  NAMED `collected`, NOT `discharge`, and the two must not be
+        //  confused -- see the header written into floating.csv:
+        //
+        //    I_collected  is the NET CHARGE FLUX onto ONE conductor, summed
+        //                 over species. It is what charges this electrode, and
+        //                 it is a CONDUCTION current only.
+        //    Sato's I_total (postProcessing/dischargeCurrent/current.csv) is
+        //                 the current in the EXTERNAL CIRCUIT, weighted over
+        //                 the whole domain, and it INCLUDES the displacement
+        //                 term. In a DBD it is dominated by displacement while
+        //                 I_collected is zero.
+        //
+        //  They are different quantities with different units of meaning, and
+        //  neither is a check on the other.
+        scalar Icollected_;
+
+        //- Per-species breakdown of I_collected [A], and their names
+        scalarList IperSpecies_;
+        wordList speciesNames_;
 
         //- Whether the charge ledger has ever been fed
         bool chargeFed_;
@@ -125,7 +144,7 @@ class floatingElectrode
         //  step that is thrown away and re-run must not leave its charge
         //  behind. Two mechanisms, deliberately both:
         //
-        //    * BASELINED -- addPlasmaCurrent() computes Q = Qbase + I*dt
+        //    * BASELINED -- addCollectedCurrent() computes Q = Qbase + I*dt
         //      rather than Q += I*dt, so calling it twice within one step
         //      recomputes instead of accumulating. This is the same pattern
         //      surfCharge uses (it resets from its own oldTime before
@@ -166,6 +185,16 @@ class floatingElectrode
         scalar pendingQ_;
         scalar pendingI_;
         scalar pendingClosure_;
+        scalarList pendingPerSpecies_;
+
+        //- Whether the CSV header has been emitted.
+        //
+        //  DEFERRED until the first COMPLETE row. correct() runs before the
+        //  ledger update on the very first step, so at that moment the species
+        //  names are not yet known -- writing the header there produced a
+        //  header with no per-species columns and rows that had them, i.e. a
+        //  file whose columns did not line up with its own header.
+        bool headerWritten_;
 
         //- Emit the buffered row, if any
         void flushPending();
@@ -218,13 +247,18 @@ public:
         //  step-rejection block, beside transport.discardStep().
         void discardStep();
 
-        //- Feed the charge ledger:  Q(t) = Q0 + INT I_plasma dt'.
+        //- Feed the charge ledger:  Q(t) = Q0 + INT I_collected dt'.
         //
         //  Called from plasmaTransport::updateSurfaceCharge, which owns the
         //  species wall fluxes -- the SAME fluxes that build the local surface
         //  charge on a dielectric, and the same dt. Anywhere else and the two
         //  accountings could disagree about either.
-        void addPlasmaCurrent(const scalar I, const scalar dt);
+        void addCollectedCurrent
+        (
+            const wordList& names,
+            const scalarList& I,
+            const scalar dt
+        );
 
         //- Write one CSV row: t, V_f, Q, I_plasma, C_self, closure
         void write();
@@ -237,7 +271,7 @@ public:
         inline scalar Q() const { return Q_; }
         inline scalar Q0() const { return Q0_; }
         inline scalar Cself() const { return Cself_; }
-        inline scalar Iplasma() const { return Iplasma_; }
+        inline scalar Icollected() const { return Icollected_; }
         inline scalar closure() const { return closure_; }
 };
 
