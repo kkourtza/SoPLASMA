@@ -98,6 +98,9 @@ air
 
 ptfe
 {
+    // NO bandGap/electronAffinity, deliberately: see the note above. The
+    // insulator Auger criterion cannot be applied here, so an emission
+    // model on this surface needs an explicit gamma.
     epsilonR    2.1;
     gammaSEE    0.001;
     // epsilon_r = 2.0-2.1, essentially flat from DC to 1 GHz -- non-polar,
@@ -108,6 +111,9 @@ ptfe
 
 pmma
 {
+    // NO bandGap/electronAffinity, deliberately: see the note above. The
+    // insulator Auger criterion cannot be applied here, so an emission
+    // model on this surface needs an explicit gamma.
     epsilonR    3.0;
     gammaSEE    0.001;
     // epsilon_r = 3.6-3.7 at 60 Hz falling to ~2.6 at 1 MHz as the polar
@@ -119,6 +125,9 @@ pmma
 
 polyimide
 {
+    // NO bandGap/electronAffinity, deliberately: see the note above. The
+    // insulator Auger criterion cannot be applied here, so an emission
+    // model on this surface needs an explicit gamma.
     epsilonR    3.4;
     gammaSEE    0.001;
     // epsilon_r = 3.4 at 1 kHz, 3.0 at 1 MHz. Common as a thin flexible
@@ -131,6 +140,11 @@ polyimide
 
 fusedSilica
 {
+    bandGap          9.0;
+    electronAffinity 0.9;
+    // Eg = 8.9-9.3 eV across sources; chi = 0.8-1.1 eV. Auger threshold
+    // Eg + 2chi = 10.8 eV. Refs: Weinberg, J. Appl. Phys. 53 (1982) 5052;
+    // DiStefano & Eastman, Solid State Commun. 9 (1971) 2259.
     epsilonR    3.8;
     gammaSEE    0.001;
     // epsilon_r = 3.8, flat from DC to GHz. CRC Handbook 95th ed.; von
@@ -140,6 +154,9 @@ fusedSilica
 
 borosilicateGlass
 {
+    // NO bandGap/electronAffinity, deliberately: see the note above. The
+    // insulator Auger criterion cannot be applied here, so an emission
+    // model on this surface needs an explicit gamma.
     epsilonR    4.6;
     gammaSEE    0.001;
     // epsilon_r = 4.6 at 1 MHz. The usual dielectric in laboratory DBD
@@ -149,6 +166,9 @@ borosilicateGlass
 
 sodaLimeGlass
 {
+    // NO bandGap/electronAffinity, deliberately: see the note above. The
+    // insulator Auger criterion cannot be applied here, so an emission
+    // model on this surface needs an explicit gamma.
     epsilonR    7.0;
     gammaSEE    0.001;
     // epsilon_r = 6.9-7.5 at 1 MHz, higher and more loss-prone than
@@ -159,6 +179,9 @@ sodaLimeGlass
 
 mica
 {
+    // NO bandGap/electronAffinity, deliberately: see the note above. The
+    // insulator Auger criterion cannot be applied here, so an emission
+    // model on this surface needs an explicit gamma.
     epsilonR    5.4;
     gammaSEE    0.001;
     // epsilon_r = 5.4 (range 5.4-8.7 across micas and orientations -- it
@@ -172,6 +195,13 @@ mica
 
 alumina96
 {
+    bandGap          8.8;
+    electronAffinity 1.35;
+    // Eg = 8.7-9.0 eV. chi IS BADLY SCATTERED, 1.0-2.5 eV across sources
+    // and deposition routes; 1.35 is mid-range. Auger threshold ~11.5 eV,
+    // so the spread in chi moves it by +/-1.5 eV -- treat the threshold as
+    // indicative. Refs: French, J. Am. Ceram. Soc. 73 (1990) 477;
+    // Robertson, J. Vac. Sci. Technol. B 18 (2000) 1785.
     epsilonR    9.0;
     gammaSEE    0.001;
     // epsilon_r = 9.0 at 1 MHz. The workhorse barrier for high-power and
@@ -182,6 +212,10 @@ alumina96
 
 alumina99
 {
+    bandGap          8.8;
+    electronAffinity 1.35;
+    // As alumina96: the grade changes density and permittivity, not the
+    // band structure.
     epsilonR    9.8;
     gammaSEE    0.001;
     // epsilon_r = 9.8 at 1 MHz -- denser and slightly higher than the 96%
@@ -191,6 +225,13 @@ alumina99
 
 magnesia
 {
+    bandGap          7.8;
+    electronAffinity 0.85;
+    // Eg = 7.8 eV, chi = 0.85 eV -- an unusually LOW affinity, which is
+    // what makes the Auger threshold Eg + 2chi = 9.5 eV low enough for Xe
+    // and Ne, and hence why MgO is the protective layer in plasma display
+    // panels. Refs: Whited & Walker, Phys. Rev. Lett. 22 (1969) 1428;
+    // Robertson, J. Vac. Sci. Technol. B 18 (2000) 1785.
     epsilonR    9.7;
     gammaSEE    0.3;
     // epsilon_r = 9.7 (CRC Handbook 95th ed.). THE EXCEPTION ON GAMMA, AND
@@ -206,6 +247,35 @@ magnesia
     // J. Phys. D 36, R53.
     reference   "MgO.";
 }
+
+// ---------------------------------------------------------------------------
+// BAND GAP AND ELECTRON AFFINITY -- the INSULATOR emission criterion
+//
+// For a METAL, ion-induced potential emission is governed by the work function:
+// gamma_i ~ 0.016(0.8 E_ion - 2 phi), forbidden when 0.8 E_ion < 2 phi.
+// phi IS NOT THE RIGHT QUANTITY FOR AN INSULATOR. There, Auger neutralisation
+// must lift an electron from the VALENCE BAND across the gap AND over the
+// electron affinity, so emission requires roughly
+//
+//     E_ion  >  Eg + 2 chi
+//
+// with Eg the band gap and chi the electron affinity. (Hagstrum's Auger
+// analysis applied to insulators; see also Boeuf 2003 for the MgO case.)
+//
+// THIS IS WHY MgO IS EXCEPTIONAL, and it falls out of the numbers rather than
+// being asserted: Eg = 7.8 eV with an unusually LOW chi = 0.85 eV gives a
+// threshold of 9.5 eV, which Xe (12.13) and Ne (21.56) clear easily -- so a
+// Xe/Ne display panel fires at a usable voltage. Alumina's threshold is
+// 11.5 eV and silica's 10.8 eV, both far more restrictive.
+//
+// VALUES ARE GIVEN ONLY WHERE THEY ARE WELL ESTABLISHED -- the crystalline
+// oxides. THEY ARE DELIBERATELY ABSENT FOR THE POLYMERS AND GLASSES: a polymer
+// has no crystalline band structure, its "gap" is an optical absorption edge
+// that varies with formulation and ageing, and reliable electron affinities are
+// not available. Rather than ship a number that cannot be defended, those
+// entries carry none, and the emission model must be given a gamma explicitly
+// for such a surface. That is the honest outcome, not a gap in the library.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // KNOWN SIMPLIFICATION, TO BE FIXED: GAMMA IS UNIFORM HERE AND SHOULD NOT BE.
