@@ -1,3 +1,36 @@
+> # SUPERSEDED 2026-09-04 — read this first
+>
+> **The class names in this document no longer exist.** `ddSolidSurfaceFlux`,
+> `electronDDSolidSurfaceFlux`, `ionDDSolidSurfaceFlux` and
+> `neutralDDSolidSurfaceFlux` were replaced by two families:
+> `ddWallFluxMixed` (the default: `electron`/`energy`/`ion`/`neutral` members)
+> and `ddWallFluxImplicit` (`electron`/`ion`/`neutral` only). Selected with
+> `wallFluxFamily Mixed | Implicit`.
+>
+> **Two physics statements below are also superseded:**
+>
+> 1. Every `1/4 v_th` in this document — the wall loss speed is now Hagelaar
+>    **eq. (6.6)**, `vT/sqrt(pi)`, which is **twice** the `(1/4) sqrt(8kT/pi m)`
+>    of eq. (6.3). Changed in `7e6a4b3`. The shifted Maxwellian, not the
+>    centred one.
+> 2. `Gamma_e,wall = u_wall n_e - Gamma_SEE` — the emission now also enters
+>    **inside** the loss speed via eq. (6.8), so the net emission contribution
+>    carries a factor `2/(1+r)`. Changed in `70f6674` (Mixed) and 2026-09-04
+>    (Implicit).
+>
+> **Not covered here at all:** electron reflection (`electronReflection`), the
+> `max(..., 0)` clamp of eq. (6.6), and the electron-energy weight of
+> eq. (6.15).
+>
+> **What still holds:** the `refValue`/`refGradient`/`valueFraction` mechanics
+> of the mixed condition, the `includeDriftFlux` rationale, the SEE summation
+> `Gamma_SEE = SUM gamma_i Gamma_i,wall`, and the neutral/ion/electron split.
+>
+> **The current reference** is the "What the wall-flux conditions actually
+> solve" section of the top-level [`README.md`](../../../../../README.md), with
+> the derivations in the class headers and the verification in
+> `src/applications/utilities/testWallFlux`.
+
 # Solid Surface Flux (drift-diffusion)
 
 The ``ddSolidSurfaceFlux` boundary condition implements a physically consistent wall boundary condition for species transport. It accounts for thermal collection, electric-field-driven drift, and secondary electron emission.

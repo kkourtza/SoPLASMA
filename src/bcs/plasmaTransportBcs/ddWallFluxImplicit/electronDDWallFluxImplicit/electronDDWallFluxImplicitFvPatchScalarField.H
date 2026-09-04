@@ -116,10 +116,57 @@ protected:
         //- Switch to read the SEE entries only once
         mutable Switch mapped_;
 
+        //- Electron reflection probability r of Hagelaar eq. (6.2).
+        //  SAME KEY as the Mixed family (G3): one concept, one name.
+        scalar electronReflection_;
+
     // Protected Member Functions
 
-        //- Return u_th/4 for electrons (pure thermal, no drift correction)
-        //  Drift correction is handled separately in valueInternalCoeffs()
+        //- The three factors by which REFLECTION scales this condition.
+        //
+        //  Hagelaar HDR (Literature/) ch. 6. Eq. (6.2) builds Gamma_w from the
+        //  total loss speed and (6.6) feeds it back, so the closure solved
+        //  exactly and UNCLAMPED is
+        //
+        //      Gamma = [(1-r)/(1+r)]*n*(A + Dd)  -  [2/(1+r)]*Gc
+        //
+        //  with A the thermal base, Dd the drift addition and Gc the creation
+        //  flux. Every factor here is a CONSTANT, so unlike the Mixed family's
+        //  form this stays fully implicit in n -- no lag is introduced.
+        //
+        //  NOTE THE FACTOR 2 ON EMISSION AT r = 0. It is not a fudge: it is
+        //  eq. (6.1) closed with (6.6),
+        //      Gamma = n*w_w - Gamma_w = n*(A - Gamma_w/n) - Gamma_w
+        //            = n*A - 2*Gamma_w .
+        //  MEASURED DIVERGENCE, 2026-09-04: commit 70f6674 put that second
+        //  factor into the Mixed family (inside the loss speed) and not here,
+        //  so this family under-counted every emitted electron by exactly 2
+        //  from 70f6674 until today.
+        scalar reflectionFluxFactor() const
+        {
+            return (1.0 - electronReflection_)/(1.0 + electronReflection_);
+        }
+
+        scalar reflectionCreationFactor() const
+        {
+            return 2.0/(1.0 + electronReflection_);
+        }
+
+        //- Return the thermal wall loss speed, eq. (6.6), scaled by
+        //  reflectionFluxFactor(). Drift is scaled by the same factor in
+        //  valueInternalCoeffs(), and creation by
+        //  reflectionCreationFactor() in gradientBoundaryCoeffs().
+        //
+        //  LIMITATION, STATED RATHER THAN HIDDEN: this family does NOT carry
+        //  eq. (6.6)'s max(..., 0) clamp. The clamp needs Gamma_w/n with n at
+        //  the wall, which would make an intentionally-linear condition
+        //  lagged and nonlinear. Consequence: under emission strong enough
+        //  that Gamma_w/n exceeds A, this family lets the net wall flux become
+        //  an electron SOURCE, where the Mixed family clamps it to the
+        //  drift-only value. Hagelaar's reason for the clamp -- published
+        //  gamma values "have generally been deduced neglecting thermal
+        //  electron loss to the cathode" -- applies to both. Use the Mixed
+        //  family (the default) at a cathode with significant SEE.
         virtual tmp<scalarField> calcWallThermalVelocity
         (
             const dimensionedScalar& m,

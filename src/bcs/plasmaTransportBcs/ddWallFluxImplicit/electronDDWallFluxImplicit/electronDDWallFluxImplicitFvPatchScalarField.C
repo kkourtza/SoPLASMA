@@ -110,9 +110,12 @@ electronDDWallFluxImplicitFvPatchScalarField::calcWallThermalVelocity
     const scalarField& T
 ) const
 {
-    // Pure thermal velocity u_th/4 only.
-    // Drift correction is handled separately in valueInternalCoeffs().
-    return calcThermalVelocity(m, T);
+    // Eq. (6.6)'s thermal base, scaled by reflection. See the header for the
+    // closed form, for why the factor is a constant here, and for the clamp
+    // this family deliberately does not carry.
+    tmp<scalarField> tUth = calcThermalVelocity(m, T);
+    tUth.ref() *= reflectionFluxFactor();
+    return tUth;
 }
 
 namespace
@@ -175,7 +178,8 @@ electronDDWallFluxImplicitFvPatchScalarField
     defaultSEEC_(0.0),
     speciesSEEC_(dictionary::null),
     seec_(0),
-    mapped_(false)
+    mapped_(false),
+    electronReflection_(0.0)
 {}
 
 // Dictionary Constructor
@@ -222,7 +226,8 @@ electronDDWallFluxImplicitFvPatchScalarField
     ),
     speciesSEEC_(dict.subOrEmptyDict("speciesSEEC")),
     seec_(0),
-    mapped_(false)
+    mapped_(false),
+    electronReflection_(dict.getOrDefault<scalar>("electronReflection", 0.0))
 {}
 
 // Mapping Constructor
@@ -242,7 +247,8 @@ electronDDWallFluxImplicitFvPatchScalarField
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     seec_(ptf.seec_),
-    mapped_(ptf.mapped_)
+    mapped_(ptf.mapped_),
+    electronReflection_(ptf.electronReflection_)
 {}
 
 // Copy Constructor
@@ -259,7 +265,8 @@ electronDDWallFluxImplicitFvPatchScalarField
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     seec_(ptf.seec_),
-    mapped_(ptf.mapped_)
+    mapped_(ptf.mapped_),
+    electronReflection_(ptf.electronReflection_)
 {}
 
 // Copy Constructor (with new internal field)
@@ -277,7 +284,8 @@ electronDDWallFluxImplicitFvPatchScalarField
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     seec_(ptf.seec_),
-    mapped_(ptf.mapped_)
+    mapped_(ptf.mapped_),
+    electronReflection_(ptf.electronReflection_)
 {}
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
@@ -300,7 +308,16 @@ electronDDWallFluxImplicitFvPatchScalarField::valueInternalCoeffs
 
     // If drift is enabled: delegate to base class
     // Base class returns neg(Z*mu*E_n): 1 if toward wall, 0 if away
-    return ddWallFluxImplicitFvPatchScalarField::valueInternalCoeffs(weights);
+    //
+    // Reflection scales the drift term by the SAME factor as the thermal one,
+    // because eq. (6.2) reflects the TOTAL incident flux and eq. (6.8) puts
+    // the drift inside it. Exactly 1 at r = 0.
+    tmp<Field<scalar>> tCoeffs =
+        ddWallFluxImplicitFvPatchScalarField::valueInternalCoeffs(weights);
+
+    tCoeffs.ref() *= reflectionFluxFactor();
+
+    return tCoeffs;
 }
 
 tmp<Field<scalar>>
@@ -367,11 +384,18 @@ electronDDWallFluxImplicitFvPatchScalarField::gradientBoundaryCoeffs() const
     tmp<scalarField> tSEE = calcSEEFlux();
     const scalarField& SEEflux = tSEE();
 
-    // SEE source: gradBoundaryCoeff = -SEEflux / D
+    // SEE source: gradBoundaryCoeff = -[2/(1+r)] * SEEflux / D
     // (negative so laplacian adds positive source contribution)
+    //
+    // The factor is eq. (6.1) closed with (6.6) -- it is 2 even at r = 0. See
+    // reflectionCreationFactor() for the derivation and for the measured
+    // divergence from the Mixed family that it closes.
     return tmp<Field<scalar>>
     (
-        new scalarField(-SEEflux / (Df + VSMALL))
+        new scalarField
+        (
+            -reflectionCreationFactor()*SEEflux / (Df + VSMALL)
+        )
     );
 }
 
@@ -383,6 +407,7 @@ void electronDDWallFluxImplicitFvPatchScalarField::write(Ostream& os) const
     os.writeEntry("includeDriftFlux", includeDriftFlux_);
     os.writeEntry("enableSEE", enableSEE_);
     os.writeEntry("defaultSEEC", defaultSEEC_);
+    os.writeEntry("electronReflection", electronReflection_);
     if (!speciesSEEC_.empty())
     {
         os.writeEntry("speciesSEEC", speciesSEEC_);

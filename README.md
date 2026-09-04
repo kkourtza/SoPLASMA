@@ -631,6 +631,95 @@ the next section. An explicit block in `etc/changeDictionary.*` still wins over
 either generator: it is applied after both, and is normally absent. `wallFluxFamily Mixed | Implicit` in
 `system/plasmaSimulationControls` selects the family (`Mixed` by default).
 
+## What the wall-flux conditions actually solve
+
+Every `ddWallFlux*` condition implements chapter 6 of Hagelaar's HDR
+(`Literature/`), which is the reference for the whole family. The net flux and
+the flux coming back off the wall are
+
+```
+(6.1)  Gamma.n  = n*w_w - Gamma_w
+(6.2)  Gamma_w  = r*n*w_w + SUM_j gamma_j n_j w_w,j
+(6.8)  w_w      = max( vT/sqrt(pi) - Gamma_w/n , 0 ) + max( drift toward wall, 0 )
+```
+
+with `r` the reflection probability and the sum over incident species the
+secondary emission. Note what (6.2) says: `Gamma_w` is built from the **total**
+`w_w`, and (6.8) feeds `Gamma_w` back into `w_w`. **Reflection is therefore
+implicit, not a prefactor** — it reflects the drift-driven incident flux too.
+The two branches of the `max` partition exactly, so the relation has a closed
+form:
+
+```
+w_w = max( (A + Dd - Gc/n)/(1 + r), Dd )        A = vT/sqrt(pi)
+Gamma.n = (1 - r)*n*w_w - Gc
+```
+
+Set `Gc = 0` and `Dd = 0` and this is **eq. (6.7) exactly**, including the
+`1/sqrt(pi)` — the one reflection case Hagelaar closes in the text, and the
+ground truth `testWallFlux` checks. Combining `r` with (6.8)'s drift term is
+not itself quoted from the source; it follows from reading (6.2) literally.
+
+**Two consequences that look like bugs and are not.** The emission carries a
+factor **2** at `r = 0` — that is just (6.1) closed with (6.6),
+`Gamma = n(A - Gamma_w/n) - Gamma_w = nA - 2 Gamma_w`. And the `max` is
+**physics, not a numerical guard**: Hagelaar notes it fires at a cathode under
+ion-impact emission, where setting `w_w = 0` is correct *because published
+gamma values were deduced neglecting thermal electron loss to the cathode*.
+
+**The thermal base is eq. (6.6), which is TWICE eq. (6.3)** — the shifted
+Maxwellian, not the centred one. `(6.3) = vT/(2 sqrt(pi))` is the classical
+one-sided flux `(1/4) sqrt(8kT/pi m)`; (6.6) is `(1/2)` of that root, i.e.
+`vT/sqrt(pi)`. Adopted 2026-09-04 in `7e6a4b3`.
+
+### The electron energy weight is 5/3, not 4/3
+
+Because the particle base is the shifted Maxwellian, the energy weight must be
+its partner **eq. (6.15)**, not the centred **(6.14)**. The consistent pairs
+are `(6.3, 6.14)` and `(6.6, 6.15)`; mixing them is what this repo did between
+`7e6a4b3` and `2026-09-04`.
+
+```
+eps_w = ( 5/2 - (Gamma_w/n_e)/A ) T_e      =>   eps_w/eps = 5/3 - (2/3)(Gamma_w/n_e)/A
+```
+
+so the weight **falls** as emission and reflection rise, rather than being the
+constant it used to be. Reflected electrons carry their energy back: splitting
+(6.13)'s single `eps_s` by (6.2) into the reflected part (returning at the
+incident `eps_w`) and the created part (born at the surface with `eps_s`) makes
+the energy closure exactly parallel to the particle one.
+
+Three checks, all reproduced exactly and all from the text: `5/3 = (5/4)(4/3)`,
+the published `eps_w -> 2 T_e` limit as `r -> 1`, and the HDR's own energy
+equation carrying `W = (5/3) n_e w_e`, which a BC weight of 4/3 contradicts.
+
+### `electronReflection` defaults to 0, and the Implicit family has a limit
+
+`r` is set per patch with `electronReflection` on either family. It defaults to
+**0**, at which the closure reproduces the pre-2026-09-04 form algebraically
+(measured: 3.7e-16 relative over a 372-point sweep — *algebraically*, not
+bitwise, since the two forms associate the additions differently).
+
+`ddWallFluxImplicit` carries reflection as three exact constant factors —
+`(1-r)/(1+r)` on the thermal and drift terms, `2/(1+r)` on the creation source
+— so it stays fully implicit in `n`. What it does **not** carry is (6.6)'s
+`max(..., 0)` clamp, which needs `n` at the wall and would make an
+intentionally-linear condition lagged and nonlinear. Consequence: under
+emission strong enough that `Gamma_w/n` exceeds `A`, that family lets the net
+wall flux become an electron *source*. **Use the Mixed family (the default) at
+a cathode with significant SEE.**
+
+`ddWallFluxImplicit` also has no electron-energy member, so
+`wallFluxFamily Implicit` with LMEA is refused at setup rather than dying later
+on an unregistered type.
+
+Verified by [`testWallFlux`](src/applications/utilities/testWallFlux) — 26
+checks, no mesh or case needed, including the closed form against an
+independent fixed-point solve of (6.2)+(6.8) over 2430 `(r, Dd, Gc)` points
+(1.7e-14) and two liveness controls that convict the wrong floor and the wrong
+`(1+r)` placement.
+
+
 ## Two currents, and they are not the same thing
 
 | | where | what it is |

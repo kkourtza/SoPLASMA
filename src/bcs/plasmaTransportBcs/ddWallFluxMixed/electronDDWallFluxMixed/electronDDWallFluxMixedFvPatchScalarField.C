@@ -59,7 +59,84 @@ electronDDWallFluxMixedFvPatchScalarField::defaultTValue() const
 }
 
 
-tmp<scalarField> 
+tmp<scalarField>
+electronDDWallFluxMixedFvPatchScalarField::normalisingDensity() const
+{
+    // For n_e the normalising density IS this field.
+    return tmp<scalarField>::New(static_cast<const scalarField&>(*this));
+}
+
+
+tmp<scalarField>
+electronDDWallFluxMixedFvPatchScalarField::wallLossSpeed
+(
+    const dimensionedScalar& m,
+    const scalarField& T,
+    const scalarField& uDriftNormal,
+    scalarField& gRatio
+) const
+{
+    // A -- the thermal base, eq. (6.6) = vT/sqrt(pi) = 2 x eq. (6.3).
+    tmp<scalarField> tW = calcThermalVelocity(m, T);
+    scalarField& W = tW.ref();
+
+    const scalarField A(W);
+
+    gRatio.setSize(W.size());
+    gRatio = Zero;
+
+    // Dd -- the drift addition of eq. (6.8), OUTSIDE the max by construction.
+    scalarField Dd(W.size(), Zero);
+    if (includeDriftFlux_)
+    {
+        Dd = max(scalar(0), uDriftNormal);
+    }
+
+    // Gc/n -- the creation term of eq. (6.2), normalised by the density that
+    // eq. (6.6) actually divides by.
+    scalarField GcOverN(W.size(), Zero);
+    if (emittedValid_ && emitted_.size() == W.size())
+    {
+        const tmp<scalarField> tn = normalisingDensity();
+        const scalarField& n = tn();
+
+        forAll(GcOverN, faceI)
+        {
+            // Guarded on the density: with n at or below zero there is no
+            // meaningful Gamma_w/n, and the loss speed is left as the thermal
+            // one rather than being handed an infinity.
+            if (n[faceI] > VSMALL)
+            {
+                GcOverN[faceI] = emitted_[faceI]/n[faceI];
+            }
+        }
+    }
+
+    const scalar r = electronReflection_;
+
+    // THE CLAMP INSIDE hagelaarClosure() IS PHYSICS, NOT A NUMERICAL GUARD --
+    // it is eq. (6.8)'s max, whose floor is Dd because the drift is added
+    // outside it. Hagelaar: it fires "for electrons at the cathode due to
+    // secondary emission by ion impact, and it is then indeed appropriate to
+    // set w_w = 0 because the secondary emission coefficients given in the
+    // literature have generally been deduced NEGLECTING THERMAL ELECTRON LOSS
+    // TO THE CATHODE."
+    forAll(W, faceI)
+    {
+        hagelaarClosure
+        (
+            A[faceI], Dd[faceI], GcOverN[faceI], r, W[faceI], gRatio[faceI]
+        );
+    }
+
+    // n is the lagged wall value, so Gc/n is one evaluation behind -- the
+    // relation is implicit in n and there is nothing else to use.
+
+    return tW;
+}
+
+
+tmp<scalarField>
 electronDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
 (
     const dimensionedScalar& m,
@@ -67,27 +144,13 @@ electronDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
     const scalarField& uDriftNormal
 ) const
 {
-    tmp<scalarField> tVel = calcThermalVelocity(m, T);
-    scalarField& uAbs = tVel.ref();
-
-    // The SAME factor as in calcEffectiveWallVelocity: the mixed condition's
-    // numerator and denominator must be scaled consistently or the implied
-    // flux is not the one intended.
-    uAbs *= thermalReflectionFactor();
-
-    // ... and the SAME eq. (6.8) creation term, for the same reason.
-    subtractEmission(uAbs);
-
-    // If drift flux is enabled, add the directed motion component
-    if (includeDriftFlux_)
-    {
-        uAbs += max(0.0, uDriftNormal);
-    }
-    
-    return tVel;
+    // The absorption speed IS the total loss speed W.
+    scalarField gRatio;
+    return wallLossSpeed(m, T, uDriftNormal, gRatio);
 }
 
-tmp<scalarField> 
+
+tmp<scalarField>
 electronDDWallFluxMixedFvPatchScalarField::calcEffectiveWallVelocity
 (
     const dimensionedScalar& m,
@@ -95,35 +158,15 @@ electronDDWallFluxMixedFvPatchScalarField::calcEffectiveWallVelocity
     const scalarField& uDriftNormal
 ) const
 {
-    tmp<scalarField> tVel = calcThermalVelocity(m, T);
-    scalarField& uWall = tVel.ref();
+    // The mixed condition imposes n_p*(uDrift_n + uEff), so uEff is defined by
+    // the bookkeeping identity uEff = W - uDrift_n. ONE expression feeds both
+    // routines: they were provably equal before (on BOTH includeDriftFlux
+    // branches) and keeping them separate is how a fix lands on one sibling
+    // and not the other.
+    scalarField gRatio;
+    tmp<scalarField> tVel = wallLossSpeed(m, T, uDriftNormal, gRatio);
 
-    // REFLECTION acts on the thermal flux only -- see the member's comment for
-    // what is deliberately NOT scaled. Exactly 1 at r = 0.
-    uWall *= thermalReflectionFactor();
-
-    // EQ. (6.8): the wall-creation flux REDUCES the loss speed, and the result
-    // is clamped at zero.
-    //
-    // THE CLAMP IS PHYSICS, NOT A NUMERICAL GUARD. Hagelaar: it fires "for
-    // electrons at the cathode due to secondary emission by ion impact, and it
-    // is then indeed appropriate to set w_w = 0 because the secondary emission
-    // coefficients given in the literature have generally been deduced
-    // NEGLECTING THERMAL ELECTRON LOSS TO THE CATHODE."
-    //
-    // n is the current wall value, so this is lagged by one evaluation -- the
-    // relation is implicit in n and there is nothing else to use.
-    subtractEmission(uWall);
-
-    // If drift flux is enabled, add the directed motion component
-    if (includeDriftFlux_)
-    {
-        uWall += max(0.0, -uDriftNormal);
-    }
-    else
-    {
-        uWall -= uDriftNormal;
-    }
+    tVel.ref() -= uDriftNormal;
 
     return tVel;
 }
@@ -341,27 +384,6 @@ electronDDWallFluxMixedFvPatchScalarField
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
 
-void electronDDWallFluxMixedFvPatchScalarField::subtractEmission
-(
-    scalarField& uThermal
-) const
-{
-    if (!emittedValid_ || emitted_.size() != uThermal.size()) return;
-
-    const scalarField& nw = *this;
-
-    forAll(uThermal, faceI)
-    {
-        // Guarded on the density: with n at or below zero there is no
-        // meaningful Gamma_w/n, and the loss speed is left as the thermal one
-        // rather than being handed an infinity.
-        if (nw[faceI] > VSMALL)
-        {
-            uThermal[faceI] =
-                max(scalar(0), uThermal[faceI] - emitted_[faceI]/nw[faceI]);
-        }
-    }
-}
 
 
 void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()

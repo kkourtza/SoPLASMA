@@ -288,6 +288,26 @@ static void writePatchEntry
         // SINGULAR at a sharp electrode, and setting the drift flux on one of
         // the pair leaves the other singular, so a partial fix looks like a
         // failure.
+        // NO `energyDDWallFluxImplicit` CLASS EXISTS. Without this guard the
+        // generator emits that type name happily and the SOLVER dies later
+        // with OpenFOAM's generic "unknown patchField type" list, which names
+        // neither the cause nor the fix. Found 2026-09-04 while mirroring the
+        // reflection closure into the Implicit family; the combination had
+        // never been run.
+        if (kind == "energy" && fluxFamily == "Implicit")
+        {
+            FatalErrorInFunction
+                << "`wallFluxFamily Implicit` cannot be used with the LMEA"
+                << " electron-energy equation." << nl
+                << "The Implicit family has no electron-energy member: it"
+                << " provides electron, ion and neutral conditions only." << nl
+                << nl
+                << "Either set `wallFluxFamily Mixed` (the default), or use"
+                << " `electronEnergyModel LFA`, which transports no"
+                << " electron-energy field." << nl
+                << exit(FatalError);
+        }
+
         const word type
         (
             kind == "electron" ? "electronDDWallFlux" + fluxFamily

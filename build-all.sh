@@ -35,6 +35,7 @@ BUILD_DIRS=(
   src/applications/utilities/testEmission
   src/applications/utilities/plasmaChemistry0D
   src/applications/utilities/testWallLoss
+  src/applications/utilities/testWallFlux
   src/applications/utilities/testVibRelax
   src/applications/utilities/testDischargeCurrent
   src/applications/utilities/testAitken

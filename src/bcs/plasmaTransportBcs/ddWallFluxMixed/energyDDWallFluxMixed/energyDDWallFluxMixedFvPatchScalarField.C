@@ -46,6 +46,55 @@ word energyDDWallFluxMixedFvPatchScalarField::resolveSpeciesName() const
 
 
 tmp<scalarField>
+energyDDWallFluxMixedFvPatchScalarField::normalisingDensity() const
+{
+    // "n_" + the electron species name -- DERIVED, so a case that names its
+    // electron something unusual still resolves. See the header for the
+    // measured defect this override fixes.
+    const word nName("n_" + this->resolveSpeciesName());
+
+    if (!this->patch().boundaryMesh().mesh().foundObject<volScalarField>(nName))
+    {
+        FatalErrorInFunction
+            << "Electron density field `" << nName << "` not found on patch `"
+            << this->patch().name() << "`." << nl
+            << "The electron-energy wall condition needs n_e -- not n_eps --"
+            << " to form Gamma_w/n_e in Hagelaar eqs (6.6) and (6.15)." << nl
+            << exit(FatalError);
+    }
+
+    return tmp<scalarField>::New
+    (
+        this->patch().lookupPatchField<volScalarField, scalar>(nName)
+    );
+}
+
+
+tmp<scalarField>
+energyDDWallFluxMixedFvPatchScalarField::energyWeight
+(
+    const scalarField& gRatio
+) const
+{
+    // eq. (6.15): eps_w/eps = 5/3 - (2/3)*(Gamma_w/n_e)/A.
+    //
+    // The 2/3 is the T_e -> eps conversion, eps = (3/2) T_e, which is the
+    // SAME Maxwellian assumption that fluxEnergyFactor_'s 5/3 default carries.
+    // A user who overrides the factor for a non-Maxwellian EEDF is overriding
+    // only the zero-creation value; the shape of the correction is (6.15)'s.
+    tmp<scalarField> tW = tmp<scalarField>::New(gRatio.size(), Zero);
+    scalarField& w = tW.ref();
+
+    forAll(w, faceI)
+    {
+        w[faceI] = hagelaarEnergyWeight(fluxEnergyFactor_, gRatio[faceI]);
+    }
+
+    return tW;
+}
+
+
+tmp<scalarField>
 energyDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
 (
     const dimensionedScalar& m,
@@ -53,17 +102,19 @@ energyDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
     const scalarField& uDriftNormal
 ) const
 {
-    // The electron condition, scaled. The energy leaves on the SAME electrons,
-    // so reusing its velocity keeps the two conditions consistent by
-    // construction: any change to the thermal velocity, the drift-flux option
-    // or the surface treatment is inherited rather than duplicated here.
+    // The electron condition's TOTAL loss speed W = (1-r) w_w, weighted by
+    // eq. (6.15). The energy leaves on the SAME electrons, so reusing W keeps
+    // the two conditions consistent by construction: any change to the
+    // thermal base, the drift-flux option, reflection, emission or the surface
+    // treatment is inherited rather than duplicated here.
+    scalarField gRatio;
     tmp<scalarField> tVel =
-        electronDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
+        electronDDWallFluxMixedFvPatchScalarField::wallLossSpeed
         (
-            m, T, uDriftNormal
+            m, T, uDriftNormal, gRatio
         );
 
-    tVel.ref() *= fluxEnergyFactor_;
+    tVel.ref() *= energyWeight(gRatio)();
 
     return tVel;
 }
@@ -77,13 +128,18 @@ energyDDWallFluxMixedFvPatchScalarField::calcEffectiveWallVelocity
     const scalarField& uDriftNormal
 ) const
 {
+    // uEff = W_eps - uDrift_n, the same bookkeeping identity as the electron
+    // condition. uDriftNormal here is the ENERGY's drift velocity, which is
+    // what the mixed condition's n_p*(uDrift_n + uEff) requires.
+    scalarField gRatio;
     tmp<scalarField> tVel =
-        electronDDWallFluxMixedFvPatchScalarField::calcEffectiveWallVelocity
+        electronDDWallFluxMixedFvPatchScalarField::wallLossSpeed
         (
-            m, T, uDriftNormal
+            m, T, uDriftNormal, gRatio
         );
 
-    tVel.ref() *= fluxEnergyFactor_;
+    tVel.ref() *= energyWeight(gRatio)();
+    tVel.ref() -= uDriftNormal;
 
     return tVel;
 }
@@ -99,7 +155,7 @@ energyDDWallFluxMixedFvPatchScalarField
 )
 :
     electronDDWallFluxMixedFvPatchScalarField(p, iF),
-    fluxEnergyFactor_(4.0/3.0),
+    fluxEnergyFactor_(5.0/3.0),
     secondaryElectronEnergy_(0.0)
 {}
 
@@ -117,7 +173,7 @@ energyDDWallFluxMixedFvPatchScalarField
     // Maxwellian reservoir and would over-drain at every wall; 1 is the
     // population mean and would under-drain, because faster electrons reach
     // the wall more often.
-    fluxEnergyFactor_(dict.lookupOrDefault<scalar>("fluxEnergyFactor", 4.0/3.0)),
+    fluxEnergyFactor_(dict.getOrDefault<scalar>("fluxEnergyFactor", 5.0/3.0)),
     // USER-DEFINED, with a default rather than a derivation, because there is
     // no rigid calculation available: the birth energy of a secondary electron
     // depends on the surface material and work function and on the incident

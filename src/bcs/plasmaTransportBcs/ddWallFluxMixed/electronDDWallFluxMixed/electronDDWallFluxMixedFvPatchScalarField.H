@@ -244,18 +244,58 @@ protected:
 
     // Protected Member Functions
 
-        //- Calculate the electron-specific wall absorption velocity
-        //- (1 - r)/(1 + r), the net-flux reduction from reflection. Exactly
-        //  1 at r = 0.
-        scalar thermalReflectionFactor() const
-        {
-            return (1.0 - electronReflection_)/(1.0 + electronReflection_);
-        }
+        //- The density that normalises Gamma_w/n in eqs (6.6), (6.8), (6.15).
+        //
+        //  For n_e that is THIS field. The energy override must supply n_e
+        //  instead, because Gamma_w/n_eps is not the quantity in any of those
+        //  equations -- see the measured defect recorded there.
+        virtual tmp<scalarField> normalisingDensity() const;
 
-        //- Apply eq. (6.8)'s -Gamma_w/n to a thermal loss speed, clamped at
-        //  zero. See emitted_ for why emission appears here AND in
-        //  refGradient.
-        void subtractEmission(scalarField& uThermal) const;
+        //- TOTAL wall loss speed W, eqs (6.1), (6.2), (6.6), (6.8) of
+        //  Hagelaar's HDR (Literature/, ch. 6, pp. 36-37), solved exactly.
+        //
+        //  Eq. (6.2) builds Gamma_w from the TOTAL loss speed w_w, and (6.8)
+        //  feeds Gamma_w back into w_w, so REFLECTION IS IMPLICIT, not a
+        //  prefactor:
+        //
+        //      w_w = max(A - Gamma_w/n, 0) + Dd,   Gamma_w/n = r*w_w + Gc/n
+        //
+        //  with A the thermal base (6.6), Dd the drift addition of (6.8) and
+        //  Gc the creation flux. The two branches of the max partition
+        //  cleanly -- the unclamped condition reduces to exactly the negation
+        //  of the clamped one -- so the implicit relation has a CLOSED FORM:
+        //
+        //      w_w = max( (A + Dd - Gc/n)/(1 + r), Dd )
+        //      W   = (1 - r)*w_w                            [eq. (6.1)+(6.2)]
+        //
+        //  VERIFIED against the one reflection case Hagelaar closes
+        //  explicitly: with Gc = 0 and Dd = 0 this gives
+        //      Gamma.n = (1/sqrt(pi))*(1-r)/(1+r)*n*vT
+        //  which is eq. (6.7) exactly, including the 1/sqrt(pi).
+        //
+        //  Combining r with (6.8)'s drift term is NOT quoted from the text --
+        //  (6.7) is the only reflection case closed there. It follows from
+        //  reading (6.2) literally, which uses the total w_w and therefore
+        //  reflects the drift-driven incident flux too. Stated rather than
+        //  presented as a citation. Derived 2026-09-04.
+        //
+        //  At r = 0 this reproduces the pre-2026-09-04 form, because
+        //      max(A + Dd - Gc/n, Dd) == Dd + max(A - Gc/n, 0).
+        //  ALGEBRAICALLY identical, NOT bitwise: the two forms associate the
+        //  additions differently. Measured 2026-09-04 by testWallFlux over a
+        //  372-point (Dd, Gc/n) sweep: max relative difference 3.7e-16, max
+        //  absolute 2.3e-10 m/s against A = 4.7e5 m/s.
+        //
+        //  gRatio returns (Gamma_w/n)/A, the dimensionless creation-plus-
+        //  reflection strength that eq. (6.15) needs for the energy weight.
+        //  Zero where A is not positive.
+        tmp<scalarField> wallLossSpeed
+        (
+            const dimensionedScalar& m,
+            const scalarField& T,
+            const scalarField& uDriftNormal,
+            scalarField& gRatio
+        ) const;
 
         virtual tmp<scalarField> calcAbsorptionVelocity
         (
@@ -273,6 +313,46 @@ protected:
         ) const override;
 
 public:
+
+        //- THE CLOSURE, as a pure function of four scalars.
+        //
+        //  Public and static so a unit bed can exercise the SHIPPED algebra
+        //  against analytic ground truth instead of a re-implementation of
+        //  it. src/applications/utilities/testWallFlux does exactly that.
+        //
+        //      A       thermal base, eq. (6.6) = vT/sqrt(pi)      [m/s]
+        //      Dd      drift addition of eq. (6.8), >= 0          [m/s]
+        //      GcOverN creation flux over density, Gc/n           [m/s]
+        //      r       reflection probability of eq. (6.2), [0,1)
+        //      W       TOTAL loss speed (1-r)*w_w                 [m/s]
+        //      gRatio  (Gamma_w/n)/A, for eq. (6.15)              [-]
+        //
+        //  See wallLossSpeed() for the derivation and the eq. (6.7) check.
+        static void hagelaarClosure
+        (
+            const scalar A,
+            const scalar Dd,
+            const scalar GcOverN,
+            const scalar r,
+            scalar& W,
+            scalar& gRatio
+        )
+        {
+            const scalar wW = max((A + Dd - GcOverN)/(1.0 + r), Dd);
+
+            W = (1.0 - r)*wW;
+
+            gRatio = (A > VSMALL) ? (r*wW + GcOverN)/A : 0.0;
+        }
+
+        //- eps_w/eps of eq. (6.15), clamped at zero. Static for the same
+        //  reason as hagelaarClosure(); f0 is the zero-creation weight, 5/3
+        //  for a Maxwellian.
+        static scalar hagelaarEnergyWeight(const scalar f0, const scalar gRatio)
+        {
+            return max(scalar(0), f0 - (2.0/3.0)*gRatio);
+        }
+
 
     //- Runtime type information
     TypeName("electronDDWallFluxMixed");
