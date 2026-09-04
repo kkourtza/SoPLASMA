@@ -24,6 +24,49 @@ defineTypeNameAndDebug(ddWallFluxMixedFvPatchScalarField, 0);
 
 // * * * * * * * * * * * * Protected Member Functions  * * * * * * * * * * * //
 
+//- THE CONSISTENT WALL LOSS SPEED, Hagelaar HDR chapter 6.
+//
+//  This returns eq. (6.6)'s thermal term, vT/sqrt(pi) with vT = sqrt(2eT/m),
+//  written here as 0.5*sqrt(8 k T/(pi m)) so the mean-speed form is visible.
+//
+//  IT IS TWICE WHAT THIS FUNCTION USED TO RETURN, and the factor is not a
+//  correction bolted on -- it is the difference between two derivations:
+//
+//    eq. (6.3)  w_w = (1/2) vT/sqrt(pi) = (1/4) n <v> / n
+//               The half-space integral of a MAXWELLIAN. Hagelaar calls this
+//               "the simplest approach" and notes it "does not account for the
+//               effects of the electric field and particle density gradient
+//               and gives a bad description in case of significant directed
+//               motion". This is what the code computed before 2026-09-04.
+//
+//    eq. (6.6)  w_w = max( vT/sqrt(pi) - Gamma_w/n , 0 )
+//               The SHIFTED-Maxwellian treatment, integrated over the
+//               half-space and closed self-consistently with eq. (6.1). In
+//               Hagelaar's words: "without reflection or wall creation the
+//               effective loss speed is TWICE AS LARGE as (6.3), but it is
+//               reduced as Gamma_w increases."
+//
+//  WHY TWICE: the one-way flux from a FULL Maxwellian of density n is
+//  (1/4) n <v>. At an absorbing wall the outgoing half of velocity space is
+//  empty, so the density the fluid solves for is only the inward half -- half
+//  of the full-Maxwellian density that produces that flux. Expressed in terms
+//  of the ACTUAL wall density, the flux is therefore (1/2) n <v>.
+//
+//  Hagelaar's eq. (6.8) -- thermal-and-creation clamped at zero, plus a
+//  separately clamped drift term -- "has consistent limits for all particle
+//  species and is RECOMMENDED INSTEAD OF EQUATION (6.4)", and (6.4) is the
+//  form this family implemented. Hence the change, and hence that it applies
+//  to EVERY species and to the energy condition, not only to electrons: the
+//  derivation is purely kinematic, with no charge or mass in it.
+//
+//  STILL TO DO, and deliberately not done in this step: the -Gamma_w/n term
+//  and its max(...,0) clamp, which move secondary emission INSIDE the loss
+//  speed. Emission is currently still added separately to refGradient. See the
+//  note in electronDDWallFluxMixed.
+//
+//  Source: Hagelaar, G. J. M., HDR thesis, chapter 6, eqs. (6.1)-(6.8);
+//  Literature/hdr-hagelaar.pdf. Footnote 30 there notes that many of the
+//  chapter's equations "are not standard".
 //- Thermal velocity for a single constant temperature (dimensionedScalar)
 dimensionedScalar ddWallFluxMixedFvPatchScalarField::calcThermalVelocity
 (
@@ -31,7 +74,7 @@ dimensionedScalar ddWallFluxMixedFvPatchScalarField::calcThermalVelocity
     const dimensionedScalar& T
 ) const
 {
-    return 0.25 * sqrt 
+    return 0.5 * sqrt 
     (
         (8.0 * constant::plasma::kappaBoltzmann * T)
         /
@@ -46,7 +89,7 @@ tmp<scalarField> ddWallFluxMixedFvPatchScalarField::calcThermalVelocity
     const scalarField& T
 ) const
 {
-    return 0.25 * sqrt 
+    return 0.5 * sqrt 
     (
         (8.0 * constant::plasma::kappaBoltzmann.value() * T)
         /
