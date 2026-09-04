@@ -550,10 +550,35 @@ plasmaSpecies::plasmaSpecies
             mergedDict.add("diffusionCoeffs", dc);
         }
 
+        // THE `immobile` VALUE OF EACH SWITCH, kept SEPARATE, because they are
+        // separate switches over separate sets of species.
+        //
+        // This was ONE blanket default gated on `ionTransport_ !=
+        // "driftDiffusion"`, which meant that asking for MOBILE IONS silently
+        // switched off the default for NEUTRALS -- and since the driftDiffusion
+        // branch below only ever reaches charged species, every neutral was
+        // left with no transportModel at all. Measured 2026-09-04 on needleDBD,
+        // the first case to want `ionTransport driftDiffusion` together with
+        // `neutralTransport immobile`:
+        //     "Species 'N' is missing required entry 'transportModel'"
+        //
+        // The comment above already records fixing exactly this shape of bug
+        // for the ion switch. The same mistake was still here for the neutral
+        // one: a switch must answer for both of ITS values, and must not
+        // answer for another switch's.
         if (fromMechanism_
          && !mergedDict.found("transportModel")
+         && isNeutral
+         && neutralTransport_ == "immobile")
+        {
+            mergedDict.add("transportModel", word("immobile"));
+        }
+
+        if (fromMechanism_
+         && !mergedDict.found("transportModel")
+         && !isNeutral
          && sName != speciesNames_[0]
-         && ionTransport_ != "driftDiffusion")
+         && ionTransport_ == "immobile")
         {
             mergedDict.add("transportModel", word("immobile"));
         }
@@ -567,14 +592,38 @@ plasmaSpecies::plasmaSpecies
             dictionary dd;
             dd.add("fluxScheme", ionFluxScheme_);
 
+            // WHERE THE ION TABLES LIVE.
+            //
+            // Not the same directory as the electron ones, and that is
+            // structural rather than a preference: the electron tables come
+            // from the Boltzmann sweep into `constant/plasmaTables`, while ion
+            // mobilities come from a different chain entirely (LXCat Viehland
+            // data through tools/ionmob.py) into `constant/ionTables`.
+            //
+            // The derived block used to carry NO tableDir, so it fell back to
+            // the electron directory and died with
+            //   `fromMechanism needs "constant/plasmaTables/muN_N2p_vs_reducedE"`
+            // -- measured 2026-09-04 on needleDBD, the first case to derive its
+            // ion transport at all. `ionTableDir` overrides it for a case that
+            // keeps them elsewhere.
+            const word ionTabDir
+            (
+                subDict("mechanismSpecies").getOrDefault<word>
+                (
+                    "ionTableDir", "constant/ionTables"
+                )
+            );
+
             dictionary mu;
             mu.add("type", word("fromMechanism"));
             mu.add("quantity", word("muN_" + sName));
+            mu.add("tableDir", ionTabDir);
             dd.add("mobility", mu);
 
             dictionary dif;
             dif.add("type", word("fromMechanism"));
             dif.add("quantity", word("DLN_" + sName));
+            dif.add("tableDir", ionTabDir);
             dd.add("diffusivity", dif);
 
             mergedDict.add("transportModel", word("driftDiffusion"));
