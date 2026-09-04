@@ -127,32 +127,53 @@ echo "    (modelling choices in logs/log.ionmob -- grep -A20 NOTES)"
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Two helpers used TWICE each, because the potential's boundary conditions and
-# the species boundary conditions now depend on each other in one direction:
-# the species conditions are DERIVED from the potential's.
-
-# Apply etc/changeDictionary.<region> to every region. $1 names the pass, so
-# the two logs do not overwrite each other.
-applyBoundaryConditions() {
-    for r in gas dielectric; do
-        cp etc/changeDictionary.$r system/$r/changeDictionaryDict
-        sed -i 's@#include[[:space:]]*"\.\./@#include "../../@' \
-            system/$r/changeDictionaryDict
-        changeDictionary -region $r > logs/log.changeDictionary.$r.$1 2>&1 \
-            || die "changeDictionary -region $r ($1)"
-    done
-}
-
-# changeDictionary STRIPS the #include from a field it rewrites, so any $var it
-# copied through verbatim is then undefined and the reader dies on the field.
-# Re-insert it -- AFTER the FoamFile block, or the reader fails with "problem
-# while reading header".
+step "6. initial fields"
 #
-# Called after EVERY changeDictionary pass, not only the last: pass1 exists so
-# the species generator can READ 0/gas/ePotential, and it cannot parse a file
-# whose $vars no longer resolve.
-fixIncludes() {
-/usr/bin/python3 - <<'FIXPY'
+# EVERY FIELD IS GENERATED. Nothing in 0/ is hand-authored, and there is no
+# 0.orig: the two generators below derive every boundary condition from the
+# SEMANTIC description in configuration/boundaries plus the mesh topology.
+#
+# THE ORDER IS LOAD-BEARING, in one direction only:
+#   plasmaSetupBoundaries       writes 0/<region>/{ePotential,surfCharge} from
+#                               configuration/boundaries and the shipped
+#                               boundary-role library.
+#   plasmaCreateSpeciesFields   writes every species field, AND READS
+#                               0/gas/ePotential to learn what each patch is.
+# Reversed, every patch classifies as `open` and no species gets a wall flux
+# anywhere -- measured 2026-09-04, and caught only because the generator prints
+# its classification.
+rm -rf 0 && mkdir -p 0/gas 0/dielectric logs
+
+runApplication plasmaSetupBoundaries     || die "plasmaSetupBoundaries"
+runApplication plasmaCreateSpeciesFields || die "plasmaCreateSpeciesFields"
+echo "    $(ls 0/gas | wc -l) fields in 0/gas, $(ls 0/dielectric | wc -l) in 0/dielectric"
+
+step "7. boundary-condition overrides (usually none)"
+#
+# OPTIONAL AND NORMALLY ABSENT. Everything is derived, so this case ships no
+# etc/changeDictionary.* at all and this step does nothing.
+#
+# To override one generated entry deliberately -- a boundary condition the role
+# library cannot express, or a per-patch experiment -- create
+# etc/changeDictionary.<region> with just that entry. It runs AFTER both
+# generators, so whatever it names WINS.
+#
+# The two-pass dance that used to live here is gone with it: the potential's
+# conditions came from changeDictionary, so it had to run BEFORE the species
+# generator could read them and AFTER, for overrides. Now the generator is the
+# source and one optional pass suffices.
+for r in gas dielectric; do
+    [ -f etc/changeDictionary.$r ] || continue
+    cp etc/changeDictionary.$r system/$r/changeDictionaryDict
+    sed -i 's@#include[[:space:]]*"\.\./@#include "../../@' \
+        system/$r/changeDictionaryDict
+    changeDictionary -region $r > logs/log.changeDictionary.$r 2>&1 \
+        || die "changeDictionary -region $r"
+    # changeDictionary STRIPS the #include from a field it rewrites, so any
+    # $var it copied through verbatim is then undefined and the solver dies
+    # reading the field. Re-insert it AFTER the FoamFile block, or the reader
+    # fails with "problem while reading header".
+    /usr/bin/python3 - <<'FIXPY'
 import pathlib, re
 inc = '#include "../../configuration/config"'
 for d in ("0/gas", "0/dielectric"):
@@ -167,43 +188,9 @@ for d in ("0/gas", "0/dielectric"):
                 t = t[:m.end()] + inc + "\n" + t[m.end():]
         f.write_text(t)
 FIXPY
-}
+    echo "    applied etc/changeDictionary.$r"
+done
 
-step "6. initial fields"
-#
-# 0.orig holds three hand-authored templates with a catch-all boundaryField;
-# plasmaCreateSpeciesFields generates the rest from the mechanism. It is
-# region-aware and needs constant/<gas>/plasmaSpeciesProperties to exist, so it
-# runs AFTER step 4.
-rm -rf 0 && mkdir -p 0/gas 0/dielectric
-cp 0.orig/ePotential 0.orig/surfCharge 0/gas/   || die "0.orig missing"
-cp 0.orig/ePotential 0/dielectric/
-# The split moved the fields one level deeper, so their #include climbs one
-# level too. Missed once: the include failed silently, $vars were never defined,
-# and the solver died reading 0/gas/ePotential.
-sed -i 's@#include[[:space:]]*"\.\./configuration@#include "../../configuration@' \
-    0/gas/* 0/dielectric/*
-# THE POTENTIAL'S BOUNDARY CONDITIONS COME FIRST, because the species
-# conditions are DERIVED FROM THEM. plasmaCreateSpeciesFields reads
-# 0/gas/ePotential to learn what each patch IS -- a dielectric surface, a
-# conductor, an open boundary -- and 0.orig holds only a `".*"` catch-all, so
-# before changeDictionary has run there is nothing to derive from. In the old
-# order every patch classified as `open` and no species got a wall flux at all.
-# Measured 2026-09-04.
-mkdir -p logs
-applyBoundaryConditions pass1
-fixIncludes
-
-runApplication plasmaCreateSpeciesFields || die "plasmaCreateSpeciesFields"
-echo "    $(ls 0/gas | wc -l) fields in 0/gas"
-
-step "7. boundary conditions"
-# TWICE, deliberately. Pass 1 established the potential's conditions so the
-# generator could derive the species ones; this pass runs AFTER the generator,
-# so an explicit species override in etc/changeDictionary.* still WINS over the
-# derived default. The replacements are identical both times.
-applyBoundaryConditions pass2
-fixIncludes
 # A solid has no plasma: everything but the potential goes.
 find 0/dielectric -type f ! -name 'ePotential' -delete 2>/dev/null
 

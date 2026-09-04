@@ -504,6 +504,48 @@ measured tests:
 [`docs/models/poisson_equation/floating-electrode.md`](docs/models/poisson_equation/floating-electrode.md).
 
 
+## One semantic file describes every boundary
+
+You say what each surface **is**; every module decides how to treat it. That is
+the whole boundary input for the needle-DBD tutorial:
+
+```
+// configuration/boundaries
+active_electrode { kind drivenElectrode;       waveform table ((0 0) (100e-9 8e3)); }
+ground           { kind groundedElectrode; }
+air_dielectric   { kind thinDielectricSurface; material pmma; }
+out              { kind openBoundary; }
+```
+
+`plasmaSetupBoundaries` turns those four declarations into
+`0/<region>/{ePotential,surfCharge}` for every region, reading
+[`etc/boundaryRoles`](etc/boundaryRoles) for what each **kind** means to each
+module. `plasmaSetupBoundaries -listKinds` prints the kinds and their required
+parameters. Seven ship today: `drivenElectrode`, `groundedElectrode`,
+`floatingElectrode`, `thinDielectricSurface`, `thinDielectricOnElectrode`,
+`openBoundary`, `insulatingWall`.
+
+**Three things are derived and a case may not declare them:**
+
+| derived from | what |
+|---|---|
+| the **mesh** | `empty`, `wedge`, `symmetry`, `cyclic`, `processor` — a mechanical constraint is not a physical description |
+| the **topology** | region interfaces. A gas/dielectric pair gets `coupledElectricPotential` with the surface charge owned by the **gas side only**; a gas/`farField` pair gets `zeroGradient` and never charges |
+| the **material library** | `epsilonR` and `gammaSEE` behind a named material |
+
+The interface σ-ownership inverts correctly between the two sides of a barrier
+without being stated anywhere — exactly one owner, or the charge is
+double-counted.
+
+**needleDBD now ships no `etc/` and no `0.orig/`.** Every field in `0/` is
+generated, and the two hand-written files are `configuration/config` and
+`configuration/boundaries`. Verified 2026-09-04 against the hand-written
+pipeline it replaces: `C_g = 9.03816931478e-17 F` and
+`I_disp = 7.23053545181e-06 A`, identical to twelve digits — and `C_g` depends
+on which patches are driven and grounded, so the generated conditions are
+electrostatically indistinguishable from the ones they replace.
+
+
 ## Materials come from a cited library, not from a case
 
 A dielectric region names what it is *made of*, in one line:
@@ -583,8 +625,10 @@ leaves the energy equation singular at a sharp electrode — because its
 `0.orig/nEps_e` was a copy of the *streamer* case's template, naming `axis`,
 `wedge_0` and `grounded_electrode`, patches that mesh does not have.
 
-An explicit block in `etc/changeDictionary.*` still wins: it is applied after
-the generator. `wallFluxFamily Mixed | Implicit` in
+**The potential's own boundary conditions are generated too**, from
+`configuration/boundaries` and [`etc/boundaryRoles`](etc/boundaryRoles) — see
+the next section. An explicit block in `etc/changeDictionary.*` still wins over
+either generator: it is applied after both, and is normally absent. `wallFluxFamily Mixed | Implicit` in
 `system/plasmaSimulationControls` selects the family (`Mixed` by default).
 
 ## Two currents, and they are not the same thing
