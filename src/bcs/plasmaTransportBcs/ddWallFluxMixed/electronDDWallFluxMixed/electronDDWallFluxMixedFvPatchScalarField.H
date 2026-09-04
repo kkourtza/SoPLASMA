@@ -212,6 +212,24 @@ protected:
         //  and fails asking for a work function the case did supply.
         word material_;
 
+        //- THE EMITTED FLUX [1/m2/s], computed BEFORE the base class builds
+        //  the loss speed, because eq. (6.8) needs it there.
+        //
+        //  Hagelaar eq. (6.1) is  Gamma = n w_w - Gamma_w, and eq. (6.6)/(6.8)
+        //  put Gamma_w INSIDE the loss speed too:
+        //      w_w = max( thermal - Gamma_w/n , 0 ) + max( drift_to_wall , 0 )
+        //  This condition imposes n*(uDrift_n + uEff), i.e. n*w_w, so the
+        //  separate -Gamma_w of eq. (6.1) must ALSO be applied -- which is what
+        //  the refGradient term does. Emission therefore appears in BOTH
+        //  places, and that is not double counting: it is exactly where the
+        //  factor of 2 on emission comes from. Unclamped and with r = 0,
+        //      Gamma = n*thermal + n*drift - 2*Gamma_w
+        //  which is eq. (6.6) closed with (6.1), as derived.
+        mutable scalarField emitted_;
+
+        //- Whether emitted_ holds a value for the current evaluation
+        mutable bool emittedValid_;
+
         //- The models, built on first updateCoeffs()
         mutable PtrList<emissionModel> emission_;
 
@@ -233,6 +251,11 @@ protected:
         {
             return (1.0 - electronReflection_)/(1.0 + electronReflection_);
         }
+
+        //- Apply eq. (6.8)'s -Gamma_w/n to a thermal loss speed, clamped at
+        //  zero. See emitted_ for why emission appears here AND in
+        //  refGradient.
+        void subtractEmission(scalarField& uThermal) const;
 
         virtual tmp<scalarField> calcAbsorptionVelocity
         (

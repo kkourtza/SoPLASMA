@@ -75,6 +75,9 @@ electronDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
     // flux is not the one intended.
     uAbs *= thermalReflectionFactor();
 
+    // ... and the SAME eq. (6.8) creation term, for the same reason.
+    subtractEmission(uAbs);
+
     // If drift flux is enabled, add the directed motion component
     if (includeDriftFlux_)
     {
@@ -98,6 +101,19 @@ electronDDWallFluxMixedFvPatchScalarField::calcEffectiveWallVelocity
     // REFLECTION acts on the thermal flux only -- see the member's comment for
     // what is deliberately NOT scaled. Exactly 1 at r = 0.
     uWall *= thermalReflectionFactor();
+
+    // EQ. (6.8): the wall-creation flux REDUCES the loss speed, and the result
+    // is clamped at zero.
+    //
+    // THE CLAMP IS PHYSICS, NOT A NUMERICAL GUARD. Hagelaar: it fires "for
+    // electrons at the cathode due to secondary emission by ion impact, and it
+    // is then indeed appropriate to set w_w = 0 because the secondary emission
+    // coefficients given in the literature have generally been deduced
+    // NEGLECTING THERMAL ELECTRON LOSS TO THE CATHODE."
+    //
+    // n is the current wall value, so this is lagged by one evaluation -- the
+    // relation is implicit in n and there is nothing else to use.
+    subtractEmission(uWall);
 
     // If drift flux is enabled, add the directed motion component
     if (includeDriftFlux_)
@@ -177,6 +193,8 @@ electronDDWallFluxMixedFvPatchScalarField
     emissionDict_(dictionary::null),
     electronReflection_(0.0),
     material_(word::null),
+    emitted_(p.size(), Zero),
+    emittedValid_(false),
     emission_(),
     emissionReported_(false),
     seec_(0),
@@ -231,6 +249,8 @@ electronDDWallFluxMixedFvPatchScalarField
     emissionDict_(dict.subOrEmptyDict("emission")),
     electronReflection_(dict.getOrDefault<scalar>("electronReflection", 0.0)),
     material_(dict.getOrDefault<word>("material", word::null)),
+    emitted_(p.size(), Zero),
+    emittedValid_(false),
     emission_(),
     emissionReported_(false),
     seec_(0), 
@@ -258,6 +278,8 @@ electronDDWallFluxMixedFvPatchScalarField
     emissionDict_(ptf.emissionDict_),
     electronReflection_(ptf.electronReflection_),
     material_(ptf.material_),
+    emitted_(ptf.emitted_),
+    emittedValid_(false),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -282,6 +304,8 @@ electronDDWallFluxMixedFvPatchScalarField
     emissionDict_(ptf.emissionDict_),
     electronReflection_(ptf.electronReflection_),
     material_(ptf.material_),
+    emitted_(ptf.emitted_),
+    emittedValid_(false),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -307,6 +331,8 @@ electronDDWallFluxMixedFvPatchScalarField
     emissionDict_(ptf.emissionDict_),
     electronReflection_(ptf.electronReflection_),
     material_(ptf.material_),
+    emitted_(ptf.emitted_),
+    emittedValid_(false),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -314,6 +340,29 @@ electronDDWallFluxMixedFvPatchScalarField
 {}
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
+
+void electronDDWallFluxMixedFvPatchScalarField::subtractEmission
+(
+    scalarField& uThermal
+) const
+{
+    if (!emittedValid_ || emitted_.size() != uThermal.size()) return;
+
+    const scalarField& nw = *this;
+
+    forAll(uThermal, faceI)
+    {
+        // Guarded on the density: with n at or below zero there is no
+        // meaningful Gamma_w/n, and the loss speed is left as the thermal one
+        // rather than being handed an infinity.
+        if (nw[faceI] > VSMALL)
+        {
+            uThermal[faceI] =
+                max(scalar(0), uThermal[faceI] - emitted_[faceI]/nw[faceI]);
+        }
+    }
+}
+
 
 void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
 {
@@ -349,116 +398,147 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
         mapped_ = true;
     }
 
-    // Call the standard updateCoeffs from the base class
-    ddWallFluxMixedFvPatchScalarField::updateCoeffs();
+    // ---- THE EMITTED FLUX, COMPUTED FIRST ---------------------------------
+    //
+    // Eq. (6.8) needs Gamma_w INSIDE the loss speed, and the loss speed is
+    // built by the base class call below -- so it has to exist before that
+    // call, not after. Stored in emitted_ and consumed by
+    // calcEffectiveWallVelocity/calcAbsorptionVelocity.
+    emitted_.setSize(this->patch().size());
+    emitted_ = Zero;
+    emittedValid_ = false;
 
-    // ---- ADDITIONAL EMISSION MECHANISMS ----------------------------------
-    //
-    // PLACED BEFORE THE `enableSEE` RETURN BELOW, and that is the whole point:
-    // these mechanisms are independent of the built-in ion-SEE path. The first
-    // version of this block sat after that return and was therefore DEAD
-    // whenever `enableSEE false` -- which is the configuration in which one
-    // would most obviously use them. Caught 2026-09-04 only by checking
-    // whether the regression test had exercised the code at all; it had not.
-    //
-    // Built on first use: ionInducedSEE needs `plasmaTransport` in the
-    // registry, which does not exist while boundary conditions are constructed.
-    //
-    // Contributed EXACTLY as the built-in SEE path is: an emitted flux
-    // [1/m2/s] divided by the same diffusivity and added to refGradient. So a
-    // mechanism configured to give the same flux gives the same answer, which
-    // is what makes the built-in path replaceable.
-    if (!emissionDict_.empty())
+    if (db().foundObject<plasmaTransport>("plasmaTransport"))
     {
-        if (emission_.empty())
-        {
-            emission_.setSize(emissionDict_.size());
-
-            label k = 0;
-            for (const word& type : emissionDict_.toc())
-            {
-                // THE PATCH'S MATERIAL IS INHERITED. A model is handed only
-                // its own sub-dictionary, so a `material` declared beside
-                // `emission` has to be merged in or the model cannot see it --
-                // and then fails asking for a work function the case did
-                // supply. A model naming its own `material` keeps it.
-                dictionary md(emissionDict_.subDict(type));
-
-                if (!material_.empty() && !md.found("material"))
-                {
-                    md.add("material", material_);
-                }
-
-                emission_.set
-                (
-                    k++,
-                    emissionModel::New(type, this->patch(), md)
-                );
-            }
-        }
-
-        const plasmaTransport& tr =
+        const plasmaTransport& tr0 =
             db().lookupObject<plasmaTransport>("plasmaTransport");
 
-        const plasmaSpecies& sdb = tr.species();
+        const plasmaSpecies& sdb0 = tr0.species();
 
-        const plasmaTransportModel& bm =
-            tr.model(sdb.speciesID(resolveSpeciesName()));
+        const scalarField& magSf0 = this->patch().magSf();
 
-        const driftDiffusion& ddm = refCast<const driftDiffusion>(bm);
-
-        const tmp<scalarField> tDe(this->patchDiffusivity(ddm));
-        const scalarField& De = tDe();
-
-        const scalar Defloor = SMALL*max(gMax(De), SMALL);
-
-        scalarField emitted(this->patch().size(), Zero);
-
-        forAll(emission_, i)
+        // ION-INDUCED, the built-in path.
+        if (enableSEE_ && mapped_)
         {
-            emitted += emission_[i].emittedFlux();
-        }
-
-        forAll(emitted, faceI)
-        {
-            if (De[faceI] > Defloor)
+            for (const label specI : sdb0.positiveIonSpeciesIDs())
             {
-                this->refGrad()[faceI] += emitted[faceI]/De[faceI];
+                const word fn("particleFlux_" + sdb0.speciesName(specI));
+
+                if
+                (
+                    !this->patch().boundaryMesh().mesh()
+                        .foundObject<surfaceScalarField>(fn)
+                ) continue;
+
+                const fvsPatchScalarField& phiI =
+                    this->patch().lookupPatchField
+                    <surfaceScalarField, scalar>(fn);
+
+                emitted_ += seec_[specI]*max(scalar(0), phiI/magSf0);
             }
         }
 
-        // REPORTED ONCE, and not as decoration: emission decides whether a
-        // discharge is self-sustaining, so a mechanism silently on -- or
-        // silently off -- gives a plausible, healthy-looking, wrong discharge.
-        if (!emissionReported_)
+        // THE EMISSION MODELS.
+        if (!emissionDict_.empty())
         {
-            emissionReported_ = true;
+            if (emission_.empty())
+            {
+                emission_.setSize(emissionDict_.size());
 
-            Info<< "    electronDDWallFluxMixed on patch `"
-                << this->patch().name() << "`: emission mechanisms" << nl;
+                label k = 0;
+                for (const word& type : emissionDict_.toc())
+                {
+                    // The patch's material is INHERITED: a model is handed
+                    // only its own sub-dictionary, so a `material` declared
+                    // beside `emission` must be merged in.
+                    dictionary md(emissionDict_.subDict(type));
+
+                    if (!material_.empty() && !md.found("material"))
+                    {
+                        md.add("material", material_);
+                    }
+
+                    emission_.set
+                    (
+                        k++, emissionModel::New(type, this->patch(), md)
+                    );
+                }
+            }
 
             forAll(emission_, i)
             {
-                emission_[i].report(Info);
+                emitted_ += emission_[i].emittedFlux();
             }
 
-            // LABELLED "at the first evaluation", because that is what it
-            // is and an unlabelled 0 reads as "this mechanism does nothing".
-            // The species fields have not been solved when boundary
-            // conditions are first updated, so every flux-driven mechanism
-            // reports zero here -- expected, and not evidence of anything.
-            Info<< "            emitted flux at the FIRST evaluation, max over"
-                   " the patch: " << gMax(emitted) << " 1/m2/s" << nl;
-
-            if (gMax(emitted) <= 0)
+            if (!emissionReported_)
             {
-                Info<< "            (zero is EXPECTED here for a flux-driven"
-                       " mechanism: the species fields" << nl
-                    << "            are not solved yet. It is not evidence"
-                       " that the mechanism is inert.)" << nl;
-            }
+                emissionReported_ = true;
 
-            Info<< endl;
+                Info<< "    electronDDWallFluxMixed on patch `"
+                    << this->patch().name() << "`: emission mechanisms" << nl;
+
+                forAll(emission_, i)
+                {
+                    emission_[i].report(Info);
+                }
+
+                Info<< "            emitted flux at the FIRST evaluation, max"
+                       " over the patch: " << gMax(emitted_) << " 1/m2/s"
+                    << nl;
+
+                if (gMax(emitted_) <= 0)
+                {
+                    Info<< "            (zero is EXPECTED here for a"
+                           " flux-driven mechanism: the species fields" << nl
+                        << "            are not solved yet. It is not evidence"
+                           " that the mechanism is inert.)" << nl;
+                }
+
+                Info<< endl;
+            }
+        }
+
+        emittedValid_ = true;
+    }
+
+    // Call the standard updateCoeffs from the base class
+    ddWallFluxMixedFvPatchScalarField::updateCoeffs();
+
+    // ---- THE SEPARATE -Gamma_w OF EQ. (6.1) --------------------------------
+    //
+    // This condition imposes n*(uDrift_n + uEff) = n*w_w. Eq. (6.1) is
+    //     Gamma = n*w_w - Gamma_w
+    // so the -Gamma_w must be applied here, in addition to the -Gamma_w/n
+    // already inside w_w (see emitted_). Together, unclamped and at r = 0,
+    // they give Gamma = n*thermal + n*drift - 2*Gamma_w -- eq. (6.6) closed
+    // with (6.1).
+    //
+    // emitted_ was computed BEFORE the base call and carries BOTH the built-in
+    // ion-SEE path and every emission model, so the two uses cannot disagree
+    // about what Gamma_w is.
+    if (emittedValid_ && gMax(emitted_) > 0)
+    {
+        const plasmaTransport& trE =
+            db().lookupObject<plasmaTransport>("plasmaTransport");
+
+        const plasmaSpecies& sdbE = trE.species();
+
+        const plasmaTransportModel& bmE =
+            trE.model(sdbE.speciesID(resolveSpeciesName()));
+
+        const driftDiffusion& ddmE = refCast<const driftDiffusion>(bmE);
+
+        const tmp<scalarField> tDe(this->patchDiffusivity(ddmE));
+        const scalarField& De = tDe();
+
+        const scalar DeFloor = SMALL*max(gMax(De), SMALL);
+
+        forAll(emitted_, faceI)
+        {
+            if (De[faceI] > DeFloor)
+            {
+                this->refGrad()[faceI] += emitted_[faceI]/De[faceI];
+            }
         }
     }
 
@@ -582,13 +662,15 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
     // the first Poisson solve.
     const scalar Dfloor = SMALL*max(gMax(Df), SMALL);
 
-    forAll(Df, faceI)
-    {
-        if (Df[faceI] > Dfloor)
-        {
-            this->refGrad()[faceI] += totalSEE[faceI]/Df[faceI];
-        }
-    }
+    // NO refGradient CONTRIBUTION HERE ANY MORE. The ion-SEE flux is part of
+    // emitted_, which was computed before the base call and applied above --
+    // once. Adding it again here would double it, and the totalSEE computed in
+    // this block now serves ONLY the `seeReport` diagnostics above.
+    //
+    // Kept as a guarded no-op rather than deleted so the diagnostic block, the
+    // inert-SEE warning and the Dfloor reasoning above stay attached to the
+    // code they describe.
+    (void)Dfloor;
 }
 
 void electronDDWallFluxMixedFvPatchScalarField::write(Ostream& os) const
