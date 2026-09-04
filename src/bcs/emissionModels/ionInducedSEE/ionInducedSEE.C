@@ -170,6 +170,45 @@ Foam::scalar Foam::emissionModels::ionInducedSEE::gammaFor
 
     const word mat(dict_.get<word>("material"));
 
+    // A MISSING BAND STRUCTURE IS NOT A LIBRARY DEFECT HERE, and the generic
+    // library error would say it was -- telling the user to add `bandGap` to
+    // the library when the right action is to supply gamma explicitly.
+    //
+    // The polymers and glasses carry NO bandGap/electronAffinity DELIBERATELY:
+    // a polymer has no crystalline band structure, its "gap" is an optical
+    // edge that moves with formulation and ageing, and reliable electron
+    // affinities are not published. So the insulator Auger criterion cannot be
+    // applied to them AT ALL, and no addition to the library would fix that.
+    {
+        const dictionary& e = materialLibrary::lookup(mat, ctx);
+
+        if (!e.found("bandGap") || !e.found("electronAffinity"))
+        {
+            FatalIOErrorInFunction(dict_)
+                << "`yield hagstrum` with `surface insulator` cannot be used"
+                << " with material `" << mat << "`." << nl << nl
+                << "    That material carries no band gap or electron"
+                   " affinity, and NOT BY OMISSION: the" << nl
+                << "    insulator Auger criterion E_ion > Eg + 2 chi needs a"
+                   " crystalline band structure," << nl
+                << "    which a polymer or a glass does not have. Its \"gap\""
+                   " is an optical absorption edge" << nl
+                << "    that moves with formulation and ageing, and reliable"
+                   " electron affinities are not" << nl
+                << "    published. Adding numbers to the library would not fix"
+                   " this -- it would hide it." << nl << nl
+                << "    USE `yield constant` INSTEAD, with a value you can"
+                   " defend for this surface:" << nl
+                << "        ionInducedSEE { yield constant; gamma 0.001; }" << nl
+                << "    0.001 is the contaminated-barrier figure and is the"
+                   " default." << nl << nl
+                << "    Materials that DO carry a band structure, and so can"
+                   " use `surface insulator`:" << nl
+                << "        fusedSilica, alumina96, alumina99, magnesia" << nl
+                << exit(FatalIOError);
+        }
+    }
+
     const scalar Eg  = materialLibrary::get(mat, "bandGap", ctx);
     const scalar chi = materialLibrary::get(mat, "electronAffinity", ctx);
 
