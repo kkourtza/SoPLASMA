@@ -70,6 +70,11 @@ electronDDWallFluxMixedFvPatchScalarField::calcAbsorptionVelocity
     tmp<scalarField> tVel = calcThermalVelocity(m, T);
     scalarField& uAbs = tVel.ref();
 
+    // The SAME factor as in calcEffectiveWallVelocity: the mixed condition's
+    // numerator and denominator must be scaled consistently or the implied
+    // flux is not the one intended.
+    uAbs *= thermalReflectionFactor();
+
     // If drift flux is enabled, add the directed motion component
     if (includeDriftFlux_)
     {
@@ -89,6 +94,10 @@ electronDDWallFluxMixedFvPatchScalarField::calcEffectiveWallVelocity
 {
     tmp<scalarField> tVel = calcThermalVelocity(m, T);
     scalarField& uWall = tVel.ref();
+
+    // REFLECTION acts on the thermal flux only -- see the member's comment for
+    // what is deliberately NOT scaled. Exactly 1 at r = 0.
+    uWall *= thermalReflectionFactor();
 
     // If drift flux is enabled, add the directed motion component
     if (includeDriftFlux_)
@@ -166,6 +175,7 @@ electronDDWallFluxMixedFvPatchScalarField
     defaultSEEC_(0.0),
     speciesSEEC_(dictionary::null),
     emissionDict_(dictionary::null),
+    electronReflection_(0.0),
     emission_(),
     emissionReported_(false),
     seec_(0),
@@ -218,6 +228,7 @@ electronDDWallFluxMixedFvPatchScalarField
     ),
     speciesSEEC_(dict.subOrEmptyDict("speciesSEEC")),
     emissionDict_(dict.subOrEmptyDict("emission")),
+    electronReflection_(dict.getOrDefault<scalar>("electronReflection", 0.0)),
     emission_(),
     emissionReported_(false),
     seec_(0), 
@@ -243,6 +254,7 @@ electronDDWallFluxMixedFvPatchScalarField
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     emissionDict_(ptf.emissionDict_),
+    electronReflection_(ptf.electronReflection_),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -265,6 +277,7 @@ electronDDWallFluxMixedFvPatchScalarField
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     emissionDict_(ptf.emissionDict_),
+    electronReflection_(ptf.electronReflection_),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -288,6 +301,7 @@ electronDDWallFluxMixedFvPatchScalarField
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
     emissionDict_(ptf.emissionDict_),
+    electronReflection_(ptf.electronReflection_),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -567,6 +581,8 @@ void electronDDWallFluxMixedFvPatchScalarField::write(Ostream& os) const
 {
     ddWallFluxMixedFvPatchScalarField::write(os);   
 
+    // ROUND-TRIP INVARIANT: write ALL of what read() accepts.
+    os.writeEntry("electronReflection", electronReflection_);
     // ROUND-TRIP INVARIANT: write ALL of what read() accepts.
     //
     // `emission` was missing here, so the solver's own rewrite of a field

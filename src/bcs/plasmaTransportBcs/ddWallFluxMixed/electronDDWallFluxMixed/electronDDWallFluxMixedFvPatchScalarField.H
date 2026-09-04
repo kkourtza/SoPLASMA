@@ -139,6 +139,45 @@ protected:
         //  not exist while boundary conditions are being built.
         dictionary emissionDict_;
 
+        //- ELECTRON REFLECTION COEFFICIENT r [-], default 0.
+        //
+        //  A wall does not absorb every electron that reaches it. With a
+        //  probability r of elastic/inelastic backscatter, the NET thermal
+        //  flux is reduced:
+        //
+        //      Gamma_net = (1 - r)/(1 + r) * (1/4) n v_th
+        //
+        //  which is the standard kinetic result (see e.g. Lieberman &
+        //  Lichtenberg, "Principles of Plasma Discharges", ch. 6): of the
+        //  incident flux only (1-r) is absorbed, while the near-wall density
+        //  supports both the incident and reflected populations, hence (1+r).
+        //
+        //  r = 0 gives a factor of EXACTLY 1, so the default reproduces every
+        //  previous result bit-for-bit. That is the regression this was
+        //  verified against.
+        //
+        //  SCOPE, STATED BECAUSE IT IS PARTIAL. The factor is applied to the
+        //  THERMAL flux only -- the term ¼ n v_th, in both the effective and
+        //  the absorption velocity, so the mixed condition stays consistent.
+        //  It is NOT applied to:
+        //
+        //    * the DRIFT term. Whether directed drift into a wall should carry
+        //      the same reflection factor is a modelling choice, not an
+        //      algebraic consequence, and treatments differ.
+        //    * the EMISSION terms (ion-induced SEE and the emission models).
+        //      Several formulations carry a 2/(1+r) amplification there, on the
+        //      grounds that emitted electrons are subject to the same
+        //      near-wall normalisation. That factor is NOT applied here
+        //      because it could not be verified against the primary source at
+        //      the time of writing, and applying an unverified factor to the
+        //      one term that decides SELF-SUSTAINMENT is the wrong risk to
+        //      take. AT r = 0 BOTH QUESTIONS ARE MOOT -- the factors are 1 and
+        //      2/(1+r) reduces to 2, which is a convention difference in the
+        //      existing SEE definition, not a reflection effect.
+        //
+        //  So r > 0 is a PARTIAL model today and the report says so.
+        scalar electronReflection_;
+
         //- The models, built on first updateCoeffs()
         mutable PtrList<emissionModel> emission_;
 
@@ -154,6 +193,13 @@ protected:
     // Protected Member Functions
 
         //- Calculate the electron-specific wall absorption velocity
+        //- (1 - r)/(1 + r), the net-flux reduction from reflection. Exactly
+        //  1 at r = 0.
+        scalar thermalReflectionFactor() const
+        {
+            return (1.0 - electronReflection_)/(1.0 + electronReflection_);
+        }
+
         virtual tmp<scalarField> calcAbsorptionVelocity
         (
             const dimensionedScalar& m,
