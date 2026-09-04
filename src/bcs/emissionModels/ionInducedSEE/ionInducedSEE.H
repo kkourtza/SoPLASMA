@@ -60,15 +60,41 @@ Description
         model does not represent it.
 
     yield table
-        gamma from a tabulated file against reduced field E/N. THE CAPABILITY
-        SHIPS WITH NO DATA, deliberately. Published gamma_eff(E/N) -- Phelps &
+        gamma as a function of the REDUCED FIELD E/N [Td], evaluated per face.
+        Any OpenFOAM Function1 form, so an inline table or a CSV file both work:
+
+            yield       table;
+            gammaTable  table ((0 0.001) (100 0.004) (500 0.02));
+
+            yield       table;
+            gammaTable  csvFile
+            {
+                nHeaderLine     1;
+                refColumn       0;
+                componentColumns (1);
+                separator       ",";
+                file            "constant/gammaEff_air_on_steel.csv";
+            }
+
+        THE CAPABILITY SHIPS WITH NO DATA, deliberately, and that is the whole
+        point of it being a capability. Published gamma_eff(E/N) -- Phelps &
         Petrovic, PSST 8 (1999) R21 being the standard -- is FITTED PER
         GAS/CATHODE PAIR and lumps ion impact, fast-neutral impact,
-        photoemission and electron backscatter into one effective coefficient.
-        An argon-on-copper fit is not an air-on-acrylic coefficient, and
-        shipping one as a default would be worse than a constant because it
-        would look authoritative. Supply your own table for your own pair, and
-        say where it came from.
+        photoemission and the backscatter of emitted electrons into ONE
+        effective coefficient. Its E/N dependence comes from the ion and
+        fast-neutral energy distributions at the cathode shifting with E/N, not
+        from anything intrinsic to the surface. An argon-on-copper fit is not an
+        air-on-acrylic coefficient, and shipping one as a default would be worse
+        than a constant because it would look authoritative.
+
+        So: supply the table for YOUR gas and YOUR cathode, and record where it
+        came from. The reported line names the file, so the provenance survives
+        into the log.
+
+        ONE gamma FOR ALL IONS in this route, deliberately: an effective
+        coefficient of this kind is not resolved per species -- that is what it
+        means for the channels to be lumped -- so pretending otherwise by
+        allowing per-ion tables would misrepresent the data.
 
 SourceFiles
     ionInducedSEE.C
@@ -80,6 +106,7 @@ SourceFiles
 
 #include "emissionModel.H"
 #include "HashTable.H"
+#include "Function1.H"
 
 namespace Foam
 {
@@ -102,6 +129,9 @@ class ionInducedSEE
 
     //- `yield constant`: per-species overrides
     const dictionary speciesGamma_;
+
+    //- `yield table`: gamma against reduced field E/N [Td]
+    autoPtr<Function1<scalar>> gammaTable_;
 
     //- `yield hagstrum`: metal | insulator
     const word surface_;

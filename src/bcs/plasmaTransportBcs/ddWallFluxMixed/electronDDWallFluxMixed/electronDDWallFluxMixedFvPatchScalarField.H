@@ -164,16 +164,36 @@ protected:
         //    * the DRIFT term. Whether directed drift into a wall should carry
         //      the same reflection factor is a modelling choice, not an
         //      algebraic consequence, and treatments differ.
-        //    * the EMISSION terms (ion-induced SEE and the emission models).
-        //      Several formulations carry a 2/(1+r) amplification there, on the
-        //      grounds that emitted electrons are subject to the same
-        //      near-wall normalisation. That factor is NOT applied here
-        //      because it could not be verified against the primary source at
-        //      the time of writing, and applying an unverified factor to the
-        //      one term that decides SELF-SUSTAINMENT is the wrong risk to
-        //      take. AT r = 0 BOTH QUESTIONS ARE MOOT -- the factors are 1 and
-        //      2/(1+r) reduces to 2, which is a convention difference in the
-        //      existing SEE definition, not a reflection effect.
+        //    * the EMISSION terms (ion-induced SEE and the emission models),
+        //      which in a consistent treatment carry 2/(1+r). NOT APPLIED, by
+        //      decision of 2026-09-04, and the derivation is recorded here so
+        //      the omission is understood rather than inherited.
+        //
+        //      DERIVATION. Take the near-wall distribution as two
+        //      half-Maxwellians at one temperature, amplitudes A_in (toward
+        //      the wall) and A_out (away):
+        //          Gamma_in = (1/4) A_in v_th,   n = (1/2)(A_in + A_out)
+        //      With reflection r and an emitted flux Gamma_emit =
+        //      (1/4) A_emit v_th,
+        //          A_out = r A_in + A_emit
+        //      so the net flux is (1/4) v_th [A_in (1-r) - A_emit]. Eliminating
+        //      A_in = (2n - A_emit)/(1+r) gives
+        //          Gamma = (1-r)/(1+r) (1/2) n v_th - 2/(1+r) Gamma_emit
+        //
+        //      BOTH FACTORS COME FROM THE SAME ELIMINATION, so they are a
+        //      MATCHED PAIR: the emitted population contributes to the
+        //      outgoing flux AND to the near-wall density, and that double
+        //      role is where the 2 comes from. Applying one without the other,
+        //      as here, is therefore INTERNALLY INCONSISTENT AT r > 0 -- named
+        //      plainly so nobody has to rediscover it.
+        //
+        //      Note also that the derivation yields (1/2) n v_th, whereas this
+        //      family uses (1/4) n v_th -- the full-Maxwellian convention,
+        //      which ignores the depletion of the outgoing half. So even the
+        //      thermal factor is a hybrid of two conventions.
+        //
+        //      AT r = 0 ALL OF THIS IS MOOT: both factors reduce to their
+        //      identity values and the condition is exactly what it was.
         //
         //  So r > 0 is a PARTIAL model today and the report says so.
         scalar electronReflection_;

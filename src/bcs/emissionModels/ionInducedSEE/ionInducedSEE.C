@@ -38,6 +38,7 @@ Foam::emissionModels::ionInducedSEE::ionInducedSEE
     gamma_(dict.getOrDefault<scalar>("gamma", 0.001)),
     speciesGamma_(dict.subOrEmptyDict("speciesGamma")),
     surface_(dict.getOrDefault<word>("surface", "metal")),
+    gammaTable_(nullptr),
     resolved_(),
     resolvedOnce_(false)
 {
@@ -63,21 +64,28 @@ Foam::emissionModels::ionInducedSEE::ionInducedSEE
 
     if (yield_ == "table")
     {
-        FatalIOErrorInFunction(dict)
-            << "`yield table` is not implemented yet." << nl << nl
-            << "    The CAPABILITY is intended; NO DATA ships with it, and that"
-               " is deliberate." << nl
-            << "    Published gamma_eff(E/N) -- Phelps & Petrovic, PSST 8"
-               " (1999) R21 -- is fitted PER" << nl
-            << "    GAS/CATHODE PAIR and lumps ion impact, fast neutrals,"
-               " photoemission and electron" << nl
-            << "    backscatter into one effective number. An argon-on-copper"
-               " fit is not an" << nl
-            << "    air-on-acrylic coefficient." << nl << nl
-            << "    Use `yield constant` with a value you can defend, or"
-               " `yield hagstrum` for the" << nl
-            << "    physics-rigid potential-emission estimate." << nl
-            << exit(FatalIOError);
+        if (!dict.found("gammaTable"))
+        {
+            FatalIOErrorInFunction(dict)
+                << "`yield table` needs a `gammaTable`, and NO DEFAULT WILL"
+                   " EVER BE SHIPPED for it." << nl << nl
+                << "    gamma_eff(E/N) is FITTED PER GAS/CATHODE PAIR -- Phelps"
+                   " & Petrovic, PSST 8" << nl
+                << "    (1999) R21 -- and lumps ion impact, fast neutrals,"
+                   " photoemission and electron" << nl
+                << "    backscatter into one effective number. An"
+                   " argon-on-copper fit is not an" << nl
+                << "    air-on-acrylic coefficient, so shipping one as a"
+                   " default would be worse than a" << nl
+                << "    constant: it would look authoritative." << nl << nl
+                << "    Supply the table for YOUR pair, as any Function1:" << nl
+                << "        gammaTable  table ((0 0.001) (100 0.004));" << nl
+                << "    or a csvFile, and say in the case where it came from."
+                << nl
+                << exit(FatalIOError);
+        }
+
+        gammaTable_ = Function1<scalar>::New("gammaTable", dict);
     }
 
     if (gamma_ < 0)
@@ -186,6 +194,8 @@ void Foam::emissionModels::ionInducedSEE::resolve() const
     const plasmaSpecies& sp =
         db.lookupObject<plasmaTransport>("plasmaTransport").species();
 
+    if (yield_ == "table") return;      // gamma is per FACE, not per species
+
     for (const label i : sp.positiveIonSpeciesIDs())
     {
         const word& name = sp.speciesName(i);
@@ -216,6 +226,36 @@ Foam::emissionModels::ionInducedSEE::emittedFlux() const
 
     const scalarField& magSf = patch_.magSf();
 
+    // `yield table`: gamma varies OVER THE PATCH, because E/N does. Looked up
+    // per face rather than resolved once, which is the whole reason this route
+    // exists.
+    tmp<scalarField> tGammaEN;
+
+    if (yield_ == "table")
+    {
+        if (!mesh.foundObject<volScalarField>("reducedE"))
+        {
+            FatalErrorInFunction
+                << "`yield table` needs the reduced field `reducedE`, which"
+                << " does not exist." << nl
+                << "    It is formed by the electromagnetics model from |E| and"
+                   " the gas density." << nl
+                << exit(FatalError);
+        }
+
+        const scalarField& EN =
+            mesh.lookupObject<volScalarField>("reducedE")
+                .boundaryField()[patch_.index()];
+
+        tGammaEN = tmp<scalarField>::New(patch_.size(), Zero);
+        scalarField& g = tGammaEN.ref();
+
+        forAll(g, i)
+        {
+            g[i] = max(scalar(0), gammaTable_->value(EN[i]));
+        }
+    }
+
     // EXACTLY the sum the wall-flux condition has always formed:
     //   SUM over POSITIVE ions of gamma_i * max(0, Gamma_i / |Sf|)
     // Only positive ions, and only INWARD flux -- an ion leaving the surface
@@ -229,9 +269,19 @@ Foam::emissionModels::ionInducedSEE::emittedFlux() const
         const fvsPatchScalarField& phiI =
             patch_.lookupPatchField<surfaceScalarField, scalar>(fluxName);
 
-        const scalar g = resolved_.lookup(sp.speciesName(i), 0.0);
+        if (yield_ == "table")
+        {
+            // ONE gamma for every ion: an effective coefficient of this kind
+            // is not resolved per species, and pretending otherwise would
+            // misrepresent the data it came from.
+            flux += tGammaEN()*max(scalar(0), phiI/magSf);
+        }
+        else
+        {
+            const scalar g = resolved_.lookup(sp.speciesName(i), 0.0);
 
-        flux += g*max(scalar(0), phiI/magSf);
+            flux += g*max(scalar(0), phiI/magSf);
+        }
     }
 
     return tflux;
@@ -251,6 +301,19 @@ void Foam::emissionModels::ionInducedSEE::report(Ostream& os) const
         }
         os << nl;
     }
+    else if (yield_ == "table")
+    {
+        // NAME THE SOURCE IN THE LOG. A tabulated gamma_eff is only meaningful
+        // for the gas/cathode pair it was fitted to, so its provenance has to
+        // survive into the output.
+        os  << ", gamma = f(E/N) from `" << gammaTable_->name() << "` ("
+            << gammaTable_->type() << ")" << nl
+            << "            An EFFECTIVE coefficient: valid only for the"
+               " gas/cathode pair it was" << nl
+            << "            fitted to, and lumping ion impact, fast neutrals,"
+               " photoemission and" << nl
+            << "            backscatter into one number." << nl;
+    }
     else
     {
         os  << ", surface = " << surface_ << nl;
@@ -258,12 +321,51 @@ void Foam::emissionModels::ionInducedSEE::report(Ostream& os) const
 
     resolve();
 
-    if (resolved_.empty())
+    // WHETHER ANY ION CAN REACH THIS WALL, asked DIRECTLY rather than inferred
+    // from resolved_ being empty. That inference was wrong for `yield table`,
+    // which resolves gamma per FACE and so leaves resolved_ empty by design --
+    // and the report then claimed no ion had a wall flux on a patch where four
+    // do. A diagnostic that misleads is worse than none.
+    label nWithFlux = 0;
+    {
+        const fvMesh& mesh = patch_.boundaryMesh().mesh();
+
+        if (mesh.thisDb().foundObject<plasmaTransport>("plasmaTransport"))
+        {
+            const plasmaSpecies& sp =
+                mesh.thisDb().lookupObject<plasmaTransport>("plasmaTransport")
+                    .species();
+
+            for (const label i : sp.positiveIonSpeciesIDs())
+            {
+                if
+                (
+                    mesh.foundObject<surfaceScalarField>
+                    (
+                        "particleFlux_" + sp.speciesName(i)
+                    )
+                )
+                {
+                    ++nWithFlux;
+                }
+            }
+        }
+    }
+
+    if (nWithFlux == 0)
     {
         os  << "            NO POSITIVE ION HAS A WALL FLUX on this patch, so"
                " this mechanism emits" << nl
             << "            NOTHING. Ions must be `transportModel"
                " driftDiffusion` to reach a wall." << nl;
+        return;
+    }
+
+    if (yield_ == "table")
+    {
+        os  << "            " << nWithFlux << " positive ion(s) reach this"
+               " wall; gamma is evaluated PER FACE from E/N," << nl
+            << "            so there is no per-species value to report." << nl;
         return;
     }
 
