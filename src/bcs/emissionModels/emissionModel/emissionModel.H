@@ -14,8 +14,31 @@ Description
         ionInducedSEE        an arriving ion, neutralised at the surface
         electronInducedSEE   an arriving electron, above the yield threshold
         fieldEmission        the local field, tunnelling through the barrier
-        thermionic           the wall temperature, over the barrier
-        photoEmission        an arriving photon
+        thermionicEmission   the wall temperature, over the barrier
+        photoEmission        an arriving photon    -- NOT IMPLEMENTED, see below
+
+    photoEmission IS NOT IMPLEMENTED, and the reason is specific rather than a
+    shortage of time. It needs a PHOTON FLUX AT THE WALL, and nothing in the
+    solver computes one: the photoionization models produce `Sph`, a VOLUMETRIC
+    ionisation source [1/(m3 s)], which is a different object.
+
+    What it would take, so that this is actionable rather than a wish:
+
+      1. The per-group photon fields DO exist -- `PsiStar_j_` in
+         threeGroupEddington, `phi1_j_`/`phi2_j_` in threeGroupSP3 -- but they
+         are PRIVATE with no accessors. Exposing them is step one.
+      2. The wall flux must then be formed with THE SAME half-range relation
+         the model's own boundary condition used. Those models already default
+         to `boundaryConditionType marshak`, which IS the partial-current
+         condition, so the relation is available -- but it DIFFERS between the
+         Eddington (P1) and SP3 closures, and using the wrong one is a silent
+         factor-of-order-one error.
+      3. Only then does a quantum yield Y per incident photon mean anything.
+
+    Approximating the wall flux from `Sph` instead -- which is the obvious
+    shortcut -- would be inventing a radiative transfer solution the models
+    already solve properly, and would be wrong in exactly the regime where
+    photoemission matters.
 
     So they are ONE runtime-selectable family summed into the electron wall
     flux, not a growing set of flags on a boundary condition. A mechanism

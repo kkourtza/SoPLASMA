@@ -37,6 +37,7 @@ Description
 #include "fvMesh.H"
 #include "volFields.H"
 #include "emissionModel.H"
+#include "electronInducedSEE.H"
 
 using namespace Foam;
 
@@ -64,6 +65,23 @@ static scalar fnCurrent
     }
 
     return (a/phi)*sqr(F)*Foam::exp(-v*b*Foam::pow(phi, 1.5)/F);
+}
+
+
+static scalar vaughan
+(
+    const scalar E,
+    const scalar dmax,
+    const scalar Emax,
+    const scalar E0
+)
+{
+    if (E <= E0) return 0.0;
+    const scalar v = (E - E0)/(Emax - E0);
+    if (v <= 0) return 0.0;
+    if (v > 3.6) return dmax*1.125*Foam::pow(v, -0.35);
+    const scalar k = (v < 1.0) ? 0.56 : 0.25;
+    return dmax*Foam::pow(v*Foam::exp(1.0 - v), k);
 }
 
 
@@ -347,6 +365,74 @@ int main(int argc, char *argv[])
         d.add("material", word("copper"));
         d.add("barrier", word("elementary"));
         check("fieldEmission", d, fnCurrent(4.65, Etest, false)/e);
+    }
+
+    // ----------------------------------------------------------------------
+    Info<< nl << "=== VAUGHAN yield delta(E), delta_max = 1.3 at 600 eV" << nl
+        << nl << "        E[eV]       delta   note" << nl;
+
+    for (const scalar E : {5.0, 12.5, 50.0, 300.0, 600.0, 1200.0, 3000.0})
+    {
+        const scalar d = vaughan(E, 1.3, 600.0, 12.5);
+
+        Info<< "    " << setw(9) << E << setw(12) << d << "   "
+            << (
+                   E <= 12.5      ? "below threshold: NOTHING emitted"
+                 : mag(E - 600.0) < 1 ? "at the peak"
+                 : (d > 1.0      ? "delta > 1: emits more than it collects"
+                                 : "")
+               ) << nl;
+    }
+
+    Info<< nl << "    physical invariants:" << nl;
+    {
+        const bool a = vaughan(5.0, 1.3, 600.0, 12.5) == 0.0;
+        Info<< "      zero below the threshold        " << (a ? "PASS" : "FAIL")
+            << "   <- the branch an ATMOSPHERIC discharge lives in" << nl;
+        if (!a) ++nFail;
+
+        const scalar peak = vaughan(600.0, 1.3, 600.0, 12.5);
+        const bool b = mag(peak - 1.3) < 1e-12;
+        Info<< "      peak equals delta_max exactly   " << (b ? "PASS" : "FAIL")
+            << "   delta(Emax) = " << peak << nl;
+        if (!b) ++nFail;
+
+        const bool c = vaughan(3000.0, 1.3, 600.0, 12.5)
+                     < vaughan(600.0, 1.3, 600.0, 12.5);
+        Info<< "      falls beyond the peak           " << (c ? "PASS" : "FAIL")
+            << nl;
+        if (!c) ++nFail;
+
+        // The two crossings of delta = 1 are what decide the SIGN of the charge
+        // an insulator accumulates, so their existence is the physically
+        // meaningful feature of the curve.
+        scalar lo = 0, hi = 0;
+        for (scalar E = 12.6; E < 5000.0; E *= 1.002)
+        {
+            const scalar d = vaughan(E, 1.3, 600.0, 12.5);
+            if (!lo && d >= 1.0) lo = E;
+            if (lo && d < 1.0 && E > 600.0) { hi = E; break; }
+        }
+        const bool dd = (lo > 12.5) && (hi > 600.0);
+        Info<< "      two crossings of delta = 1      " << (dd ? "PASS" : "FAIL")
+            << "   at " << lo << " and " << hi << " eV" << nl;
+        if (!dd) ++nFail;
+    }
+
+    // THE CLASS, against the same closed form.
+    {
+        using namespace emissionModels;
+
+        bool ok = true;
+        for (const scalar E : {5.0, 50.0, 600.0, 3000.0})
+        {
+            const scalar want = vaughan(E, 1.3, 600.0, 12.5);
+            const scalar got = electronInducedSEE::vaughanYield(E, 1.3, 600.0, 12.5);
+            if (mag(got - want) > 1e-14) ok = false;
+        }
+        Info<< "      the CLASS matches the curve     " << (ok ? "PASS" : "FAIL")
+            << nl;
+        if (!ok) ++nFail;
     }
 
     Info<< nl << (nFail ? "FAILED" : "PASSED") << nl << endl;

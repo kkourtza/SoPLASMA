@@ -1,4 +1,5 @@
 emissionModels/emissionModel/emissionModel.C
+emissionModels/electronInducedSEE/electronInducedSEE.C
 emissionModels/ionInducedSEE/ionInducedSEE.C
 emissionModels/fieldEmission/fieldEmission.C
 emissionModels/thermionicEmission/thermionicEmission.C
