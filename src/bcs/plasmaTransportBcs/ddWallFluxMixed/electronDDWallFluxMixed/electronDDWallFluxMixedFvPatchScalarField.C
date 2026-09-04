@@ -176,6 +176,7 @@ electronDDWallFluxMixedFvPatchScalarField
     speciesSEEC_(dictionary::null),
     emissionDict_(dictionary::null),
     electronReflection_(0.0),
+    material_(word::null),
     emission_(),
     emissionReported_(false),
     seec_(0),
@@ -229,6 +230,7 @@ electronDDWallFluxMixedFvPatchScalarField
     speciesSEEC_(dict.subOrEmptyDict("speciesSEEC")),
     emissionDict_(dict.subOrEmptyDict("emission")),
     electronReflection_(dict.getOrDefault<scalar>("electronReflection", 0.0)),
+    material_(dict.getOrDefault<word>("material", word::null)),
     emission_(),
     emissionReported_(false),
     seec_(0), 
@@ -255,6 +257,7 @@ electronDDWallFluxMixedFvPatchScalarField
     speciesSEEC_(ptf.speciesSEEC_),
     emissionDict_(ptf.emissionDict_),
     electronReflection_(ptf.electronReflection_),
+    material_(ptf.material_),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -278,6 +281,7 @@ electronDDWallFluxMixedFvPatchScalarField
     speciesSEEC_(ptf.speciesSEEC_),
     emissionDict_(ptf.emissionDict_),
     electronReflection_(ptf.electronReflection_),
+    material_(ptf.material_),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -302,6 +306,7 @@ electronDDWallFluxMixedFvPatchScalarField
     speciesSEEC_(ptf.speciesSEEC_),
     emissionDict_(ptf.emissionDict_),
     electronReflection_(ptf.electronReflection_),
+    material_(ptf.material_),
     emission_(),
     emissionReported_(false),
     seec_(ptf.seec_),
@@ -372,13 +377,22 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
             label k = 0;
             for (const word& type : emissionDict_.toc())
             {
+                // THE PATCH'S MATERIAL IS INHERITED. A model is handed only
+                // its own sub-dictionary, so a `material` declared beside
+                // `emission` has to be merged in or the model cannot see it --
+                // and then fails asking for a work function the case did
+                // supply. A model naming its own `material` keeps it.
+                dictionary md(emissionDict_.subDict(type));
+
+                if (!material_.empty() && !md.found("material"))
+                {
+                    md.add("material", material_);
+                }
+
                 emission_.set
                 (
                     k++,
-                    emissionModel::New
-                    (
-                        type, this->patch(), emissionDict_.subDict(type)
-                    )
+                    emissionModel::New(type, this->patch(), md)
                 );
             }
         }
@@ -583,6 +597,11 @@ void electronDDWallFluxMixedFvPatchScalarField::write(Ostream& os) const
 
     // ROUND-TRIP INVARIANT: write ALL of what read() accepts.
     os.writeEntry("electronReflection", electronReflection_);
+
+    if (!material_.empty())
+    {
+        os.writeEntry("material", material_);
+    }
     // ROUND-TRIP INVARIANT: write ALL of what read() accepts.
     //
     // `emission` was missing here, so the solver's own rewrite of a field

@@ -178,6 +178,20 @@ protected:
         //  So r > 0 is a PARTIAL model today and the report says so.
         scalar electronReflection_;
 
+        //- THE SURFACE'S MATERIAL, declared once on the patch.
+        //
+        //  Inherited by every emission mechanism on this patch, so a surface
+        //  says what it is MADE OF once and each mechanism resolves whatever
+        //  it needs -- work function, secondary yield, band structure -- from
+        //  the shipped libraries. A mechanism that names its own `material`
+        //  overrides it.
+        //
+        //  This indirection is necessary rather than tidy: an emission model
+        //  is handed only its OWN sub-dictionary, so without merging the
+        //  material in it cannot see a `material` declared beside `emission`
+        //  and fails asking for a work function the case did supply.
+        word material_;
+
         //- The models, built on first updateCoeffs()
         mutable PtrList<emissionModel> emission_;
 

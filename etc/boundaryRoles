@@ -53,6 +53,25 @@ FoamFile
 // electrostatics condition reads it. A dielectric surface charges because
 // something reads the charge; a metal does not, because nothing does.
 //
+//
+// EMISSION MECHANISMS PER KIND
+//
+// A kind may declare an `emission { ... }` block, which is copied verbatim into
+// the ELECTRON wall-flux condition of every patch of that kind. The models are
+// documented in src/bcs/emissionModels/emissionModel.H.
+//
+// EVERY KIND SHIPS WITH NO EMISSION, DELIBERATELY. Emission decides whether a
+// discharge is SELF-SUSTAINING rather than a single avalanche, so switching a
+// mechanism on by default would change the physics of every existing case
+// silently, in the one place where "plausible but wrong" is hardest to notice.
+// Each kind below says which mechanisms are PHYSICALLY appropriate for it, so
+// enabling one is a one-line, informed decision rather than a search.
+//
+// `material` is accepted on the conductor kinds for this reason: it is what
+// lets an emission model resolve a work function, a secondary yield or a band
+// structure from the shipped libraries instead of being handed a number. A
+// patch can now say what it is MADE OF, which is what non-uniform gamma needs.
+//
 // INTERFACES BETWEEN MESHED REGIONS ARE NOT DECLARED HERE OR IN A CASE.
 // `<gas>_to_<dielectric>` and its partner are created by splitMeshRegions and
 // are DERIVED: the topology already says what they are, and asking the user to
@@ -74,6 +93,12 @@ FoamFile
 drivenElectrode
 {
     description "A conductor held at a known, usually time-varying potential.";
+    optional    { material none; }
+    // APPROPRIATE MECHANISMS: ionInducedSEE (the classical cathode process),
+    // fieldEmission at a sharp tip, thermionicEmission if the electrode is hot,
+    // electronInducedSEE where the sheath is energetic. None is active unless
+    // asked for. Example, with the material supplying phi:
+    //     emission { fieldEmission { fieldEnhancement 50; } }
     requires    ( waveform );
 
     electrostatics
@@ -89,6 +114,9 @@ drivenElectrode
 groundedElectrode
 {
     description "A conductor held at zero potential.";
+    optional    { material none; }
+    // APPROPRIATE MECHANISMS: as drivenElectrode. A grounded electrode is
+    // still a metal surface and still emits.
 
     electrostatics
     {
@@ -102,6 +130,11 @@ groundedElectrode
 floatingElectrode
 {
     description "A conductor connected to nothing: charge known, potential solved.";
+    // APPROPRIATE MECHANISMS: as any electrode. Note that emission from a
+    // FLOATING conductor feeds back on itself -- emitted electrons leave, so
+    // the conductor charges POSITIVE, which raises its potential and changes
+    // the flux arriving. That coupling is physical and is handled, but it is
+    // worth expecting.
     optional    { initialCharge 0; }
 
     // No potential entry, deliberately: supplying one would make this a driven
@@ -127,6 +160,11 @@ floatingElectrode
 thinDielectricSurface
 {
     description "A free-standing insulating sheet: open gas or vacuum behind it.";
+    // APPROPRIATE MECHANISMS: ionInducedSEE with `surface insulator`, which
+    // uses the band gap and electron affinity rather than a work function;
+    // electronInducedSEE, whose delta can exceed 1 and is what makes an
+    // insulator charge POSITIVE. delta_max is NOT shipped for insulators -- see
+    // etc/materials/workFunctions for why -- so it must be given explicitly.
     requires    ( material );
 
     // C = 0, so pure Neumann: eps_g dV/dn = sigma. NO thickness and NO
@@ -186,6 +224,9 @@ openBoundary
 insulatingWall
 {
     description "A solid wall that is not an electrode and does not charge.";
+    optional    { material none; }
+    // APPROPRIATE MECHANISMS: as thinDielectricSurface, though a wall that
+    // does not accumulate charge is usually not the place emission matters.
 
     // Absorbs particles but accumulates nothing, because the potential
     // condition here reads no charge. If the wall SHOULD trap charge, it is a

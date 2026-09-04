@@ -70,6 +70,7 @@ Author
 #include "processorPolyPatch.H"
 #include "wallPolyPatch.H"
 #include "OFstream.H"
+#include <sstream>
 #include "IFstream.H"
 
 using namespace Foam;
@@ -251,7 +252,9 @@ static void writePatchEntry
     const label patchi,
     const patchRole role,
     const word& kind,          //!< "electron" | "ion" | "energy" | "neutral"
-    const word& fluxFamily     //!< "Mixed" | "Implicit"
+    const word& fluxFamily,    //!< "Mixed" | "Implicit"
+    const word& material,      //!< the surface's material, or word::null
+    const dictionary& emission //!< emission mechanisms, possibly empty
 )
 {
     const polyPatch& pp = mesh.boundaryMesh()[patchi];
@@ -316,6 +319,42 @@ static void writePatchEntry
             os  << "        enableSurfaceCharging "
                 << (role == prSurfaceCharging ? "true" : "false") << ";" << nl;
         }
+
+        // THE PATCH'S MATERIAL, passed through so an emission model can
+        // resolve a work function, a secondary yield or a band structure from
+        // the shipped libraries instead of being handed a number. This is the
+        // route that lets a patch say what it is MADE OF.
+        //
+        // Written on the ELECTRON condition only: emission is electron
+        // emission, and an ion or energy condition has nothing to do with it.
+        if (kind == "electron" && !material.empty())
+        {
+            os  << "        material        " << material << ";" << nl;
+        }
+
+        // EMISSION MECHANISMS, verbatim from the boundary role (or a per-patch
+        // override). Empty for every shipped kind -- see the note in
+        // etc/boundaryRoles for why switching one on by default would be the
+        // wrong default.
+        if (kind == "electron" && !emission.empty())
+        {
+            os  << "        emission" << nl << "        {" << nl;
+
+            OStringStream eos;
+            emission.write(eos, false);
+
+            // Re-indent the block so the generated file stays readable.
+            const string body(eos.str());
+            std::string line;
+            std::istringstream is(body);
+            while (std::getline(is, line))
+            {
+                if (line.find_first_not_of(" \t") == std::string::npos) continue;
+                os << "        " << line.c_str() << nl;
+            }
+
+            os  << "        }" << nl;
+        }
     }
 
     os << "    }" << nl << nl;
@@ -336,7 +375,8 @@ static void writeDerivedField
     const scalar internalValue,
     const word& kind,
     const word& fluxFamily,
-    const HashTable<patchRole>& roles
+    const HashTable<patchRole>& roles,
+    const dictionary& decl
 )
 {
     IOobject io
@@ -362,11 +402,38 @@ static void writeDerivedField
     {
         const word& name = mesh.boundaryMesh()[patchi].name();
 
+        // The patch's material and emission block, from its DECLARATION and
+        // its KIND's role. A per-patch `emission` in configuration/boundaries
+        // overrides the kind's, so a single experiment does not require
+        // editing the shipped library.
+        word material(word::null);
+        dictionary emission;
+
+        if (decl.found(name))
+        {
+            const dictionary& pd = decl.subDict(name);
+
+            material = pd.getOrDefault<word>("material", word::null);
+
+            if (pd.found("kind"))
+            {
+                const dictionary& role = boundaryRoleLibrary::lookup
+                (
+                    pd.get<word>("kind"),
+                    "configuration/boundaries, patch `" + name + "`"
+                );
+
+                if (role.found("emission")) emission = role.subDict("emission");
+            }
+
+            if (pd.found("emission")) emission = pd.subDict("emission");
+        }
+
         writePatchEntry
         (
             os, mesh, patchi,
             roles.found(name) ? roles[name] : prOpen,
-            kind, fluxFamily
+            kind, fluxFamily, material, emission
         );
     }
 
@@ -589,6 +656,8 @@ int main(int argc, char* argv[])
     HashTable<patchRole> roles;
     classifyPatches(mesh, runTime, roles);
 
+    const dictionary decl(boundaryRoleLibrary::caseDeclaration(runTime));
+
     // The wall-flux family. `Mixed` imposes the flux through the mixed
     // condition's valueFraction; `Implicit` writes it into the matrix. Mixed is
     // the default because it is the one the validated multi-region cases use.
@@ -669,7 +738,7 @@ int main(int argc, char* argv[])
         writeDerivedField
         (
             mesh, runTime, fieldName, dimDensity, 0.0,
-            kind, fluxFamily, roles
+            kind, fluxFamily, roles, decl
         );
     }
 
@@ -701,7 +770,7 @@ int main(int argc, char* argv[])
             writeDerivedField
             (
                 mesh, runTime, "nEps_e", dimEnergyDensity, 0.0,
-                "energy", fluxFamily, roles
+                "energy", fluxFamily, roles, decl
             );
         }
     }
