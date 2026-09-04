@@ -57,18 +57,18 @@ class materialLibrary
     // Private Member Functions
 
         //- The library dictionary, loaded once on first use
-        static const dictionary& library();
+        static const dictionary& library(const word& lib);
 
 
 public:
 
     // Static Member Functions
 
-        //- Whether the library could be found at all
-        static bool available();
+        //- Whether the named library could be found at all
+        static bool available(const word& lib = "dielectrics");
 
-        //- The materials the library defines
-        static wordList names();
+        //- The entries the named library defines
+        static wordList names(const word& lib = "dielectrics");
 
         //- The entry for `name`. FATAL if absent, listing what is available.
         //  `context` names who asked, so the error points at the case file
@@ -76,7 +76,8 @@ public:
         static const dictionary& lookup
         (
             const word& name,
-            const string& context
+            const string& context,
+            const word& lib = "dielectrics"
         );
 
         //- One property of a material [dimensionless]. FATAL if the material
@@ -87,11 +88,12 @@ public:
         (
             const word& name,
             const word& property,
-            const string& context
+            const string& context,
+            const word& lib = "dielectrics"
         );
 
-        //- The library's own file path, for provenance reporting
-        static fileName path();
+        //- The named library's file path, for provenance reporting
+        static fileName path(const word& lib = "dielectrics");
 };
 
 

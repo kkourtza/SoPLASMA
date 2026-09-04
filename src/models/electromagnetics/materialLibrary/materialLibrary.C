@@ -4,6 +4,7 @@
 \*---------------------------------------------------------------------------*/
 
 #include "materialLibrary.H"
+#include "HashTable.H"
 #include "IFstream.H"
 #include "OSspecific.H"
 #include "error.H"
@@ -14,21 +15,19 @@ namespace Foam
 {
 namespace
 {
-    //- Resolved once: the library is read-only and the same for every region.
-    bool libLoaded_ = false;
-    dictionary lib_;
-    fileName libPath_;
+    //- Resolved once PER LIBRARY: they are read-only and the same everywhere.
+    HashTable<dictionary> libs_;
+    HashTable<fileName> libPaths_;
 }
 }
 
 
 // * * * * * * * * * * * * * * * Private Members * * * * * * * * * * * * * * //
 
-const Foam::dictionary& Foam::materialLibrary::library()
+const Foam::dictionary& Foam::materialLibrary::library(const word& lib)
 {
-    if (libLoaded_) return lib_;
-
-    libLoaded_ = true;
+    auto iter = libs_.find(lib);
+    if (iter.good()) return iter.val();
 
     // ANCHORED ON $SoPLASMA_ETC, which etc/bashrc exports, rather than searched
     // for. A search path would make WHICH library was used depend on the
@@ -36,58 +35,69 @@ const Foam::dictionary& Foam::materialLibrary::library()
     // asking for `alumina96` get the same number.
     const fileName etc(Foam::getEnv("SoPLASMA_ETC"));
 
-    if (etc.empty()) return lib_;      // reported by available()/lookup()
+    // Cache an empty dictionary on failure too, so a missing library is
+    // reported once by lookup() rather than re-read on every call.
+    libs_.insert(lib, dictionary());
+    libPaths_.insert(lib, fileName::null);
 
-    libPath_ = etc/"materials"/"dielectrics";
+    if (etc.empty()) return libs_[lib];   // reported by available()/lookup()
 
-    IFstream is(libPath_);
+    const fileName p(etc/"materials"/lib);
 
-    if (!is.good()) return lib_;
+    libPaths_.set(lib, p);
 
-    lib_ = dictionary(is);
+    IFstream is(p);
 
-    // The FoamFile header is not a material.
-    lib_.remove("FoamFile");
+    if (!is.good()) return libs_[lib];
 
-    return lib_;
+    dictionary d(is);
+
+    // The FoamFile header is not an entry.
+    d.remove("FoamFile");
+
+    libs_.set(lib, d);
+
+    return libs_[lib];
 }
 
 
 // * * * * * * * * * * * * * * * Static Members  * * * * * * * * * * * * * * //
 
-bool Foam::materialLibrary::available()
+bool Foam::materialLibrary::available(const word& lib)
 {
-    return !library().empty();
+    return !library(lib).empty();
 }
 
 
-Foam::fileName Foam::materialLibrary::path()
+Foam::fileName Foam::materialLibrary::path(const word& lib)
 {
-    library();
-    return libPath_;
+    library(lib);
+    return libPaths_[lib];
 }
 
 
-Foam::wordList Foam::materialLibrary::names()
+Foam::wordList Foam::materialLibrary::names(const word& lib)
 {
-    return library().toc();
+    return library(lib).toc();
 }
 
 
 const Foam::dictionary& Foam::materialLibrary::lookup
 (
     const word& name,
-    const string& context
+    const string& context,
+    const word& libName
 )
 {
-    const dictionary& lib = library();
+    const dictionary& lib = library(libName);
+    const fileName& libPath_ = libPaths_[libName];
 
     if (lib.empty())
     {
         FatalErrorInFunction
             << "A material (`" << name << "`) was named by " << context
             << ", but the material library could not be read." << nl << nl
-            << "    Expected at  $SoPLASMA_ETC/materials/dielectrics" << nl
+            << "    Expected at  $SoPLASMA_ETC/materials/" << libName << nl
             << "    SoPLASMA_ETC = "
             << (Foam::getEnv("SoPLASMA_ETC").empty()
                     ? "(NOT SET -- source the project's etc/bashrc)"
@@ -122,10 +132,12 @@ Foam::scalar Foam::materialLibrary::get
 (
     const word& name,
     const word& property,
-    const string& context
+    const string& context,
+    const word& libName
 )
 {
-    const dictionary& m = lookup(name, context);
+    const dictionary& m = lookup(name, context, libName);
+    const fileName& libPath_ = libPaths_[libName];
 
     if (!m.found(property))
     {
