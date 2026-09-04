@@ -1,6 +1,7 @@
 electromagneticsModel.C
 electrostaticModels/singleRegionPoisson/singleRegionPoisson.C
 electrostaticModels/multiRegionPoisson/multiRegionPoisson.C
+materialLibrary/materialLibrary.C
 unitPotentialField/unitPotentialField.C
 floatingElectrode/floatingElectrode.C
 

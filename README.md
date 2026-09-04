@@ -504,6 +504,45 @@ measured tests:
 [`docs/models/poisson_equation/floating-electrode.md`](docs/models/poisson_equation/floating-electrode.md).
 
 
+## Materials come from a cited library, not from a case
+
+A dielectric region names what it is *made of*, in one line:
+
+```
+// constant/<region>/electricalProperties
+material    borosilicateGlass;
+```
+
+and both `epsilonR` and `gammaSEE` follow from
+[`etc/materials/dielectrics`](etc/materials/dielectrics), each with a
+literature reference. Twelve materials ship today: `vacuum`, `air`, `ptfe`,
+`pmma`, `polyimide`, `fusedSilica`, `borosilicateGlass`, `sodaLimeGlass`,
+`mica`, `alumina96`, `alumina99`, `magnesia`.
+
+**Precedence** — an explicit number always wins, and is reported as an
+override; otherwise the material supplies it; otherwise the region kind's
+default applies. Naming a material that is not in the library is **fatal** and
+lists what is, rather than falling back to a default nobody chose.
+
+`γ` is flagged in the library as **the least transferable number in it**: it
+depends on the ion, its energy and above all the surface condition, and the
+spread across surface states exceeds any difference between the materials. So
+every dielectric carries `0.001`, the contaminated-barrier figure — the same
+value and the same reasoning as the wall-flux `defaultSEEC`, so that `γ` cannot
+depend on whether a case happened to name a material. `magnesia` is the one
+genuine exception and says why. If `γ` matters to your result, it is a number
+to measure or fit, not to take from a library.
+
+Verified against analytic ground truth: with `material alumina96` the plate2D
+series stack gives `V_interface = 0.1`, exactly `1/(1+εᵣ)` for `εᵣ = 9`, where
+the case's own hand-typed 5.0 gives `1/6`.
+
+Conductors are **deliberately absent**: there is no way yet for a case to say
+what a metal *patch* is made of, so shipping copper/steel entries would be a
+library nothing can reach. Until the patch-material route exists, an electrode's
+`γ` is set with `defaultSEEC` on its wall-flux condition.
+
+
 ## Species boundary conditions are derived, not written per case
 
 You declare what a boundary *is* — through the potential's boundary conditions

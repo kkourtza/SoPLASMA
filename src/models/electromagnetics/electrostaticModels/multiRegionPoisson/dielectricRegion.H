@@ -43,6 +43,7 @@ Description
 #include "fvCFD.H"
 
 #include "plasmaConstants.H"
+#include "materialLibrary.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -223,9 +224,31 @@ public:
 
                 if (props.found("gammaSEE"))
                 {
+                    // An explicit value WINS: it is an override.
                     epsilonDict->add
                     (
                         "gammaSEE", props.get<scalar>("gammaSEE")
+                    );
+                }
+                else if (props.found("material"))
+                {
+                    // NAMED MATERIAL (G2). Gamma travels with the material,
+                    // and the material is stated ONCE -- the same entry that
+                    // supplied epsilonR. Resolved through the SAME library as
+                    // epsilonR, so the two cannot come from different places.
+                    const word mat(props.get<word>("material"));
+
+                    epsilonDict->add
+                    (
+                        "gammaSEE",
+                        materialLibrary::get
+                        (
+                            mat,
+                            "gammaSEE",
+                            "constant/" + regionMesh_.dbDir()
+                          + "/electricalProperties (region `"
+                          + regionMesh_.name() + "`)"
+                        )
                     );
                 }
             }

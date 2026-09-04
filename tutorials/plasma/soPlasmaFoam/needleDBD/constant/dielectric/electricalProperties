@@ -46,7 +46,16 @@ FoamFile
 // barrier capacitance, hence how much surface charge is needed to extinguish
 // the discharge.
 
-epsilonR    3.0;
+// ONE LINE, from the shipped library (G2): epsilonR and gammaSEE both follow,
+// with a citation. `pmma` is acrylic / Plexiglas / Perspex, epsilonR 3.0 --
+// numerically identical to the 3.0 that was hand-typed here, and its
+// gammaSEE 0.001 is the same value the wall-flux conditions default to, so
+// this migration changes NO number. Migrated 2026-09-04.
+//
+// To override either value, state it explicitly here: an explicit `epsilonR`
+// or `gammaSEE` WINS over the material, and is reported as an override.
+// `$SoPLASMA_ETC/materials/dielectrics` lists what is available.
+material    pmma;
 // gammaSEE is NOT stated, deliberately.
 //
 // Secondary emission travels with the MATERIAL: state it here and the gas-side

@@ -11,6 +11,7 @@
       See: <http://www.gnu.org/licenses/>.
 \*---------------------------------------------------------------------------*/
 
+#include "materialLibrary.H"
 #include "multiRegionPoisson.H"
 #include "mappedPatchBase.H"
 #include "fixedValueFvPatchFields.H"
@@ -393,6 +394,28 @@ scalar electromagneticsModel::readEpsilonR
                 << "    solving species there." << nl
                 << exit(FatalError);
         }
+
+        return e;
+    }
+
+    // NAMED MATERIAL (G2): one line in the case, cited numbers from the
+    // library. Reached only when no explicit `epsilonR` was given, so an
+    // explicit value always WINS -- see materialLibrary.H for the precedence.
+    if (props.found("material"))
+    {
+        const word mat(props.get<word>("material"));
+
+        const scalar e = materialLibrary::get
+        (
+            mat,
+            "epsilonR",
+            "constant/" + regionMesh.dbDir() + "/electricalProperties"
+                " (region `" + regionMesh.name() + "`)"
+        );
+
+        Info<< "electricalProperties: region `" << regionMesh.name()
+            << "` epsilonR = " << e << "  (from MATERIAL `" << mat
+            << "`, " << materialLibrary::path() << ")" << endl;
 
         return e;
     }

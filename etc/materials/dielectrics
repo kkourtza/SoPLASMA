@@ -1,0 +1,219 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA -- SHIPPED LIBRARY of solid dielectric materials                    |
+|                                                                              |
+| Governing directive G2: anything with literature values becomes a LIBRARY    |
+| with cited numbers, not a number typed into a case.                          |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      dielectrics;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// HOW TO USE THIS
+//
+// In constant/<region>/electricalProperties write ONE line:
+//
+//     material    alumina96;
+//
+// and epsilonR and gammaSEE are resolved from here. PRECEDENCE, which follows
+// G1 (derive, else default, else require): an explicit numeric `epsilonR` or
+// `gammaSEE` in the case WINS -- it is an override, and it is reported as one --
+// otherwise the material supplies it, otherwise the region KIND's default
+// applies (1.0 for gas and farField; for a `dielectric` region epsilonR is
+// required and there is no default).
+//
+// Naming a material that is not in this file is FATAL and lists what is here,
+// rather than silently falling back to a default nobody chose.
+//
+// TO ADD A MATERIAL: add an entry with BOTH numbers and a `reference` string.
+// An entry without a reference is a number somebody remembered, which is what
+// this file exists to stop.
+
+// ---------------------------------------------------------------------------
+// RELATIVE PERMITTIVITY
+//
+// Quoted at room temperature and at low frequency (~1 kHz - 1 MHz), which is
+// the regime a plasma-fluid Poisson solve is in: the barrier responds
+// quasi-statically to a discharge whose own timescale is ns, but epsilon_r for
+// these materials is flat from DC into the MHz range, so a single number is
+// appropriate. It is NOT appropriate at optical frequencies, and for the polar
+// polymers (PMMA, polyimide) it drifts by 10-20% across the audio-to-MHz range.
+//
+// Values are handbook-level and mutually consistent across sources:
+//   CRC Handbook of Chemistry and Physics, 95th ed. (2014), sec. 12
+//   von Hippel, A. R., "Dielectric Materials and Applications" (MIT Press,
+//     1954) -- still the standard tabulation for ceramics and glasses
+//
+// GAMMA (ion-induced secondary electron emission) IS THE LEAST TRANSFERABLE
+// NUMBER IN THIS FILE.
+//
+// It depends on the ion species, its impact energy, and above all on the
+// surface CONDITION -- adsorbed water, oxide, hydrocarbon contamination -- so a
+// value measured on a sputter-cleaned sample in UHV does not describe the same
+// material after an hour in room air. The spread across surface states is more
+// than an order of magnitude, larger than any difference between the materials
+// below.
+//
+// So every dielectric here carries 0.001, the contaminated-barrier figure, and
+// that is deliberate: it is the same value and the same reasoning as the
+// `defaultSEEC` default in the wall-flux conditions (changed to 0.001 on
+// 2026-09-02), where the range is documented as ~1e-3 for contaminated oxides
+// and dielectric barriers up to ~1e-1 for clean metals in vacuum. A library
+// that disagreed with that default would make gamma depend on whether a case
+// happened to name a material.
+//
+// MgO IS THE ONE REAL EXCEPTION and is marked as such.
+//
+// If gamma matters to your result -- in a barrier discharge it is what makes
+// the discharge SELF-SUSTAINING rather than a single avalanche -- then it is a
+// number to measure or to fit, not to take from a library. Override it in the
+// case and say why.
+//   Phelps, A. V. & Petrovic, Z. Lj. (1999) Plasma Sources Sci. Technol. 8, R21
+//     -- the canonical treatment of effective gamma and its surface dependence
+//   Raizer, Yu. P., "Gas Discharge Physics" (Springer, 1991), sec. 4
+// ---------------------------------------------------------------------------
+
+vacuum
+{
+    epsilonR    1.0;
+    gammaSEE    0.0;
+    reference   "Exact by definition. gammaSEE 0: there is no surface.";
+}
+
+air
+{
+    epsilonR    1.0;
+    gammaSEE    0.0;
+    // Use for a `farField` region -- a FICTITIOUS air region that extends
+    // the electrostatic domain without extending the plasma one. Not a
+    // surface, so gammaSEE 0.
+    reference   "epsilon_r = 1.00059 at STP (CRC Handbook 95th ed.); 1.0 to the precision any plasma-fluid solve resolves.";
+}
+
+// --- polymers --------------------------------------------------------------
+
+ptfe
+{
+    epsilonR    2.1;
+    gammaSEE    0.001;
+    // epsilon_r = 2.0-2.1, essentially flat from DC to 1 GHz -- non-polar,
+    // so the lowest-permittivity practical solid barrier. CRC Handbook
+    // 95th ed.; von Hippel (1954).
+    reference   "PTFE (Teflon).";
+}
+
+pmma
+{
+    epsilonR    3.0;
+    gammaSEE    0.001;
+    // epsilon_r = 3.6-3.7 at 60 Hz falling to ~2.6 at 1 MHz as the polar
+    // side-group relaxation drops out; 3.0 is representative near 1 MHz.
+    // If the drive is in the kHz range use ~3.4. CRC Handbook 95th ed.;
+    // von Hippel (1954).
+    reference   "PMMA -- acrylic, Plexiglas, Perspex.";
+}
+
+polyimide
+{
+    epsilonR    3.4;
+    gammaSEE    0.001;
+    // epsilon_r = 3.4 at 1 kHz, 3.0 at 1 MHz. Common as a thin flexible
+    // barrier, so often used with thinDielectricPotential rather than as a
+    // meshed region. DuPont Kapton HN datasheet; CRC Handbook.
+    reference   "Polyimide (Kapton HN).";
+}
+
+// --- glasses ---------------------------------------------------------------
+
+fusedSilica
+{
+    epsilonR    3.8;
+    gammaSEE    0.001;
+    // epsilon_r = 3.8, flat from DC to GHz. CRC Handbook 95th ed.; von
+    // Hippel (1954).
+    reference   "Fused silica / fused quartz (amorphous SiO2).";
+}
+
+borosilicateGlass
+{
+    epsilonR    4.6;
+    gammaSEE    0.001;
+    // epsilon_r = 4.6 at 1 MHz. The usual dielectric in laboratory DBD
+    // reactors and plasma jets. von Hippel (1954); Corning 7740 datasheet.
+    reference   "Borosilicate glass (Pyrex 7740).";
+}
+
+sodaLimeGlass
+{
+    epsilonR    7.0;
+    gammaSEE    0.001;
+    // epsilon_r = 6.9-7.5 at 1 MHz, higher and more loss-prone than
+    // borosilicate because of the mobile alkali ions -- which also make it
+    // drift with temperature. von Hippel (1954).
+    reference   "Soda-lime (window) glass.";
+}
+
+mica
+{
+    epsilonR    5.4;
+    gammaSEE    0.001;
+    // epsilon_r = 5.4 (range 5.4-8.7 across micas and orientations -- it
+    // is strongly anisotropic, and this solver treats every region as
+    // ISOTROPIC, so a mica barrier is an approximation). CRC Handbook 95th
+    // ed.; von Hippel (1954).
+    reference   "Muscovite mica.";
+}
+
+// --- ceramics --------------------------------------------------------------
+
+alumina96
+{
+    epsilonR    9.0;
+    gammaSEE    0.001;
+    // epsilon_r = 9.0 at 1 MHz. The workhorse barrier for high-power and
+    // high-temperature DBDs. von Hippel (1954); standard technical-ceramic
+    // datasheets.
+    reference   "96% Al2O3 ceramic.";
+}
+
+alumina99
+{
+    epsilonR    9.8;
+    gammaSEE    0.001;
+    // epsilon_r = 9.8 at 1 MHz -- denser and slightly higher than the 96%
+    // grade. von Hippel (1954).
+    reference   "99.5% Al2O3 ceramic.";
+}
+
+magnesia
+{
+    epsilonR    9.7;
+    gammaSEE    0.3;
+    // epsilon_r = 9.7 (CRC Handbook 95th ed.). THE EXCEPTION ON GAMMA, AND
+    // THE REASON MgO EXISTS IN THIS FILE. MgO is used as the protective
+    // layer in plasma display panels precisely BECAUSE its ion-induced
+    // secondary emission is exceptionally high -- of order 0.3 for Ne+ and
+    // Xe+ at PDP energies, two to three orders of magnitude above a
+    // contaminated barrier. That is what lowers the firing voltage enough
+    // to make the device work. It is also strongly dependent on the ion
+    // and on the surface state, and it DEGRADES in air. Treat 0.3 as an
+    // order of magnitude for a fresh surface under noble-gas bombardment,
+    // NOT as a number to carry into an air discharge. Boeuf, J. P. (2003)
+    // J. Phys. D 36, R53.
+    reference   "MgO.";
+}
+
+// NOT IN THIS FILE, DELIBERATELY: conductors.
+//
+// An electrode's gamma is a property of the electrode, and there is currently
+// no way for a case to say what a metal PATCH is made of -- that is the layer-1
+// boundary work (G2), not yet built. Shipping copper/steel/aluminium entries
+// here would be a library nothing can reach, so they are omitted until the
+// patch-material route exists. Until then an electrode's gamma is set with
+// `defaultSEEC` on its wall-flux condition, which defaults to 0.001.
+
+// ************************************************************************* //
