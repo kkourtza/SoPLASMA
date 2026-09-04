@@ -34,6 +34,10 @@ Description
 #ifndef plasmaWallBC_H
 #define plasmaWallBC_H
 
+#include "HashSet.H"
+#include "Ostream.H"
+#include "word.H"
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 namespace Foam
@@ -45,6 +49,39 @@ namespace Foam
 
 class plasmaWallBC
 {
+protected:
+
+    //- THE KEYS THE CASE ACTUALLY STATED, as opposed to those the condition
+    //  defaulted. Shared by BOTH wall-flux families, so the concept has one
+    //  name and one definition (G3).
+    //
+    //  WHY THIS EXISTS. `soPlasmaFoam` calls `runTime.writeNow()` at start-up,
+    //  which overwrites `0/` with the fully-RESOLVED boundary dictionaries. If
+    //  `write()` emits a defaulted value, that default is baked into the
+    //  case's own `0/`, and a dictionary value beats a code default -- so A
+    //  CHANGED DEFAULT CAN NEVER AGAIN REACH ANY CASE THAT HAS BEEN RUN ONCE.
+    //  Such a case keeps the old physics while looking identical to one that
+    //  got the new.
+    //
+    //  MEASURED 2026-09-04: exactly this hid the eq. (6.14) -> (6.15) energy
+    //  weight change. A needleDBD tree carried `fluxEnergyFactor
+    //  1.33333333333` in its own `0/gas/nEps_e`, written by an earlier run, so
+    //  three successive runs all used 4/3 and a 5/3-vs-4/3 comparison came out
+    //  at a ratio of exactly 1.0000. The generator never emits the key and no
+    //  tracked tutorial carries it, so the contamination came purely from
+    //  having been run.
+    //
+    //  This is G1: "a setting stated in two places is a defect even when both
+    //  copies agree, because they will not agree later." The default lived in
+    //  the code AND in `0/`, and they disagreed. So an optional entry is
+    //  written back ONLY if the case supplied it. Restart is unaffected: an
+    //  absent key defaults exactly as it does for a fresh case.
+    //
+    //  THE TRADE-OFF, stated rather than buried: a written time directory is
+    //  no longer a complete record of what was used. That is what fixes the
+    //  bug; the record moves to the start-up log, which cannot go stale.
+    wordHashSet suppliedKeys_;
+
 public:
 
     //- Destructor
@@ -56,6 +93,22 @@ public:
         return false;
     }
 
+    //- Did the case state this key?
+    inline bool wasSupplied(const word& k) const
+    {
+        return suppliedKeys_.found(k);
+    }
+
+    //- Write an OPTIONAL entry only if the case stated it. See suppliedKeys_
+    //  for why writing a defaulted value is the defect.
+    template<class T>
+    void writeEntryIfSupplied(Ostream& os, const word& k, const T& v) const
+    {
+        if (wasSupplied(k))
+        {
+            os.writeEntry(k, v);
+        }
+    }
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

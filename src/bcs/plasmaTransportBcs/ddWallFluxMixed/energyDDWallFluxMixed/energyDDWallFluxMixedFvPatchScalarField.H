@@ -100,6 +100,9 @@ protected:
     //  there is no rigid calculation to make automatically.
     scalar secondaryElectronEnergy_;
 
+    //- Whether the overridden-default report has been printed for this patch.
+    mutable bool factorReported_;
+
     //- The ENERGY's transport coefficients, not the electron's.
 
     virtual tmp<scalarField> patchMobility(const driftDiffusion&) const;

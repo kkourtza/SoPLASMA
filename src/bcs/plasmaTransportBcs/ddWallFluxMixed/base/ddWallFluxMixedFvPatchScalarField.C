@@ -129,6 +129,10 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
     speciesNameOverride_(dict.lookupOrDefault<word>("species", word::null)),
     TValue_("T", dimTemperature, 300.0)
 {
+    // Record WHAT THE CASE STATED before anything defaults. See suppliedKeys_
+    // in plasmaWallBC for why a defaulted value must not be written back.
+    suppliedKeys_ = dict.toc();
+
     // THE WALL TEMPERATURE. Three ways in, and exactly one applies:
     //
     //   T     <fieldName>   -- follow a solved field (T_e under LMEA)
@@ -256,7 +260,11 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
     TName_(ptf.TName_),
     speciesNameOverride_(ptf.speciesNameOverride_),
     TValue_(ptf.TValue_)
-{}
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
 
 // Copy Constructor (from another patch field)
 ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
@@ -268,7 +276,11 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
     TName_(ptf.TName_),
     speciesNameOverride_(ptf.speciesNameOverride_),
     TValue_(ptf.TValue_)
-{}
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
 
 // Copy Constructor (from patch field and new internal field)
 ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
@@ -281,7 +293,11 @@ ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
     TName_(ptf.TName_),
     speciesNameOverride_(ptf.speciesNameOverride_),
     TValue_(ptf.TValue_)
-{}
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
 
@@ -574,6 +590,27 @@ void ddWallFluxMixedFvPatchScalarField::write(Ostream& os) const
         os.writeEntry("T", TValue_.value());
     }
 }
+
+void ddWallFluxMixedFvPatchScalarField::reportOverriddenDefault
+(
+    const word& k,
+    const scalar supplied,
+    const scalar dflt
+) const
+{
+    if (!wasSupplied(k) || mag(supplied - dflt) <= SMALL*max(scalar(1), mag(dflt)))
+    {
+        return;
+    }
+
+    Info<< "  " << this->internalField().name() << " on patch `"
+        << this->patch().name() << "`: " << k << " = " << supplied
+        << " (READ from the case; this build's default is " << dflt << ")"
+        << nl
+        << "    If that was not intended, DELETE the entry -- a value written"
+        << " into 0/ by an earlier run pins the old default." << nl;
+}
+
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 

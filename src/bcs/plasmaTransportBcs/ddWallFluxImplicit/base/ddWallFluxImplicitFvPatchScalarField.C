@@ -123,6 +123,10 @@ ddWallFluxImplicitFvPatchScalarField::ddWallFluxImplicitFvPatchScalarField
     TName_("none"),
     TValue_("T", dimTemperature, 300.0)
 {
+    // Record WHAT THE CASE STATED before anything defaults. See suppliedKeys_
+    // in plasmaWallBC for why a defaulted value must not be written back.
+    suppliedKeys_ = dict.toc();
+
     const entry& e = dict.lookupEntry("T", keyType::LITERAL);
     ITstream& is = e.stream();
 
@@ -155,7 +159,11 @@ ddWallFluxImplicitFvPatchScalarField::ddWallFluxImplicitFvPatchScalarField
     fvPatchScalarField(ptf, p, iF, mapper),
     TName_(ptf.TName_),
     TValue_(ptf.TValue_)
-{}
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
 
 // Copy Constructor (from another patch field)
 ddWallFluxImplicitFvPatchScalarField::ddWallFluxImplicitFvPatchScalarField
@@ -166,7 +174,11 @@ ddWallFluxImplicitFvPatchScalarField::ddWallFluxImplicitFvPatchScalarField
     fvPatchScalarField(ptf),
     TName_(ptf.TName_),
     TValue_(ptf.TValue_)
-{}
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
 
 // Copy Constructor (from patch field and new internal field)
 ddWallFluxImplicitFvPatchScalarField::ddWallFluxImplicitFvPatchScalarField
@@ -178,7 +190,11 @@ ddWallFluxImplicitFvPatchScalarField::ddWallFluxImplicitFvPatchScalarField
     fvPatchScalarField(ptf, iF),
     TName_(ptf.TName_),
     TValue_(ptf.TValue_)
-{}
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
 

@@ -45,6 +45,7 @@ SourceFiles
 #define ddWallFluxMixedFvPatchScalarField_H
 
 #include "mixedFvPatchFields.H"
+#include "HashSet.H"
 
 #include "SoPLASMAConstants.H"
 #include "plasmaSpecies.H"
@@ -69,6 +70,7 @@ class ddWallFluxMixedFvPatchScalarField
 protected:
 
     // Protected Data
+
 
         //- The name of the temperature field (e.g., "T_e"). 
         word TName_;
@@ -95,6 +97,20 @@ protected:
         //  species lookup fails with a list of species names and no hint that
         //  the fix is to set `species`. See the energy override.
         virtual word resolveSpeciesName() const;
+
+        //- Print, ONCE per patch, every optional key whose supplied value
+        //  differs from this build's default. That is the actionable case: a
+        //  case pinning a value it may not have meant to pin.
+        //
+        //  Not keyed to any particular number -- a guard against the specific
+        //  old value of one key would not generalise and would need deleting
+        //  later.
+        void reportOverriddenDefault
+        (
+            const word& k,
+            const scalar supplied,
+            const scalar dflt
+        ) const;
 
         //- Latch so the "approaching the singularity" warning is printed
         //  once per patch, not once per corrector per time step.

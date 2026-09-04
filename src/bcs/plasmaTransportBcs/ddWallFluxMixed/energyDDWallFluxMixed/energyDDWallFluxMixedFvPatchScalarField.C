@@ -156,7 +156,8 @@ energyDDWallFluxMixedFvPatchScalarField
 :
     electronDDWallFluxMixedFvPatchScalarField(p, iF),
     fluxEnergyFactor_(5.0/3.0),
-    secondaryElectronEnergy_(0.0)
+    secondaryElectronEnergy_(0.0),
+    factorReported_(false)
 {}
 
 
@@ -184,7 +185,8 @@ energyDDWallFluxMixedFvPatchScalarField
     secondaryElectronEnergy_
     (
         dict.lookupOrDefault<scalar>("secondaryElectronEnergy", 2.0)
-    )
+    ),
+    factorReported_(false)
 {}
 
 
@@ -199,7 +201,8 @@ energyDDWallFluxMixedFvPatchScalarField
 :
     electronDDWallFluxMixedFvPatchScalarField(ptf, p, iF, mapper),
     fluxEnergyFactor_(ptf.fluxEnergyFactor_),
-    secondaryElectronEnergy_(ptf.secondaryElectronEnergy_)
+    secondaryElectronEnergy_(ptf.secondaryElectronEnergy_),
+    factorReported_(false)
 {}
 
 
@@ -212,7 +215,8 @@ energyDDWallFluxMixedFvPatchScalarField
 :
     electronDDWallFluxMixedFvPatchScalarField(ptf, iF),
     fluxEnergyFactor_(ptf.fluxEnergyFactor_),
-    secondaryElectronEnergy_(ptf.secondaryElectronEnergy_)
+    secondaryElectronEnergy_(ptf.secondaryElectronEnergy_),
+    factorReported_(false)
 {}
 
 
@@ -220,6 +224,15 @@ energyDDWallFluxMixedFvPatchScalarField
 
 void energyDDWallFluxMixedFvPatchScalarField::updateCoeffs()
 {
+    if (!factorReported_)
+    {
+        factorReported_ = true;
+        reportOverriddenDefault
+        (
+            "fluxEnergyFactor", fluxEnergyFactor_, 5.0/3.0
+        );
+    }
+
     if (this->updated())
     {
         return;
@@ -314,7 +327,9 @@ void energyDDWallFluxMixedFvPatchScalarField::write(Ostream& os) const
 {
     electronDDWallFluxMixedFvPatchScalarField::write(os);
 
-    os.writeEntry("fluxEnergyFactor", fluxEnergyFactor_);
+    // OPTIONAL: written back only if the case stated it. This key is the
+    // reason suppliedKeys_ exists -- see the base for the measurement.
+    writeEntryIfSupplied(os, "fluxEnergyFactor", fluxEnergyFactor_);
     os.writeEntry("secondaryElectronEnergy", secondaryElectronEnergy_);
 }
 

@@ -407,7 +407,9 @@ void electronDDWallFluxImplicitFvPatchScalarField::write(Ostream& os) const
     os.writeEntry("includeDriftFlux", includeDriftFlux_);
     os.writeEntry("enableSEE", enableSEE_);
     os.writeEntry("defaultSEEC", defaultSEEC_);
-    os.writeEntry("electronReflection", electronReflection_);
+    // OPTIONAL: written back only if the case stated it. See
+    // plasmaWallBC::suppliedKeys_ for why a defaulted value must not be.
+    writeEntryIfSupplied(os, "electronReflection", electronReflection_);
     if (!speciesSEEC_.empty())
     {
         os.writeEntry("speciesSEEC", speciesSEEC_);

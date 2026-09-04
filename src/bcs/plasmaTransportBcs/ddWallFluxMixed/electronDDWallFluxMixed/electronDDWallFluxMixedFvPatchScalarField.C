@@ -700,7 +700,9 @@ void electronDDWallFluxMixedFvPatchScalarField::write(Ostream& os) const
     ddWallFluxMixedFvPatchScalarField::write(os);   
 
     // ROUND-TRIP INVARIANT: write ALL of what read() accepts.
-    os.writeEntry("electronReflection", electronReflection_);
+    // OPTIONAL: written back only if the case stated it. See suppliedKeys_
+    // in the base for why writing a defaulted value is the defect.
+    writeEntryIfSupplied(os, "electronReflection", electronReflection_);
 
     if (!material_.empty())
     {

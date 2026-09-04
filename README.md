@@ -693,6 +693,34 @@ Three checks, all reproduced exactly and all from the text: `5/3 = (5/4)(4/3)`,
 the published `eps_w -> 2 T_e` limit as `r -> 1`, and the HDR's own energy
 equation carrying `W = (5/3) n_e w_e`, which a BC weight of 4/3 contradicts.
 
+### A defaulted value is never written back
+
+`soPlasmaFoam` calls `runTime.writeNow()` at start-up, which overwrites `0/`
+with the fully **resolved** boundary dictionaries. So if `write()` emitted a
+defaulted value, that default was baked into the case's own `0/` — and since a
+dictionary value beats a code default, **a changed default could never again
+reach any case that had been run once.** Such a case silently kept the old
+physics while looking identical to one that got the new.
+
+Measured 2026-09-04: this hid the `(6.14)` → `(6.15)` weight change. A
+needleDBD tree carried `fluxEnergyFactor 1.33333333333` in its own
+`0/gas/nEps_e`, written by an earlier run, so three successive runs all used
+4/3 and a 5/3-vs-4/3 comparison came out at a ratio of exactly `1.0000`.
+
+This is G1 — *a setting stated in two places is a defect even when both copies
+agree, because they will not agree later.* The default lived in the code **and**
+in `0/`, and they disagreed. So an **optional entry is written back only if the
+case supplied it** (`plasmaWallBC::suppliedKeys_`, shared by both families).
+Restart is unaffected: an absent key defaults exactly as for a fresh case.
+
+The trade-off, stated rather than buried: a written time directory is no longer
+a complete record of what was used. That is what fixes the bug — the record
+moves to the start-up log, which cannot go stale. Every optional key whose
+supplied value differs from the build default prints one line naming the patch,
+the value read and the default, so pinning a value is visible rather than
+silent. **If you have a case that has been run before, delete
+`fluxEnergyFactor` from its `0/` to pick up eq. (6.15).**
+
 ### `electronReflection` defaults to 0, and the Implicit family has a limit
 
 `r` is set per patch with `electronReflection` on either family. It defaults to
