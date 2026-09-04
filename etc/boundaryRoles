@@ -1,0 +1,200 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA -- SHIPPED LIBRARY of boundary ROLES                                |
+|                                                                              |
+| G2: the user says WHAT a surface IS; each module decides HOW it treats it.    |
+| G3: one vocabulary across every module -- the KIND names here are that        |
+|     vocabulary, and a new module adds a sub-dictionary rather than a name.    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      boundaryRoles;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// HOW THIS WORKS
+//
+// A case declares, per patch, WHAT the surface is -- in configuration/boundaries:
+//
+//     active_electrode { kind drivenElectrode; waveform table ((0 0) (1e-7 8e3)); }
+//
+// This file says what each KIND means to each MODULE. The generator joins the
+// two and writes the dictionaries. Nothing here is a physics choice the user
+// makes; it is the translation from a physical description to each module's
+// boundary condition.
+//
+// PER KIND:
+//   description   one line, shown in errors and in the generated comment
+//   requires      parameters the case MUST supply for this kind
+//   optional      parameters it MAY supply, with their defaults
+//   electrostatics{}  the ePotential condition, verbatim, with "<param>" slots
+//   plasmaTransport{} what SPECIES do here -- see `surface` below
+//
+// `"<param>"` in an electrostatics block is substituted from the PATCH's own
+// entry of that name. `"<material:>"<property>` is resolved through the material
+// library, so a surface names a material once and both modules follow.
+//
+// plasmaTransport/surface takes ONE of four values, and it is the only thing
+// the species generator needs to know:
+//   mechanical        not a physical surface -- empty/wedge/symmetry/processor.
+//                     Derived from the MESH, never declared here.
+//   open              nothing is absorbed and nothing accumulates.
+//   conductor         absorbs (wall flux), but the arriving charge LEAVES --
+//                     through the external circuit, or into a floating
+//                     conductor's total charge Q(t). NO local sigma: charge
+//                     cannot sit still on a metal, and accumulating it there is
+//                     refused, not merely defaulted off.
+//   chargingSurface   absorbs AND accumulates a local surface charge, because
+//                     the potential condition on it CONSUMES that charge.
+//
+// THE RULE BEHIND THAT LAST DISTINCTION: sigma accumulates exactly where the
+// electrostatics condition reads it. A dielectric surface charges because
+// something reads the charge; a metal does not, because nothing does.
+//
+// INTERFACES BETWEEN MESHED REGIONS ARE NOT DECLARED HERE OR IN A CASE.
+// `<gas>_to_<dielectric>` and its partner are created by splitMeshRegions and
+// are DERIVED: the topology already says what they are, and asking the user to
+// restate it is the second source of truth G1 forbids. The generator emits
+// `coupledElectricPotential` on a gas/dielectric pair (with surface charging on
+// the GAS side only -- exactly one owner, or the charge is double-counted) and
+// `zeroGradient` with no charging on a gas/farField pair, because a farField
+// region is fictitious air and not a surface.
+
+// ---------------------------------------------------------------------------
+// CONDUCTORS -- the three things a conductor can know
+//
+//                        potential            charge
+//   drivenElectrode      known (a waveform)   whatever the supply provides
+//   groundedElectrode    known (zero)         whatever flows to ground
+//   floatingElectrode    UNKNOWN, solved for  KNOWN, conserved
+// ---------------------------------------------------------------------------
+
+drivenElectrode
+{
+    description "A conductor held at a known, usually time-varying potential.";
+    requires    ( waveform );
+
+    electrostatics
+    {
+        type            uniformFixedValue;
+        value           uniform 0;
+        uniformValue    "<waveform>";
+    }
+
+    plasmaTransport { surface conductor; }
+}
+
+groundedElectrode
+{
+    description "A conductor held at zero potential.";
+
+    electrostatics
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+
+    plasmaTransport { surface conductor; }
+}
+
+floatingElectrode
+{
+    description "A conductor connected to nothing: charge known, potential solved.";
+    optional    { initialCharge 0; }
+
+    // No potential entry, deliberately: supplying one would make this a driven
+    // electrode. The condition itself rejects `potential`/`uniformValue`/`V`.
+    electrostatics
+    {
+        type            floatingElectrodePotential;
+        initialCharge   "<initialCharge>";
+        value           uniform 0;
+    }
+
+    plasmaTransport { surface conductor; }
+}
+
+// ---------------------------------------------------------------------------
+// DIELECTRIC SURFACES -- charge stays where it lands
+//
+// For a barrier that IS meshed as its own region, do not use these: declare the
+// region in constant/regionProperties and the interface condition is derived.
+// These are for a barrier too thin to mesh, or absent from the domain.
+// ---------------------------------------------------------------------------
+
+thinDielectricSurface
+{
+    description "A free-standing insulating sheet: open gas or vacuum behind it.";
+    requires    ( material );
+
+    // C = 0, so pure Neumann: eps_g dV/dn = sigma. NO thickness and NO
+    // epsilonR -- with nothing behind the sheet there is no capacitance, and
+    // the layer's own permittivity does not enter. The condition REJECTS
+    // epsilonR here for exactly that reason.
+    electrostatics
+    {
+        type            thinDielectricPotential;
+        surfCharge      surfCharge;
+        value           "<internalField>";
+    }
+
+    plasmaTransport { surface chargingSurface; }
+}
+
+thinDielectricOnElectrode
+{
+    description "A thin barrier bonded to an electrode: a capacitor to it.";
+    requires    ( material thickness backingPotential );
+
+    // C = eps0*epsilonR/d, so Robin: eps_g dV/dn = sigma - C (V - Vb).
+    // `thickness` and `backingPotential` are a PAIR and the condition rejects
+    // one without the other -- a thickness with nothing behind it is a
+    // capacitance to nowhere.
+    electrostatics
+    {
+        type                thinDielectricPotential;
+        epsilonR            "<material:epsilonR>";
+        thickness           "<thickness>";
+        backingPotential    "<backingPotential>";
+        surfCharge          surfCharge;
+        value               "<internalField>";
+    }
+
+    plasmaTransport { surface chargingSurface; }
+}
+
+// ---------------------------------------------------------------------------
+// EVERYTHING ELSE
+// ---------------------------------------------------------------------------
+
+openBoundary
+{
+    description "An artificial outer boundary: the domain simply ends here.";
+
+    // zeroGradient on the potential is a MODELLING CHOICE and not a free one:
+    // it says the normal field vanishes, which is only true if the boundary is
+    // far enough away. If it is not, extend the ELECTROSTATIC domain with a
+    // `farField` region rather than moving this boundary -- Poisson is
+    // long-range and usually needs a larger domain than the plasma does.
+    electrostatics { type zeroGradient; }
+
+    plasmaTransport { surface open; }
+}
+
+insulatingWall
+{
+    description "A solid wall that is not an electrode and does not charge.";
+
+    // Absorbs particles but accumulates nothing, because the potential
+    // condition here reads no charge. If the wall SHOULD trap charge, it is a
+    // thinDielectricSurface, not this -- `zeroGradient` is the same equation
+    // with sigma forced to zero, so a wall meant to charge and left as this
+    // will quietly lose every charge that reaches it.
+    electrostatics { type zeroGradient; }
+
+    plasmaTransport { surface conductor; }
+}
+
+// ************************************************************************* //

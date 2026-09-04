@@ -1,0 +1,16 @@
+/* Links libplasmaElectromagnetics for the material library and the region-kind
+   vocabulary, so a boundary that names a material resolves it through the SAME
+   code the solver uses. Resolving it twice is how a generator comes to write a
+   permittivity the solver disagrees with. */
+EXE_INC = \
+    -I$(SoPLASMA_SRC)/models/electromagnetics/lnInclude \
+    -I$(SoPLASMA_SRC)/constants/lnInclude \
+    -I$(LIB_SRC)/OpenFOAM/lnInclude \
+    -I$(LIB_SRC)/finiteVolume/lnInclude \
+    -I$(LIB_SRC)/meshTools/lnInclude
+
+EXE_LIBS = \
+    -L$(FOAM_USER_LIBBIN) -lplasmaElectromagnetics \
+    -lOpenFOAM \
+    -lfiniteVolume \
+    -lmeshTools

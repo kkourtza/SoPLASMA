@@ -31,6 +31,7 @@ BUILD_DIRS=(
   src/bcs
   src/tools
   src/applications/utilities/foamPlasmaCreateSpeciesFields
+  src/applications/utilities/foamPlasmaSetupBoundaries
   src/applications/utilities/plasmaChemistry0D
   src/applications/utilities/testWallLoss
   src/applications/utilities/testVibRelax
