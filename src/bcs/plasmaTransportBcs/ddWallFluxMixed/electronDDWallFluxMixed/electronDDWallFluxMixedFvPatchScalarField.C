@@ -165,6 +165,9 @@ electronDDWallFluxMixedFvPatchScalarField
     seeInertReported_(false),
     defaultSEEC_(0.0),
     speciesSEEC_(dictionary::null),
+    emissionDict_(dictionary::null),
+    emission_(),
+    emissionReported_(false),
     seec_(0),
     mapped_(false)
 {}
@@ -214,6 +217,9 @@ electronDDWallFluxMixedFvPatchScalarField
       : (neighbourMaterialSEEC(p) > 0 ? neighbourMaterialSEEC(p) : 0.001)
     ),
     speciesSEEC_(dict.subOrEmptyDict("speciesSEEC")),
+    emissionDict_(dict.subOrEmptyDict("emission")),
+    emission_(),
+    emissionReported_(false),
     seec_(0), 
     mapped_(false)
 {}
@@ -236,6 +242,9 @@ electronDDWallFluxMixedFvPatchScalarField
     seeInertReported_(false),
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
+    emissionDict_(ptf.emissionDict_),
+    emission_(),
+    emissionReported_(false),
     seec_(ptf.seec_),
     mapped_(ptf.mapped_)
 {}
@@ -255,6 +264,9 @@ electronDDWallFluxMixedFvPatchScalarField
     seeInertReported_(false),
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
+    emissionDict_(ptf.emissionDict_),
+    emission_(),
+    emissionReported_(false),
     seec_(ptf.seec_),
     mapped_(ptf.mapped_)
 {}
@@ -275,6 +287,9 @@ electronDDWallFluxMixedFvPatchScalarField
     seeInertReported_(false),
     defaultSEEC_(ptf.defaultSEEC_),
     speciesSEEC_(ptf.speciesSEEC_),
+    emissionDict_(ptf.emissionDict_),
+    emission_(),
+    emissionReported_(false),
     seec_(ptf.seec_),
     mapped_(ptf.mapped_)
 {}
@@ -317,6 +332,107 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
 
     // Call the standard updateCoeffs from the base class
     ddWallFluxMixedFvPatchScalarField::updateCoeffs();
+
+    // ---- ADDITIONAL EMISSION MECHANISMS ----------------------------------
+    //
+    // PLACED BEFORE THE `enableSEE` RETURN BELOW, and that is the whole point:
+    // these mechanisms are independent of the built-in ion-SEE path. The first
+    // version of this block sat after that return and was therefore DEAD
+    // whenever `enableSEE false` -- which is the configuration in which one
+    // would most obviously use them. Caught 2026-09-04 only by checking
+    // whether the regression test had exercised the code at all; it had not.
+    //
+    // Built on first use: ionInducedSEE needs `plasmaTransport` in the
+    // registry, which does not exist while boundary conditions are constructed.
+    //
+    // Contributed EXACTLY as the built-in SEE path is: an emitted flux
+    // [1/m2/s] divided by the same diffusivity and added to refGradient. So a
+    // mechanism configured to give the same flux gives the same answer, which
+    // is what makes the built-in path replaceable.
+    if (!emissionDict_.empty())
+    {
+        if (emission_.empty())
+        {
+            emission_.setSize(emissionDict_.size());
+
+            label k = 0;
+            for (const word& type : emissionDict_.toc())
+            {
+                emission_.set
+                (
+                    k++,
+                    emissionModel::New
+                    (
+                        type, this->patch(), emissionDict_.subDict(type)
+                    )
+                );
+            }
+        }
+
+        const plasmaTransport& tr =
+            db().lookupObject<plasmaTransport>("plasmaTransport");
+
+        const plasmaSpecies& sdb = tr.species();
+
+        const plasmaTransportModel& bm =
+            tr.model(sdb.speciesID(resolveSpeciesName()));
+
+        const driftDiffusion& ddm = refCast<const driftDiffusion>(bm);
+
+        const tmp<scalarField> tDe(this->patchDiffusivity(ddm));
+        const scalarField& De = tDe();
+
+        const scalar Defloor = SMALL*max(gMax(De), SMALL);
+
+        scalarField emitted(this->patch().size(), Zero);
+
+        forAll(emission_, i)
+        {
+            emitted += emission_[i].emittedFlux();
+        }
+
+        forAll(emitted, faceI)
+        {
+            if (De[faceI] > Defloor)
+            {
+                this->refGrad()[faceI] += emitted[faceI]/De[faceI];
+            }
+        }
+
+        // REPORTED ONCE, and not as decoration: emission decides whether a
+        // discharge is self-sustaining, so a mechanism silently on -- or
+        // silently off -- gives a plausible, healthy-looking, wrong discharge.
+        if (!emissionReported_)
+        {
+            emissionReported_ = true;
+
+            Info<< "    electronDDWallFluxMixed on patch `"
+                << this->patch().name() << "`: emission mechanisms" << nl;
+
+            forAll(emission_, i)
+            {
+                emission_[i].report(Info);
+            }
+
+            // LABELLED "at the first evaluation", because that is what it
+            // is and an unlabelled 0 reads as "this mechanism does nothing".
+            // The species fields have not been solved when boundary
+            // conditions are first updated, so every flux-driven mechanism
+            // reports zero here -- expected, and not evidence of anything.
+            Info<< "            emitted flux at the FIRST evaluation, max over"
+                   " the patch: " << gMax(emitted) << " 1/m2/s" << nl;
+
+            if (gMax(emitted) <= 0)
+            {
+                Info<< "            (zero is EXPECTED here for a flux-driven"
+                       " mechanism: the species fields" << nl
+                    << "            are not solved yet. It is not evidence"
+                       " that the mechanism is inert.)" << nl;
+            }
+
+            Info<< endl;
+        }
+    }
 
     if (!enableSEE_) return;
 
@@ -450,6 +566,20 @@ void electronDDWallFluxMixedFvPatchScalarField::updateCoeffs()
 void electronDDWallFluxMixedFvPatchScalarField::write(Ostream& os) const
 {
     ddWallFluxMixedFvPatchScalarField::write(os);   
+
+    // ROUND-TRIP INVARIANT: write ALL of what read() accepts.
+    //
+    // `emission` was missing here, so the solver's own rewrite of a field
+    // silently DROPPED every mechanism the case had configured -- which is
+    // exactly how the first equivalence test came to compare a run WITH
+    // emission against a run whose emission had been erased, and report
+    // agreement. Same class of bug as thinDielectricPotential's, 2026-09-03.
+    if (!emissionDict_.empty())
+    {
+        os.beginBlock("emission");
+        emissionDict_.write(os, false);
+        os.endBlock();
+    }
 
     os.writeEntry("enableSurfaceCharging", enableSurfaceCharging_);
     os.writeEntry("includeDriftFlux", includeDriftFlux_);

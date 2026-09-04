@@ -70,6 +70,8 @@ SourceFiles
 #define electronDDWallFluxMixedFvPatchScalarField_H
 
 #include "ddWallFluxMixedFvPatchScalarField.H"
+#include "emissionModel.H"
+#include "PtrList.H"
 
 namespace Foam
 {
@@ -116,6 +118,32 @@ protected:
 
         //- Species-specific SEE coefficients
         dictionary speciesSEEC_;
+
+        //- ADDITIONAL EMISSION MECHANISMS, as a sub-dictionary keyed by model:
+        //
+        //      emission
+        //      {
+        //          ionInducedSEE { yield hagstrum; surface metal; material copper; }
+        //          fieldEmission { material copper; fieldEnhancement 50; }
+        //          thermionicEmission { material tungsten; }
+        //      }
+        //
+        //  Each contributes an electron flux, summed and added to refGradient
+        //  as Gamma/D -- the same way the built-in `enableSEE` path does.
+        //
+        //  STORED AS A DICTIONARY and built on first use, not constructed
+        //  here: the models are abstract, so a PtrList of them would make this
+        //  condition's four copy constructors do deep clones of a runtime-
+        //  selected hierarchy for no benefit. Lazy construction also lets
+        //  ionInducedSEE reach `plasmaTransport` in the registry, which does
+        //  not exist while boundary conditions are being built.
+        dictionary emissionDict_;
+
+        //- The models, built on first updateCoeffs()
+        mutable PtrList<emissionModel> emission_;
+
+        //- Whether the emission report has been printed
+        mutable bool emissionReported_;
 
         //- List to keep the SEE coefficients for each ion species
         List<scalar> seec_;
