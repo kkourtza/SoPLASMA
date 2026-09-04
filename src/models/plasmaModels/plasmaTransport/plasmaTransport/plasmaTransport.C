@@ -1670,43 +1670,91 @@ void plasmaTransport::updateSurfaceCharge()
     DynamicList<word>   floatNames;
     DynamicList<scalar> floatI;
 
-    // A LOCAL SURFACE CHARGE ON A CONDUCTOR IS A CONTRADICTION, so it is
-    // refused rather than silently reinterpreted. Checked once.
-    if (fe && floatPatchi >= 0 && !floatingChargingChecked_)
+    // A LOCAL SURFACE CHARGE ON A CONDUCTOR IS PHYSICALLY WRONG, so it is
+    // REFUSED -- not defaulted off, not warned about. Checked once, for EVERY
+    // conductor: a driven electrode, a grounded one and a floating one alike.
+    //
+    // Charge cannot sit still on a metal. It redistributes over the
+    // conductor's own relaxation time, eps/sigma ~ 1e-18 s for a metal, which
+    // is instantaneous against every plasma timescale. What happens to the
+    // arriving charge instead:
+    //   * a DRIVEN or GROUNDED electrode conducts it away through the external
+    //     circuit -- it appears in Sato's discharge current, not in a sigma
+    //     field;
+    //   * a FLOATING electrode redistributes it into a TOTAL charge Q(t),
+    //     which is what its potential is then solved from.
+    // Accumulating a local sigma on either would double-count it AND invent a
+    // surface field that no conductor can support.
+    if (!conductorChargingChecked_)
     {
-        floatingChargingChecked_ = true;
+        conductorChargingChecked_ = true;
 
-        for (const label i : species_.mobileSpeciesIDs())
+        wordList driven, grounded, floating;
+        species_.em().classifyElectrodePatches(driven, grounded, floating);
+
+        // Every conductor, whatever its potential is known or not.
+        DynamicList<word> conductors;
+        for (const word& w : driven)   conductors.append(w);
+        for (const word& w : grounded) conductors.append(w);
+        for (const word& w : floating) conductors.append(w);
+
+        for (const word& cName : conductors)
         {
-            const fvPatchField<scalar>& pField =
-                species_.numberDensity(i).boundaryField()[floatPatchi];
+            const label ci = mesh_.boundaryMesh().findPatchID(cName);
 
-            const plasmaWallBC* pBC =
-                dynamic_cast<const plasmaWallBC*>(&pField);
+            if (ci < 0) continue;   // a conductor on another region's mesh
 
-            if (pBC && pBC->enableSurfaceCharging())
+            const bool isFloating = floating.found(cName);
+
+            for (const label i : species_.mobileSpeciesIDs())
             {
+                const fvPatchField<scalar>& pField =
+                    species_.numberDensity(i).boundaryField()[ci];
+
+                const plasmaWallBC* pBC =
+                    dynamic_cast<const plasmaWallBC*>(&pField);
+
+                if (!pBC || !pBC->enableSurfaceCharging()) continue;
+
                 FatalErrorInFunction
                     << "Species `" << species_.numberDensity(i).name()
                     << "` has `enableSurfaceCharging true` on patch `"
-                    << fe->patchName() << "`," << nl
-                    << "    which is a FLOATING CONDUCTOR." << nl << nl
-                    << "    A metal has no LOCAL surface charge: charge"
-                       " redistributes over its own" << nl
-                    << "    relaxation time, eps/sigma ~ 1e-18 s, so only its"
-                       " TOTAL charge is meaningful." << nl
-                    << "    That total is tracked as"
-                       " Q(t) = Q0 + INT I_plasma dt' and is what the" << nl
-                    << "    floatingElectrodePotential condition consumes."
-                    << nl << nl
-                    << "    The arriving charge IS counted -- it is what"
-                       " charges the conductor -- but as a" << nl
-                    << "    global quantity. Set `enableSurfaceCharging false`"
-                       " on this patch; the wall" << nl
-                    << "    flux conditions themselves stay exactly as they"
-                       " are, since a floating" << nl
-                    << "    electrode is metal and emits like any other"
-                       " electrode." << nl
+                    << cName << "`," << nl
+                    << "    which is a "
+                    << (isFloating ? "FLOATING CONDUCTOR" : "METAL ELECTRODE")
+                    << "." << nl << nl
+                    << "    A METAL HAS NO LOCAL SURFACE CHARGE. Charge"
+                       " redistributes over the conductor's" << nl
+                    << "    own relaxation time, eps/sigma ~ 1e-18 s for a"
+                       " metal, which is instantaneous" << nl
+                    << "    against every plasma timescale, so a sigma"
+                       " distribution on it is not a" << nl
+                    << "    quantity that exists." << nl << nl
+                    << (
+                           isFloating
+                         ? "    The arriving charge IS counted -- it is what"
+                           " charges this electrode -- but as a\n"
+                           "    GLOBAL quantity: Q(t) = Q0 + INT I_collected"
+                           " dt', which is what the\n"
+                           "    floatingElectrodePotential condition consumes"
+                           " to solve for its potential.\n"
+                         : "    The arriving charge is CONDUCTED AWAY through"
+                           " the external circuit. It is\n"
+                           "    already accounted for there: it appears in"
+                           " Sato's discharge current\n"
+                           "    (postProcessing/dischargeCurrent/current.csv),"
+                           " as I_cond.\n"
+                       )
+                    << nl
+                    << "    Set `enableSurfaceCharging false` on this patch."
+                       " The wall flux conditions" << nl
+                    << "    themselves stay exactly as they are -- an"
+                       " electrode is a solid surface and" << nl
+                    << "    absorbs and emits like any other." << nl << nl
+                    << "    THIS IS NOT A SETTING WITH TWO VALID VALUES."
+                       " plasmaCreateSpeciesFields derives" << nl
+                    << "    `false` here; a case only reaches this error by"
+                       " overriding it." << nl
                     << exit(FatalError);
             }
         }

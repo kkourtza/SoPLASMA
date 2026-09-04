@@ -530,6 +530,13 @@ because something reads that charge; a metal electrode does not, because the
 arriving charge is conducted away through the circuit, and a floating conductor
 redistributes it into a *total* charge rather than a local σ.
 
+**σ on a conductor is not a setting with two valid values — it is refused.**
+Charge cannot sit still on a metal: it redistributes over `ε/σ ≈ 10⁻¹⁸ s`, so a
+σ distribution on a conductor is not a quantity that exists. The generator
+derives `false` there, and a case that overrides it to `true` **aborts**, naming
+where the arriving charge actually went instead — `I_cond` in Sato's discharge
+current for a driven or grounded electrode, `Q(t)` for a floating one.
+
 Why this replaced hand-written per-species blocks: restating what the potential
 already says is a second source of truth, and it drifted. `needleDBD` ended up
 with a wall flux on `n_e` and `zeroGradient` on `nEps_e` — the pairing that
