@@ -207,6 +207,44 @@ magnesia
     reference   "MgO.";
 }
 
+// ---------------------------------------------------------------------------
+// KNOWN SIMPLIFICATION, TO BE FIXED: GAMMA IS UNIFORM HERE AND SHOULD NOT BE.
+//
+// Every dielectric below carries gammaSEE 0.001. That is a PLACEHOLDER, not a
+// result, and it is being called out because a library in which 11 of 12
+// entries share one value is not a library for that property -- it is a default
+// wearing a library's clothes.
+//
+// The two reasons it is uniform today, stated so they can be argued with:
+//   1. gamma is dominated by SURFACE CONDITION -- adsorbed water, oxide,
+//      hydrocarbon contamination -- and the spread across surface states of ONE
+//      material exceeds the spread between these materials.
+//   2. 0.001 is the wall-flux `defaultSEEC` default, set on 2026-09-02 with a
+//      dated justification. A library that disagreed with it would make gamma
+//      depend on whether a case happened to name a material.
+//
+// WHY THAT IS NOT GOOD ENOUGH. There IS genuine material dependence, and it is
+// not small: for potential emission gamma tracks the WORK FUNCTION for metals
+// and the BAND GAP plus ELECTRON AFFINITY for insulators, which is precisely
+// why MgO reaches 0.3 while a fluoropolymer does not. Flattening that to one
+// number discards physics the solver could represent.
+//
+// WHAT THE FIX LOOKS LIKE (deferred by agreement 2026-09-04, to be done AFTER
+// the boundary-role library and layer 1, because it needs the patch-material
+// route those provide):
+//   * gamma per material AND per incident ion, since gamma_i depends on the ion
+//     as much as on the surface -- so the entry becomes a small table, not a
+//     scalar;
+//   * an explicit SURFACE-STATE qualifier (as-received / air-exposed / baked /
+//     sputter-cleaned) rather than pretending one number covers them;
+//   * ENERGY dependence, at least the linear potential-emission form for
+//     metals, gamma ~ 0.016*(0.8*E_i - 2*phi) (Raizer 1991, sec. 4);
+//   * the same treatment for ELECTRODES, which today cannot name a material at
+//     all.
+// Until then, a case for which gamma matters must state it explicitly, and
+// should say why in a comment.
+// ---------------------------------------------------------------------------
+
 // NOT IN THIS FILE, DELIBERATELY: conductors.
 //
 // An electrode's gamma is a property of the electrode, and there is currently
