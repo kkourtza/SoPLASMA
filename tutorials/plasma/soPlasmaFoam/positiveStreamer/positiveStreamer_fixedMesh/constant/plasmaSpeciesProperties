@@ -39,6 +39,14 @@ mechanismSpecies
     //   all                also transports the background gas, which is held
     //                      fixed by construction, so this is rarely wanted.
     include     charged;
+
+    // PINNED, not inherited. The published streamer benchmark this case
+    // reproduces assumes IMMOBILE ions: an ion drifts a few microns while an
+    // electron crosses the domain, so on a nanosecond run its motion is
+    // negligible. Stated explicitly here because the DEFAULT changed to
+    // `driftDiffusion` on 2026-09-04, and a validation baseline must not
+    // move when a default does.
+    ionTransport    immobile;
 }
 
 backgroundGas

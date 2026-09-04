@@ -129,15 +129,26 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
     //                       the rate tables were built at.
     // How derived IONS are transported.
     //
-    //   immobile         (default) they carry space charge but do not move.
-    //                    Correct on nanosecond timescales -- an ion drifts a
-    //                    few microns while an electron crosses the domain --
-    //                    and what the streamer benchmark assumes.
-    //   driftDiffusion   they drift and diffuse, using the mu*N and D*N tables
-    //                    ionmob writes from LXCat measurements. Needed for
-    //                    anything longer: ion motion sets the timescale of
+    //   driftDiffusion   (DEFAULT since 2026-09-04) they drift and diffuse,
+    //                    using the mu*N and D*N tables ionmob writes from
+    //                    LXCat measurements. Ion motion sets the timescale of
     //                    afterglow, and of a DBD's memory between pulses.
-    const word ionTr = md.getOrDefault<word>("ionTransport", "immobile");
+    //   immobile         they carry space charge but do not move. Correct on
+    //                    nanosecond timescales -- an ion drifts a few microns
+    //                    while an electron crosses the domain -- and what the
+    //                    published streamer benchmark assumes.
+    //
+    // WHY THE DEFAULT CHANGED. `immobile` is right for a nanosecond single
+    // pulse and wrong for everything else, and "everything else" is what a
+    // user arriving with a DBD or an afterglow problem has. A default that is
+    // correct only for the shortest case in the suite reads, to anyone who
+    // does not already know, as "ions are handled" -- and the failure is
+    // silent: the space charge is simply missing its slower half.
+    //
+    // The four `positiveStreamer_*` tutorials now PIN `immobile` explicitly,
+    // so the validation baseline did not move with this default. A validation
+    // case must not inherit a default it depends on.
+    const word ionTr = md.getOrDefault<word>("ionTransport", "driftDiffusion");
     if (ionTr != "immobile" && ionTr != "driftDiffusion")
     {
         FatalIOErrorInFunction(speciesDict)

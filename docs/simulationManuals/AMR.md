@@ -7,7 +7,11 @@ In **SoPLASMA**, the **blastAMR** library has been incorporated for effective Ad
 
 `blastAMR` supports refinement in 2D, 3D, and 2D-axisymmetric meshes. Unlike the built-in AMR tool in OpenFOAM, it is not limited to hexahedral cells and can handle complex geometries.
 
-Currently, `blastAMR` is incorporated only into the **plasmaDielectricFoam** solver and is not available for solvers that solve electrostatics only.
+Currently, `blastAMR` is incorporated only into the **`soPlasmaFoam`** solver and is not
+available for the electrostatics-only solvers.
+
+> *(CORRECTED 2026-09-04: this sentence named `plasmaDielectricFoam`, a solver that no longer
+> exists under that name. The tutorial `positiveStreamer_AMR` is the worked example.)*
 
 ---
 

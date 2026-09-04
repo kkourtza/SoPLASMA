@@ -519,21 +519,64 @@ multiRegionPoisson::multiRegionPoisson
 
             if (lin == "GAMG")
             {
+                // DERIVED, NOT REQUIRED (G1). The correct agglomerator is
+                // fully determined by the coupling mode, so it is not a
+                // choice the user can usefully make: monolithic coupling
+                // needs `assembledFaceAreaPair` and nothing else works. If
+                // the case did not state one, it is set here and reported.
+                //
+                // An EXPLICIT wrong value is still fatal. Silently overriding
+                // what a user actually wrote would hide their mistake instead
+                // of naming it, and the two cases are distinguishable because
+                // the dictionary records which keys it was given.
+                if (!eq.found("agglomerator"))
+                {
+                    // MUTATE THE CACHED SOLVER DICT, not the file-level one.
+                    // `solution` keeps `solvers_` as a COPY taken in read(),
+                    // and `fvMatrix::solve()` goes through solverDict(), so a
+                    // set() on subDict("solvers") is silently ineffective --
+                    // measured 2026-09-04: the derivation reported success and
+                    // the solve still aborted on `faceAreaPair`.
+                    //
+                    // Caveat, stated rather than discovered later: a runtime
+                    // re-read of fvSolution reloads `solvers_` from disk and
+                    // would drop this. The entry is derived every construction,
+                    // so it returns on the next rebuild of the model.
+                    const_cast<dictionary&>
+                    (
+                        mesh_.solution().solverDict("ePotential")
+                    ).set("agglomerator", word("assembledFaceAreaPair"));
+
+                    Info<< "    ePotential: `agglomerator"
+                        << " assembledFaceAreaPair` DERIVED -- monolithic"
+                        << " coupling assembles every" << nl
+                        << "      region into one lduPrimitiveMeshAssembly,"
+                        << " which GAMG's default `faceAreaPair`" << nl
+                        << "      cannot agglomerate. Not a case setting;"
+                        << " state it only to override." << endl;
+                }
+
+                // NOTE `eq` is a BY-VALUE copy of the sub-dictionary, so it
+                // does NOT see the set() above -- validating through it after
+                // deriving compared against the stale copy and aborted on the
+                // value it had just corrected. Measured 2026-09-04. Hence
+                // derive-OR-validate, never both.
                 const word agg
                 (
                     eq.getOrDefault<word>("agglomerator", "faceAreaPair")
                 );
 
-                if (agg != "assembledFaceAreaPair")
+                if (eq.found("agglomerator") && agg != "assembledFaceAreaPair")
                 {
                     FatalErrorInFunction
-                        << "ePotential uses `solver GAMG` with `agglomerator "
-                        << agg << "`, but the regions are coupled" << nl
+                        << "ePotential STATES `solver GAMG` with"
+                        << " `agglomerator " << agg
+                        << "`, but the regions are coupled" << nl
                         << "    MONOLITHICALLY, so the matrix is an"
                         << " lduPrimitiveMeshAssembly rather than an fvMesh."
                         << nl << nl
-                        << "    Add to the `ePotential` block in fvSolution:"
-                        << nl
+                        << "    Either DELETE the `agglomerator` entry --"
+                        << " it is derived when absent -- or set it to:" << nl
                         << "        agglomerator    assembledFaceAreaPair;"
                         << nl << nl
                         << "    Without it the solve aborts with \"Attempt to"

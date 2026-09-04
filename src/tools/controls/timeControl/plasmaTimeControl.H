@@ -211,6 +211,18 @@ private:
             //- Name of the species to track for Courant limiting (default: "e")
             word courantSpeciesName_;
 
+            //- Fraction of the electron density used as the DERIVED absolute
+            //  tolerance. Same key and same default as plasmaChemistry0D's
+            //  `errAbsFrac` (G3): one concept, one name across the modules.
+            scalar errAbsFrac_;
+
+            //- max(n_e) this step -- the scale the derived atol follows.
+            scalar errElectronScale_;
+
+            //- One-shot report flags for the derived atol.
+            bool atolDerivedReported_;
+            bool atolFallbackReported_;
+
             //- Weight the species Courant rate by the LOCAL RELATIVE VARIATION
             //  of the density, so a flat field -- which any conservative scheme
             //  advects exactly -- does not limit deltaT. Off by default: it

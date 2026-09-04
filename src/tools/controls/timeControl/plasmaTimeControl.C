@@ -39,6 +39,10 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     maxEnergyConvectiveCo_(1.0),
     maxSpeciesDiffusiveCo_(1.0),
     courantSpeciesName_("e"),
+    errAbsFrac_(1.0e-4),
+    errElectronScale_(0.0),
+    atolDerivedReported_(false),
+    atolFallbackReported_(false),
     limitChemistryCo_(false),
     printChemistryCo_(false),
     maxChemistryCo_(1.0),
@@ -211,17 +215,32 @@ void plasmaTimeControl::read()
         printSpeciesCo_ = 
             dict_.lookupOrDefault<Switch>("printSpeciesCo", false);
 
-        // TEMPORAL ERROR -- Phase 1: MEASURE AND REPORT ONLY, default OFF.
-        // With it off nothing is computed and the old-time chain is NOT
-        // extended, so an existing case is bit-for-bit unchanged.
+        // TEMPORAL ERROR. DEFAULT ON as of 2026-09-04.
+        //
+        // WHY THE DEFAULT CHANGED. With error control off, deltaT is set by a
+        // stack of heuristic limiters -- Courant numbers, the energy
+        // relaxation ratio, the dielectric relaxation ratio -- each of which
+        // bounds a PROXY for the error rather than the error. The controller
+        // measures the local temporal error directly and asks for the step
+        // that error allows. Measured on the inert ramp: the estimate wanted
+        // 77x the step the heuristics were taking.
+        //
+        // WHAT IT COSTS. The estimate needs a third old-time level, so this
+        // is not free in memory, and it is not bit-for-bit identical to a run
+        // with it off. `reportTemporalError false` restores the old
+        // behaviour exactly.
         reportTemporalError_ =
-            dict_.lookupOrDefault<Switch>("reportTemporalError", false);
+            dict_.lookupOrDefault<Switch>("reportTemporalError", true);
 
         if (reportTemporalError_)
         {
             errRtol_ = dict_.lookupOrDefault<scalar>("errorRtol", 1e-3);
             errAtolDefault_ =
                 dict_.lookupOrDefault<scalar>("errorAtolDefault", -1);
+
+            // SAME KEY, SAME DEFAULT as plasmaChemistry0D (G3).
+            errAbsFrac_ =
+                dict_.lookupOrDefault<scalar>("errAbsFrac", 1.0e-4);
 
             errAtolDict_.clear();
             if (dict_.found("errorAtol"))
@@ -237,8 +256,30 @@ void plasmaTimeControl::read()
                 << " influence deltaT." << endl;
 
             // PHASE 2a: PI CONTROL. Requires the estimate to exist.
+            // DEFAULT ON as of 2026-09-04 -- see reportTemporalError above.
+            const bool errCtrlStated = dict_.found("errorControlDeltaT");
+
             errorControlDeltaT_ =
-                dict_.lookupOrDefault<Switch>("errorControlDeltaT", false);
+                dict_.lookupOrDefault<Switch>("errorControlDeltaT", true);
+
+            // THE CONTROLLER WORKS BY CHANGING deltaT, so a fixed-timestep
+            // case cannot have it. Now that it is default-on, that must not
+            // turn every such case into a start-up failure over a setting the
+            // user never asked for: a DEFAULTED controller stands down and
+            // says so, while an EXPLICIT request stays fatal, because there
+            // the user asked for something the case cannot do.
+            if (errorControlDeltaT_ && !adjustTimeStep_ && !errCtrlStated)
+            {
+                errorControlDeltaT_ = false;
+
+                Info<< "plasmaTimeControl: temporal-error PI control is"
+                    << " DEFAULT-ON but stands down here, because" << nl
+                    << "    `adjustTimeStep` is off and the controller works"
+                    << " by changing deltaT. The error is" << nl
+                    << "    still measured and reported. Set"
+                    << " `adjustTimeStep true` to let it govern the step."
+                    << endl;
+            }
 
             if (errorControlDeltaT_)
             {
@@ -693,6 +734,50 @@ void plasmaTimeControl::measureTemporalError
         errStepRatioDev_ = mag(dt/dt0 - 1.0);
     }
 
+    // THE ELECTRON DENSITY SCALE, for the derived atol. Recomputed each step
+    // because the discharge's own scale is what the tolerance should follow:
+    // an atol fixed at the initial background would be meaningless once the
+    // density has risen five decades. Resolved by NAME from the same
+    // `courantSpeciesName` the Courant limiter uses (G3), so a case that
+    // calls its electron something else still works.
+    errElectronScale_ = 0;
+    {
+        const word eName("n_" + courantSpeciesName_);
+        forAll(fields, i)
+        {
+            if (names[i] == eName)
+            {
+                errElectronScale_ = gMax(fields[i]->primitiveField());
+                break;
+            }
+        }
+
+        // No electron field offered -- fall back to the largest field present
+        // rather than to zero, which would make atol vanish and the norm
+        // meaningless. Reported, because it means the name did not resolve.
+        if (errElectronScale_ <= 0)
+        {
+            forAll(fields, i)
+            {
+                errElectronScale_ = max
+                (
+                    errElectronScale_, gMax(fields[i]->primitiveField())
+                );
+            }
+
+            if (!atolFallbackReported_ && errAtolDict_.empty()
+             && errAtolDefault_ <= 0)
+            {
+                atolFallbackReported_ = true;
+                Info<< "plasmaTimeControl: no field named `" << eName
+                    << "` among the transported fields, so the derived"
+                    << " errorAtol" << nl
+                    << "    scale falls back to the largest field present ("
+                    << errElectronScale_ << ")." << endl;
+            }
+        }
+    }
+
     // BDF2 LOCAL TRUNCATION ERROR from the THIRD difference of the history.
     //
     //   LTE = -(2/9) h^3 d3y/dt3      (constant step)
@@ -737,16 +822,38 @@ void plasmaTimeControl::measureTemporalError
         }
         else
         {
-            FatalErrorInFunction
-                << "No absolute tolerance for transported field " << nm << nl
-                << "    Set it in plasmaTimeControl as errorAtol { " << nm
-                << "  <value>; } -- the key may be a REGEX, so \"n_.*\" covers"
-                << " every species -- or set errorAtolDefault." << nl
-                << "    EVERY transported field needs one: a field left out of"
-                << " the error norm is an unbounded error the controller cannot"
-                << " see." << nl
-                << "    Fields offered this step: " << names
-                << exit(FatalError);
+            // DERIVED (G1). Requiring a hand-written atol per species is
+            // exactly the kind of choice the framework exists to remove, and
+            // it is what made error control unusable as a default: every case
+            // stopped at start-up demanding a number the user has no way to
+            // pick.
+            //
+            // The scale is a FRACTION OF THE ELECTRON DENSITY, which is the
+            // convention `plasmaChemistry0D` already uses --
+            //     scale_s = errAbsFrac*n_e + errRelTol*n_s
+            // -- with the same key name and the same 1e-4 default, so the two
+            // modules share one vocabulary (G3) rather than inventing a
+            // second spelling of the same idea.
+            //
+            // WHY n_e AND NOT THE FIELD'S OWN MAX: a minor species may sit
+            // many decades below the electron density, and scaling its atol
+            // to its own magnitude would demand the controller resolve noise
+            // in a species that carries no charge and no energy. The electron
+            // density is the scale on which the discharge is actually
+            // resolved. An explicit `errorAtol` or `errorAtolDefault` still
+            // wins, for a case that knows better.
+            atol = errAbsFrac_*max(errElectronScale_, SMALL);
+
+            if (!atolDerivedReported_)
+            {
+                atolDerivedReported_ = true;
+                Info<< "plasmaTimeControl: errorAtol DERIVED as errAbsFrac*"
+                    << "max(n_e) = " << errAbsFrac_ << "*"
+                    << errElectronScale_ << " = " << atol << nl
+                    << "    applied to every transported field with no"
+                    << " explicit entry. Set `errorAtol { n_.* <v>; }` or"
+                    << " `errorAtolDefault` to override." << endl;
+            }
         }
 
         // Three old levels; requesting them here is what extends the chain.
