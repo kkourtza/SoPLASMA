@@ -318,6 +318,37 @@ Full treatment, including the two measured traps the defaults are shaped to
 avoid and the invertibility condition for when LMEA is unavailable, in
 [`docs/models/energy/lmea.md`](docs/models/energy/lmea.md).
 
+### The wall electron temperature under LFA
+
+The wall thermal speed needs an electron temperature. Under **LMEA** the
+condition follows the solved `T_e` field. Under **LFA** there is no such field —
+so the temperature is a modelling choice, and it is stated as one:
+
+```
+electronEnergyModel  LFA;
+wallTeV              1;      // OPTIONAL: wall electron temperature in eV (kT)
+```
+
+**Default 1 eV**, which is also the wall condition's own documented default, so
+the generated case and the condition agree rather than each carrying a number.
+About right for the bulk of a collisional discharge; a low-pressure glow runs
+hotter and 2–3 eV is defensible there. The flux goes as `sqrt(T_e)`, so 1 eV
+against 2 eV is a factor 1.41 — worth setting deliberately, not worth agonising
+over.
+
+**Why a fixed value rather than the local field.** Deriving `T_e` from
+`meanEnergy_vs_reducedE` at the local `E/N` would import the LFA's own worst
+failure: in a sheath the local field is enormous, so the local-equilibrium
+temperature there is far hotter than the population actually reaching the wall,
+and the wall flux would inherit that error. A fixed bulk-like value does not.
+
+*Fixed 2026-09-04:* the generator previously emitted `T T_e;` unconditionally,
+so **every LFA case with derived boundaries died at start-up** with
+`Temperature field 'T_e' not found in registry`. It went unnoticed because the
+LFA tutorials use hand-written `zeroGradient` conditions rather than derived
+ones — the two-layer boundary architecture had only ever been exercised under
+LMEA.
+
 ### Migration note (2026-09-01)
 
 The per-species `energyModel` key is superseded.

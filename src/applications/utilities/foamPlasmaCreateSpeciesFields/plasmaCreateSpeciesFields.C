@@ -253,6 +253,7 @@ static void writePatchEntry
     const patchRole role,
     const word& kind,          //!< "electron" | "ion" | "energy" | "neutral"
     const word& fluxFamily,    //!< "Mixed" | "Implicit"
+    const scalar wallTeV,      //!< fixed wall Te [eV], or <=0 to follow T_e
     const word& material,      //!< the surface's material, or word::null
     const dictionary& emission //!< emission mechanisms, possibly empty
 )
@@ -318,11 +319,40 @@ static void writePatchEntry
         os  << "        type            " << type << ";" << nl
             << "        value           uniform 0;" << nl;
 
-        // `T` is a FIELD NAME, not a temperature: the field the wall flux
-        // evaluates the thermal speed from. Electrons and their energy are at
-        // the ELECTRON temperature; ions are at the gas temperature.
-        os  << "        T               "
-            << (kind == "ion" ? "T_gas" : "T_e") << ";" << nl;
+        // THE WALL THERMAL SPEED NEEDS AN ELECTRON TEMPERATURE, and under
+        // LFA there is none to follow.
+        //
+        // Ions are at the gas temperature, always. Electrons are at T_e --
+        // but `T_e` is created by localEnergyEnergyModel, i.e. ONLY under
+        // LMEA. Emitting `T T_e` unconditionally made every LFA case with
+        // derived boundaries die at step 1 with "Temperature field 'T_e' not
+        // found in registry". Measured 2026-09-05; it had gone unnoticed
+        // because the LFA tutorials use hand-written zeroGradient conditions
+        // rather than derived ones, so the two-layer boundary architecture
+        // had only ever been exercised under LMEA.
+        //
+        // Under LFA the electron temperature at the wall is a MODELLING
+        // CHOICE and is stated as one: a fixed `TeV`, defaulting to 1 eV.
+        // Deriving it from the local field instead would import the LFA's own
+        // worst failure -- in a sheath the local E/N is enormous, so the
+        // local-equilibrium temperature there is far hotter than the
+        // population actually reaching the wall, and the wall flux would
+        // inherit that error. A fixed bulk-like value does not.
+        //
+        // The flux goes as sqrt(T_e), so the choice is weak: 1 eV against
+        // 2 eV is a factor 1.41 in wall flux, not orders.
+        if (kind == "ion")
+        {
+            os  << "        T               T_gas;" << nl;
+        }
+        else if (wallTeV > 0)
+        {
+            os  << "        TeV             " << wallTeV << ";" << nl;
+        }
+        else
+        {
+            os  << "        T               T_e;" << nl;
+        }
 
         os  << "        includeDriftFlux true;" << nl;
 
@@ -395,6 +425,7 @@ static void writeDerivedField
     const scalar internalValue,
     const word& kind,
     const word& fluxFamily,
+    const scalar wallTeV,
     const HashTable<patchRole>& roles,
     const dictionary& decl
 )
@@ -453,7 +484,7 @@ static void writeDerivedField
         (
             os, mesh, patchi,
             roles.found(name) ? roles[name] : prOpen,
-            kind, fluxFamily, material, emission
+            kind, fluxFamily, wallTeV, material, emission
         );
     }
 
@@ -681,6 +712,58 @@ int main(int argc, char* argv[])
     // The wall-flux family. `Mixed` imposes the flux through the mixed
     // condition's valueFraction; `Implicit` writes it into the matrix. Mixed is
     // the default because it is the one the validated multi-region cases use.
+    // THE WALL ELECTRON TEMPERATURE, resolved ONCE for the whole case (G1).
+    //
+    //   LMEA -> a negative sentinel, meaning "follow the T_e field".
+    //   LFA  -> a FIXED value in eV. There is no transported electron energy,
+    //           so the temperature the wall thermal speed uses is a modelling
+    //           choice, and it is stated as one rather than defaulted inside
+    //           each generated patch entry.
+    //
+    // DEFAULT 1 eV. It is the value the wall condition itself already
+    // documents as its own electron default, so the generated case and the
+    // condition agree rather than each carrying a number. Typical bulk
+    // electron temperatures in a collisional discharge are around 1 eV; a
+    // low-pressure glow runs hotter and 2-3 eV is defensible there. The wall
+    // flux goes as sqrt(T_e), so 1 eV against 2 eV is a factor 1.41 -- worth
+    // setting deliberately, not worth agonising over.
+    //
+    // Overridden with `wallTeV <eV>` at the top level of
+    // plasmaSpeciesProperties, beside `electronEnergyModel`, because it is a
+    // property of the closure rather than of any one patch.
+    scalar wallTeV = -1.0;
+    {
+        const word energyModel
+        (
+            speciesDict.getOrDefault<word>("electronEnergyModel", "none")
+        );
+
+        if (energyModel != "LMEA")
+        {
+            wallTeV = speciesDict.getOrDefault<scalar>("wallTeV", 1.0);
+
+            if (wallTeV <= 0)
+            {
+                FatalIOErrorInFunction(speciesDict)
+                    << "`wallTeV` must be positive; got " << wallTeV << "."
+                    << nl
+                    << "    It is the wall electron temperature in eV (kT)"
+                    << " used by the wall thermal speed under LFA." << nl
+                    << exit(FatalIOError);
+            }
+
+            if (Pstream::master())
+            {
+                Info<< "Wall electron temperature: TeV " << wallTeV
+                    << " eV (FIXED -- `" << energyModel << "` transports no"
+                    << " electron energy)." << nl
+                    << "    Set `wallTeV` in plasmaSpeciesProperties to"
+                    << " override. Under LMEA the field T_e is followed"
+                    << " instead." << endl;
+            }
+        }
+    }
+
     word fluxFamily("Mixed");
     {
         IOdictionary controls
@@ -758,7 +841,7 @@ int main(int argc, char* argv[])
         writeDerivedField
         (
             mesh, runTime, fieldName, dimDensity, 0.0,
-            kind, fluxFamily, roles, decl
+            kind, fluxFamily, wallTeV, roles, decl
         );
     }
 
@@ -790,7 +873,7 @@ int main(int argc, char* argv[])
             writeDerivedField
             (
                 mesh, runTime, "nEps_e", dimEnergyDensity, 0.0,
-                "energy", fluxFamily, roles, decl
+                "energy", fluxFamily, -1.0, roles, decl
             );
         }
     }
