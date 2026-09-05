@@ -2519,6 +2519,60 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     const word resolvedTableKey =
         cd.getOrDefault<word>("tableKey", derivedKey);
 
+    // UNITS MUST AGREE BETWEEN THE FIELD AND THE TABLE IT INDEXES.
+    //
+    // `tableKey` names a FILE SUFFIX and `lookupVariable` names a FIELD, and
+    // they are deliberately allowed to differ -- a mechanism tabulated against
+    // `EN` is legitimate and must keep working. But they may only differ in
+    // SPELLING, never in PHYSICAL QUANTITY: a reduced field is V m^2 and a mean
+    // energy is eV, and indexing one by the other is not an approximation, it
+    // is a category error.
+    //
+    // MEASURED 2026-09-06 on the Grubert dc glow. The LFA arm inherited
+    // `tableKey meanE` from the LMEA streamer bed it descends from. The
+    // chemistry field was `reducedE` (~2e-18 V m^2) and the tables it indexed
+    // ran 0-2644 eV, so EVERY lookup landed on the table floor: S_iz came out
+    // 1.9e-210 against an expected 1.1e+20, the discharge never ignited, and
+    // the run completed to endTime with a perfectly flat current that looked
+    // like a converged steady state. The solver PRINTED the mismatch on the
+    // line below and did nothing about it, which is what made it survive a
+    // full 45 us run and a plateau check.
+    {
+        // Group by the physical quantity, not the spelling.
+        auto quantityOf = [](const word& k) -> word
+        {
+            if (k == "reducedE" || k == "EN") return "reduced field [V m^2]";
+            if (k == "meanE")                 return "mean energy [eV]";
+            return "unknown";
+        };
+
+        const word qField = quantityOf(derivedKey);
+        const word qTable = quantityOf(resolvedTableKey);
+
+        if (qField != qTable || qField == "unknown")
+        {
+            FatalErrorInFunction
+                << "chemistry table units do not match the field they index."
+                << nl
+                << "    electronEnergyModel `" << energyModelName
+                << "` keys the chemistry on the FIELD `" << derivedKey
+                << "` (" << qField << ")," << nl
+                << "    but tableKey `" << resolvedTableKey
+                << "` selects table files tabulated against " << qTable << "."
+                << nl << nl
+                << "    These are different physical quantities. Every lookup"
+                << " would land at one end of the table and the rates would be"
+                << " silently wrong -- not approximate, wrong by hundreds of"
+                << " orders of magnitude." << nl << nl
+                << "    `tableKey` is DERIVED from electronEnergyModel. Delete"
+                << " it from plasmaTransportProperties/chemistry unless the"
+                << " mechanism's files really are tabulated against a"
+                << " differently-SPELLED name for the SAME quantity"
+                << " (`EN` for `reducedE`)." << nl
+                << exit(FatalError);
+        }
+    }
+
     Info<< "plasmaTransport: electron energy is " << energyModelName
         << ", so the chemistry field is `" << derivedKey
         << "` and the table files are keyed on `" << resolvedTableKey << "`."
