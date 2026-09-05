@@ -197,6 +197,12 @@ table keyed on `eps_bar` is used as a lookup, so the map `E/N -> eps_bar` must b
 one-to-one or a single mean energy would correspond to two fields with two
 different coefficients.
 
+**How often does this actually bite?** Rarely. The sweep trims (below) and the
+shipped air mechanism is untrimmed. It is an edge case with a clear error
+message, not a routine hazard -- and it is explicitly **not** a reason to prefer
+the LFA. See [`lfa-vs-lmea.md`](../../../../Projects/SoEEDF/docs/lfa-vs-lmea.md)
+for which closure the literature says to use, and why this solver still asks.
+
 This fails in **attachment-dominated** mixtures. Attachment removes electrons
 energy-selectively — dissociative attachment in O2 peaks near 6-8 eV, taking the
 high-energy tail — so over some range of `E/N` the mean energy of the *surviving*
