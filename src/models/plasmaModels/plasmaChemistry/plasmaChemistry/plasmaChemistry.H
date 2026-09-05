@@ -85,9 +85,6 @@ class plasmaChemistry
         mutable scalarField kTab_;
         mutable autoPtr<plasmaChemistryODE> ode_;
 
-        //- See setTe(). Negative means "not supplied".
-        mutable scalar Te_ = -1.0;
-        mutable bool TeSet_ = false;
         mutable autoPtr<ODESolver> solver_;
 
         dictionary odeDict_;
@@ -132,7 +129,7 @@ class plasmaChemistry
         //- Compare native and Cantera heavy P/L at a reference state.
         //  Returns the largest relative difference; see the constructor for
         //  why this is checked rather than assumed.
-        scalar checkBackends(const scalar Tgas) const;
+        scalar checkBackends(const scalar Tgas, const scalar Te) const;
         void readMechanism(const fileName& path, const dictionary& dict);
 
 
@@ -159,35 +156,6 @@ public:
             ode_->setCrossSinkLimit(c);
         }
 
-
-        //- THE ELECTRON TEMPERATURE [K] for electron-keyed heavy reactions.
-        //
-        //  Passed out of band rather than as another argument on eight
-        //  methods.
-        //
-        //  IT IS NOT CONSUMED, and that is a deliberate trade-off. The first
-        //  version cleared the flag on every forward, so a caller that set it
-        //  once and then made two chemistry calls got a fatal error. That is
-        //  the stronger guarantee, but there are a dozen entry points across
-        //  the CFD solver, the 0-D reactor, the Jacobian check and the Cantera
-        //  cross-check, and finding them by running into the error one at a
-        //  time is not a design. So the value PERSISTS until replaced.
-        //
-        //  What is still guaranteed: rateCoeff() is FATAL on an electron-keyed
-        //  reaction if no value has EVER been supplied, so the original defect
-        //  -- silently using T_gas -- cannot come back. What is no longer
-        //  guaranteed: a path that forgets to update it uses the previous
-        //  cell's Te. That is wrong by the cell-to-cell variation of Te rather
-        //  than by the 300 K-to-eV factor of 4 to 40, so it is a far smaller
-        //  error, and it is a staleness bug of the kind a callback would
-        //  remove properly. Recorded as the follow-up.
-        //
-        //  Convert from a mean energy with Te[K] = (2/3) eps[eV] * 11604.5.
-        void setTe(const scalar Te) const
-        {
-            Te_ = Te;
-            TeSet_ = true;
-        }
 
         label nSpecie() const { return species_.size(); }
         const wordList& species() const { return species_; }
@@ -264,11 +232,31 @@ public:
         //- Whether the energy equation is part of the integrated state.
         bool energyIntegrated() const;
 
+        //- TWO TEMPERATURES, BOTH REQUIRED, on every entry point below.
+        //
+        //  In a non-equilibrium plasma the electrons sit at Te and the heavy
+        //  species at T_gas, and a rate coefficient follows whichever
+        //  partner's speed sets the collision rate. Which one a given
+        //  reaction uses is DERIVED from whether an electron is among its
+        //  reactants -- see plasmaReactionSpec::electronKeyed.
+        //
+        //  WHY A PARAMETER AND NOT A SETTER. The first fix for gap 11b pushed
+        //  Te through a setTe() call before each use, which left a staleness
+        //  window: a path that forgot to UPDATE it silently used the previous
+        //  cell's electron temperature. With a dozen entry points across the
+        //  CFD solver, the 0-D reactor, the Jacobian check and the Cantera
+        //  cross-check, "remember to call the setter" is not a guarantee. As a
+        //  required argument, omitting it is a COMPILE ERROR -- the only
+        //  enforcement strong enough for a quantity whose absence meant a
+        //  factor of 4 to 40 on dissociative recombination.
+        //
+        //  Te in KELVIN. From a mean energy: Te = (2/3) eps[eV] * 11604.518.
         void integrate
         (
             scalarField& n,
             const scalarField& kTab,
             const scalar Tgas,
+            const scalar Te,
             const scalar dt,
             const scalarField* ext = nullptr,
             const scalarField* extSlope = nullptr
@@ -276,28 +264,30 @@ public:
 
         //- Right-hand side and Jacobian at a state, for verification.
         void derivatives(const scalarField& n, const scalarField& kTab,
-                         const scalar Tgas, scalarField& dndt) const;
+                         const scalar Tgas, const scalar Te,
+                         scalarField& dndt) const;
         void jacobian(const scalarField& n, const scalarField& kTab,
-                      const scalar Tgas, scalarField& dfdx,
+                      const scalar Tgas, const scalar Te, scalarField& dfdx,
                       scalarSquareMatrix& dfdy) const;
 
         //- Instantaneous production and loss coefficient at this state,
         //  dn_s/dt = P_s - L_s n_s. See plasmaChemistryODE::productionLoss.
         void productionLoss(const scalarField& n, const scalarField& kTab,
-                            const scalar Tgas, scalarField& P,
-                            scalarField& L) const;
+                            const scalar Tgas, const scalar Te,
+                            scalarField& P, scalarField& L) const;
 
         //- Heat released to the gas by the HEAVY reactions [eV m^-3 s^-1].
         //  Fast gas heating. Excludes the electron-impact channels, which are
         //  covered by the tabulated PgasN -- see plasmaChemistryODE.
-        scalar heavyHeatRelease(const scalarField& n, const scalar Tgas) const;
+        scalar heavyHeatRelease(const scalarField& n, const scalar Tgas,
+                                const scalar Te) const;
 
         //- Relative charge residual of the right-hand side at this state.
         //  Identically zero for a charge-conserving mechanism, whatever the
         //  state, so a non-zero value is an unbalanced reaction and nothing
         //  else.
         scalar chargeResidual(const scalarField& n, const scalarField& kTab,
-                              const scalar Tgas) const;
+                              const scalar Tgas, const scalar Te) const;
 };
 
 

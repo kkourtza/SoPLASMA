@@ -566,18 +566,7 @@ protected:
         //  that fallback WAS the defect (gap 11b).
         scalar TeCell(const label celli) const;
 
-        //- T_gas for a cell, AND the electron temperature handed to the
-        //  chemistry for the same cell.
-        //
-        //  ONE function deliberately doing both, because there are NINE
-        //  chemistry call sites and supplying T_gas without Te at any one of
-        //  them is a silent reversion to gap 11b -- the defect where an
-        //  electron-temperature exponent was evaluated at the gas
-        //  temperature. Coupling them makes that unrepresentable rather than
-        //  merely discouraged.
-        //  Out of line because plasmaChemistry is only forward-declared in
-        //  this header -- see the note on plasmaRateTable above.
-        scalar chemTgas(const label celli) const;
+
 
         inline scalar TgasCell(const label celli) const
         {

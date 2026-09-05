@@ -194,7 +194,11 @@ void Foam::plasmaChemistry::readMechanism
 }
 
 
-Foam::scalar Foam::plasmaChemistry::checkBackends(const scalar Tgas) const
+Foam::scalar Foam::plasmaChemistry::checkBackends
+(
+    const scalar Tgas,
+    const scalar Te
+) const
 {
     if (!cantera_) return 0.0;
 
@@ -221,9 +225,7 @@ Foam::scalar Foam::plasmaChemistry::checkBackends(const scalar Tgas) const
     ode_->setCantera(nullptr);
     ode_->setHeavy(true);
     ode_->setTgas(Tgas);
-    // Forward the electron temperature. See plasmaChemistry::setTe for why
-    // this is NOT consumed.
-    ode_->setTe(Te_);
+    ode_->setTe(Te);
 
     scalarField Pn, Ln;
     ode_->productionLoss(n, Pn, Ln);
@@ -423,7 +425,14 @@ Foam::plasmaChemistry::plasmaChemistry
         // Cantera's answer is then the correct one. It is reported either way,
         // because "the backends differ and here is by how much" is information
         // the user needs and cannot get anywhere else.
-        backendMismatch_ = checkBackends(dict.getOrDefault<scalar>("Tgas", 300.0));
+        // A REFERENCE STATE, not a discharge: the two backends are compared
+        // at one temperature, so Te = T_gas here is the correct choice and not
+        // a fallback. Using a discharge Te would compare them at a state
+        // neither was tabulated for.
+        {
+            const scalar Tref = dict.getOrDefault<scalar>("Tgas", 300.0);
+            backendMismatch_ = checkBackends(Tref, Tref);
+        }
 
         Info<< "plasmaChemistry: heavy chemistry from Cantera, " << yaml.name()
             << nl
@@ -531,6 +540,7 @@ void Foam::plasmaChemistry::integrate
     scalarField& n,
     const scalarField& kTab,
     const scalar Tgas,
+    const scalar Te,
     const scalar dt,
     const scalarField* ext,
     const scalarField* extSlope
@@ -538,9 +548,7 @@ void Foam::plasmaChemistry::integrate
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
-    // Forward the electron temperature. See plasmaChemistry::setTe for why
-    // this is NOT consumed.
-    ode_->setTe(Te_);
+    ode_->setTe(Te);
     ode_->setExternal(ext);
     ode_->setExternalSlope(extSlope, dt);
 
@@ -574,14 +582,12 @@ void Foam::plasmaChemistry::integrate
 void Foam::plasmaChemistry::derivatives
 (
     const scalarField& n, const scalarField& kTab,
-    const scalar Tgas, scalarField& dndt
+    const scalar Tgas, const scalar Te, scalarField& dndt
 ) const
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
-    // Forward the electron temperature. See plasmaChemistry::setTe for why
-    // this is NOT consumed.
-    ode_->setTe(Te_);
+    ode_->setTe(Te);
     dndt.setSize(species_.size());
     ode_->derivatives(0.0, n, dndt);
 }
@@ -590,14 +596,13 @@ void Foam::plasmaChemistry::derivatives
 void Foam::plasmaChemistry::jacobian
 (
     const scalarField& n, const scalarField& kTab,
-    const scalar Tgas, scalarField& dfdx, scalarSquareMatrix& dfdy
+    const scalar Tgas, const scalar Te, scalarField& dfdx,
+    scalarSquareMatrix& dfdy
 ) const
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
-    // Forward the electron temperature. See plasmaChemistry::setTe for why
-    // this is NOT consumed.
-    ode_->setTe(Te_);
+    ode_->setTe(Te);
     dfdx.setSize(species_.size());
     ode_->jacobian(0.0, n, dfdx, dfdy);
 }
@@ -606,14 +611,12 @@ void Foam::plasmaChemistry::jacobian
 void Foam::plasmaChemistry::productionLoss
 (
     const scalarField& n, const scalarField& kTab,
-    const scalar Tgas, scalarField& P, scalarField& L
+    const scalar Tgas, const scalar Te, scalarField& P, scalarField& L
 ) const
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
-    // Forward the electron temperature. See plasmaChemistry::setTe for why
-    // this is NOT consumed.
-    ode_->setTe(Te_);
+    ode_->setTe(Te);
     ode_->setExternal(nullptr);
     ode_->productionLoss(n, P, L);
 
@@ -629,13 +632,12 @@ void Foam::plasmaChemistry::productionLoss
 Foam::scalar Foam::plasmaChemistry::heavyHeatRelease
 (
     const scalarField& n,
-    const scalar Tgas
+    const scalar Tgas,
+    const scalar Te
 ) const
 {
     ode_->setTgas(Tgas);
-    // Forward the electron temperature. See plasmaChemistry::setTe for why
-    // this is NOT consumed.
-    ode_->setTe(Te_);
+    ode_->setTe(Te);
     return ode_->heavyHeatRelease(n);
 }
 
@@ -644,14 +646,13 @@ Foam::scalar Foam::plasmaChemistry::chargeResidual
 (
     const scalarField& n,
     const scalarField& kTab,
-    const scalar Tgas
+    const scalar Tgas,
+    const scalar Te
 ) const
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
-    // Forward the electron temperature. See plasmaChemistry::setTe for why
-    // this is NOT consumed.
-    ode_->setTe(Te_);
+    ode_->setTe(Te);
     return ode_->chargeResidual(n);
 }
 

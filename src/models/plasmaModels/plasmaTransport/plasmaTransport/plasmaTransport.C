@@ -421,13 +421,6 @@ void plasmaTransport::correctTransportModels()
 }
 
 // This is for the positive streamer case
-Foam::scalar Foam::plasmaTransport::chemTgas(const label celli) const
-{
-    chem_->setTe(TeCell(celli));
-    return TgasCell(celli);
-}
-
-
 Foam::scalar Foam::plasmaTransport::TeCell(const label celli) const
 {
     const fvMesh& m = species_.mesh();
@@ -771,7 +764,9 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
         // source answers it at a single plasma state.
         const scalar qPrompt = (Pel[celli] + Pgs[celli])*nEl*nHeavy*EVJ;
         const scalar qHeavy =
-            chem_ ? chem_->heavyHeatRelease(n, T[celli])*EVJ : 0.0;
+            chem_
+          ? chem_->heavyHeatRelease(n, T[celli], TeCell(celli))*EVJ
+          : 0.0;
 
         gasHeatPrompt_ += qPrompt*mesh_.V()[celli];
         gasHeatHeavy_ += qHeavy*mesh_.V()[celli];
@@ -2917,7 +2912,7 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         if (!chemCellsReported_)
         {
             chemResidualMax_ =
-                max(chemResidualMax_, chem_->chargeResidual(n, kTab, chemTgas(celli)));
+                max(chemResidualMax_, chem_->chargeResidual(n, kTab, TgasCell(celli), TeCell(celli)));
         }
 
         // Transport rate for this cell, from the previous outer iteration.
@@ -2979,7 +2974,7 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
             {
                 chem_->integrate
                 (
-                    yE, kTab, chemTgas(celli), dt,
+                    yE, kTab, TgasCell(celli), TeCell(celli), dt,
                     haveExt ? &ext : nullptr,
                     haveExt ? &extS : nullptr
                 );
@@ -2989,7 +2984,7 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
             {
                 chem_->integrate
                 (
-                    n, kTab, chemTgas(celli), dt,
+                    n, kTab, TgasCell(celli), TeCell(celli), dt,
                     haveExt ? &ext : nullptr,
                     haveExt ? &extS : nullptr
                 );
@@ -3089,7 +3084,7 @@ void Foam::plasmaTransport::computeChemistrySources(const scalar dt)
         // robustly where a linearised step would be unstable. Only the
         // reconstruction changes -- P/L at that state, so the loss stays
         // implicit and charge is exact by construction, no projection needed.
-        chem_->productionLoss(n, kTab, chemTgas(celli), Pend, Lend);
+        chem_->productionLoss(n, kTab, TgasCell(celli), TeCell(celli), Pend, Lend);
         for (label s = 0; s < nSp; ++s)
         {
             chemP_[s][celli] = Pend[s];
@@ -3424,7 +3419,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 kTab[j] = rates_->k(j).primitiveField()[celli];
             }
 
-            chem_->productionLoss(n, kTab, chemTgas(celli), P, L);
+            chem_->productionLoss(n, kTab, TgasCell(celli), TeCell(celli), P, L);
 
             // Stiffness, as the solver actually experiences it: L*dt is the
             // number of loss timescales crossed in one step. Large is not
@@ -3510,7 +3505,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                     const scalar n0s = chemN0_[sp][celli];
                     nMid[sp] = (n0s + P[sp]*h)/(1.0 + L[sp]*h);
                 }
-                chem_->productionLoss(nMid, kTab, chemTgas(celli), Pm, Lm);
+                chem_->productionLoss(nMid, kTab, TgasCell(celli), TeCell(celli), Pm, Lm);
 
                 const scalar absPart = chemErrorAbsFrac_*chemErrorRefDensity_;
                 scalar errNorm = 0;
@@ -3659,7 +3654,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                     {
                         chem_->integrate
                         (
-                            yE, kTab, chemTgas(celli), dtNow,
+                            yE, kTab, TgasCell(celli), TeCell(celli), dtNow,
                             haveExtA ? &extA : nullptr,
                             haveExtA ? &extAS : nullptr
                         );
@@ -3669,7 +3664,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                     {
                         chem_->integrate
                         (
-                            nEnd, kTab, chemTgas(celli), dtNow,
+                            nEnd, kTab, TgasCell(celli), TeCell(celli), dtNow,
                             haveExtA ? &extA : nullptr,
                             haveExtA ? &extAS : nullptr
                         );
@@ -3741,7 +3736,7 @@ bool Foam::plasmaTransport::mechanismSourceTerms
                 // linearised step would be unstable; only the reconstruction
                 // changes. Charge is exact by construction here, so the
                 // explicit projection the mean-rate form needed is gone.
-                chem_->productionLoss(nEnd, kTab, chemTgas(celli), P, L);
+                chem_->productionLoss(nEnd, kTab, TgasCell(celli), TeCell(celli), P, L);
                 }
             }
 

@@ -101,34 +101,15 @@ static scalar tableAt(const fileName& path, const scalar x)
 
 
 
-// THE ELECTRON TEMPERATURE handed to the chemistry for electron-keyed heavy
-// reactions -- dissociative recombination and the like, whose Arrhenius
-// exponent is an ELECTRON-temperature exponent.
-//
-// Before 2026-09-05 every heavy rate was evaluated at T_gas, which for
-// e+N2+ (b=-0.39) and e+O2+ (b=-0.7) overstated the rate by 4-8x and 13-40x
-// respectively at 1-5 eV. plasmaChemistry::setTe now supplies it and the
-// solver is FATAL if it is missing rather than falling back.
-//
-// eps = (3/2) k Te, so Te[K] = (2/3) eps[eV] * 11604.518.
-static inline void supplyTe
-(
-    const Foam::plasmaChemistry& chem,
-    const Foam::scalar eps_eV
-)
+// Te FROM A MEAN ENERGY. eps = (3/2) k Te, so Te[K] = (2/3) eps[eV]*11604.518.
+// Every chemistry entry point now REQUIRES Te as an argument -- see
+// plasmaChemistry.H -- so this is just the conversion, not a setter.
+static inline Foam::scalar TeOf(const Foam::scalar eps_eV)
 {
-    chem.setTe(eps_eV > 0 ? (2.0/3.0)*eps_eV*11604.518 : -1.0);
+    return eps_eV > 0 ? (2.0/3.0)*eps_eV*11604.518 : -1.0;
 }
 
 
-
-// Integrate one substep, carrying the electron energy density in the state
-// vector when Option 4 is active.
-//
-// `n` stays the SPECIES vector everywhere else in this file; the padded copy
-// lives only for the duration of the call. Resizing `n` itself would mean
-// every output loop, every chemistry call and every energy-budget sum had to
-// know about the extra slot.
 static void integrateWithEnergy
 (
     const Foam::plasmaChemistry& chem,
@@ -140,18 +121,16 @@ static void integrateWithEnergy
     const bool withEnergy,
     const Foam::scalar Emag,
     const Foam::scalar Ngas,
-    const Foam::scalar eps_eV     //!< electron mean energy, for setTe
+    const Foam::scalar eps_eV     //!< electron mean energy -> Te
 )
 {
-    // REQUIRED, not optional: electron-keyed heavy rates (dissociative
-    // recombination) follow Te, and the solver is fatal without it.
-    supplyTe(chem, eps_eV);
+    const Foam::scalar Te = TeOf(eps_eV);
 
     if (!withEnergy)
     {
         // LFA arm: no transported energy here, so the caller must have
         // supplied Te already (from the meanEnergy table). Left as set.
-        chem.integrate(n, kTab, T, dt);
+        chem.integrate(n, kTab, T, Te, dt);
         return;
     }
 
@@ -162,7 +141,7 @@ static void integrateWithEnergy
     for (Foam::label i = 0; i < nSp; ++i) y[i] = n[i];
     y[nSp] = nEps;
 
-    chem.integrate(y, kTab, T, dt);
+    chem.integrate(y, kTab, T, Te, dt);
 
     for (Foam::label i = 0; i < nSp; ++i) n[i] = y[i];
     nEps = Foam::max(y[nSp], Foam::scalar(0));
@@ -772,7 +751,7 @@ int main(int argc, char *argv[])
     Info<< "plasmaChemistry0D: E/N = " << EN_Td << " Td, T = " << Tgas
         << " K, N = " << nGas << " 1/m3, n_e0 = " << ne0 << " 1/m3" << nl
         << "  charge residual of the RHS at t=0: "
-        << (supplyTe(chem, meanE0), chem.chargeResidual(n, kTab, Tgas)) << endl;
+        << chem.chargeResidual(n, kTab, Tgas, TeOf(meanE0)) << endl;
 
     // ---- Jacobian verification -------------------------------------------
     //
@@ -787,9 +766,8 @@ int main(int argc, char *argv[])
         scalarField f0(nEq), fp(nEq), dfdx(nEq);
         scalarSquareMatrix J(nEq, Zero);
 
-        supplyTe(chem, meanE0);
-        chem.derivatives(y, kTab, Tgas, f0);
-        chem.jacobian(y, kTab, Tgas, dfdx, J);
+        chem.derivatives(y, kTab, Tgas, TeOf(meanE0), f0);
+        chem.jacobian(y, kTab, Tgas, TeOf(meanE0), dfdx, J);
 
         // Scaled comparison. A naive relative error is meaningless here:
         // d(N2)/dt is ~1e20 while perturbing a trace species changes it by
@@ -802,8 +780,7 @@ int main(int argc, char *argv[])
         {
             const scalar h = 1e-6*max(mag(y[j]), scalar(1));
             scalarField yp(y); yp[j] += h;
-            supplyTe(chem, meanE0);
-            chem.derivatives(yp, kTab, Tgas, fp);
+            chem.derivatives(yp, kTab, Tgas, TeOf(meanE0), fp);
 
             // Cancellation floor: double precision on the largest |f| in this
             // column, times a safety margin.
@@ -1231,8 +1208,8 @@ int main(int argc, char *argv[])
             }
             else
             {
-                supplyTe(chem, lmea ? meanELmea : meanELfa);
-                chem.productionLoss(n, kTab, T, Pchem, Lchem);
+                chem.productionLoss(n, kTab, T,
+                    TeOf(lmea ? meanELmea : meanELfa), Pchem, Lchem);
                 scalar Ldtmax = 0.0;
                 forAll(Lchem, si) Ldtmax = max(Ldtmax, Lchem[si]*dt);
 
@@ -1278,8 +1255,9 @@ int main(int argc, char *argv[])
                     {
                         if (it > 0)
                         {
-                            supplyTe(chem, lmea ? meanELmea : meanELfa);
-                            chem.productionLoss(n, kTab, T, Pchem, Lchem);
+                            chem.productionLoss(n, kTab, T,
+                                TeOf(lmea ? meanELmea : meanELfa),
+                                Pchem, Lchem);
                         }
                         forAll(n, si)
                         {
@@ -1334,8 +1312,8 @@ int main(int argc, char *argv[])
                             const scalarField nStart(nHalf);
                             for (label it = 0; it < nOuterCorr; ++it)
                             {
-                                supplyTe(chem, lmea ? meanELmea : meanELfa);
-                                chem.productionLoss(nHalf, kTab, T, Ph, Lh);
+                                chem.productionLoss(nHalf, kTab, T,
+                                    TeOf(lmea ? meanELmea : meanELfa), Ph, Lh);
                                 forAll(nHalf, si)
                                 {
                                     nHalf[si] = (nStart[si] + Ph[si]*0.5*dt)
@@ -1471,7 +1449,7 @@ int main(int argc, char *argv[])
                 // inelastic defect. The heavy reactions add fast gas heating
                 // on top, from their own enthalpies.
                 const scalar Qprompt = (Pel + Pgs)*ne*nHeavy*EVJ;
-                const scalar Qheavy  = chem.heavyHeatRelease(n, T)*EVJ;
+                const scalar Qheavy  = chem.heavyHeatRelease(n, T, TeOf(lmea ? meanELmea : meanELfa))*EVJ;
 
                 // Vibrational reservoir. It FILLS during the pulse and empties
                 // on tau_VT, which is microseconds -- so on this timescale the
@@ -1663,8 +1641,8 @@ int main(int argc, char *argv[])
     }
 
     Info<< "  charge residual of the RHS at t=end: "
-        << (supplyTe(chem, lmea ? meanELmea : meanELfa),
-            chem.chargeResidual(n, kTab, Tgas)) << nl
+        << chem.chargeResidual(n, kTab, Tgas,
+               TeOf(lmea ? meanELmea : meanELfa)) << nl
         << "wrote " << out << endl;
     return 0;
 }
