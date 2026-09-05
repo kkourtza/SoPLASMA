@@ -157,28 +157,65 @@ int main(int argc, char *argv[])
     // ---- which regions exist, and of what kind ----------------------------
     HashTable<word> kindOfRegion;      // region name -> gas | dielectric | farField
     {
-        IOdictionary rp
+        // SINGLE-REGION CASES HAVE NO regionProperties, and must still work.
+        //
+        // This read was MUST_READ, so a case with one mesh -- a plain gas gap
+        // between two metal electrodes, where the electrodes are BOUNDARIES and
+        // there is nothing to couple -- aborted with "cannot find file
+        // constant/regionProperties" and could not use the semantic layer at
+        // all. The only way through was to declare a one-entry region list and
+        // hand-move the mesh into constant/<region>/polyMesh, which is
+        // machinery a single-region case should never need.
+        //
+        // plasmaCreateSpeciesFields ALREADY did the right thing here
+        // (`if (isFile(regionPropsFile))`, then fall back to constant/), so the
+        // two halves of the generator disagreed about the same guard: one
+        // accepted a single-region case and the other refused it. Measured
+        // 2026-09-05, the first time either was run on one.
+        const fileName regionPropsFile
         (
-            IOobject
-            (
-                "regionProperties",
-                runTime.constant(),
-                runTime,
-                IOobject::MUST_READ,
-                IOobject::NO_WRITE,
-                IOobject::NO_REGISTER
-            )
+            runTime.constant()/"regionProperties"
         );
 
-        HashTable<wordList> regions;
-        rp.readEntry("regions", regions);
-
-        forAllConstIters(regions, iter)
+        if (isFile(regionPropsFile))
         {
-            for (const word& r : iter.val())
+            IOdictionary rp
+            (
+                IOobject
+                (
+                    "regionProperties",
+                    runTime.constant(),
+                    runTime,
+                    IOobject::MUST_READ,
+                    IOobject::NO_WRITE,
+                    IOobject::NO_REGISTER
+                )
+            );
+
+            HashTable<wordList> regions;
+            rp.readEntry("regions", regions);
+
+            forAllConstIters(regions, iter)
             {
-                kindOfRegion.insert(r, iter.key());
+                for (const word& r : iter.val())
+                {
+                    kindOfRegion.insert(r, iter.key());
+                }
             }
+        }
+        else
+        {
+            // The default region reads constant/polyMesh and writes its fields
+            // into 0/ with no subdirectory -- which is exactly the single-region
+            // layout. It is treated as `gas`, because a case with one region and
+            // a plasma in it has no other sensible reading: a lone dielectric
+            // region would have nothing to be a barrier to.
+            kindOfRegion.insert(polyMesh::defaultRegion, "gas");
+
+            Info<< "No constant/regionProperties: treating this as a"
+                << " SINGLE-REGION case," << nl
+                << "    region \"" << polyMesh::defaultRegion
+                << "\" of kind \"gas\"." << nl << endl;
         }
     }
 

@@ -93,7 +93,20 @@ FoamFile
 drivenElectrode
 {
     description "A conductor held at a known, usually time-varying potential.";
-    optional    { material none; }
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { material none; gammaSEE -1; electronReflection -1; }
     // APPROPRIATE MECHANISMS: ionInducedSEE (the classical cathode process),
     // fieldEmission at a sharp tip, thermionicEmission if the electrode is hot,
     // electronInducedSEE where the sheath is energetic. None is active unless
@@ -114,7 +127,20 @@ drivenElectrode
 groundedElectrode
 {
     description "A conductor held at zero potential.";
-    optional    { material none; }
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { material none; gammaSEE -1; electronReflection -1; }
     // APPROPRIATE MECHANISMS: as drivenElectrode. A grounded electrode is
     // still a metal surface and still emits.
 
@@ -135,7 +161,20 @@ floatingElectrode
     // the conductor charges POSITIVE, which raises its potential and changes
     // the flux arriving. That coupling is physical and is handled, but it is
     // worth expecting.
-    optional    { initialCharge 0; }
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { initialCharge 0; gammaSEE -1; electronReflection -1; }
 
     // No potential entry, deliberately: supplying one would make this a driven
     // electrode. The condition itself rejects `potential`/`uniformValue`/`V`.
@@ -166,6 +205,21 @@ thinDielectricSurface
     // insulator charge POSITIVE. delta_max is NOT shipped for insulators -- see
     // etc/materials/workFunctions for why -- so it must be given explicitly.
     requires    ( material );
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { gammaSEE -1; electronReflection -1; }
+
 
     // C = 0, so pure Neumann: eps_g dV/dn = sigma. NO thickness and NO
     // epsilonR -- with nothing behind the sheet there is no capacitance, and
@@ -185,6 +239,21 @@ thinDielectricOnElectrode
 {
     description "A thin barrier bonded to an electrode: a capacitor to it.";
     requires    ( material thickness backingPotential );
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { gammaSEE -1; electronReflection -1; }
+
 
     // C = eps0*epsilonR/d, so Robin: eps_g dV/dn = sigma - C (V - Vb).
     // `thickness` and `backingPotential` are a PAIR and the condition rejects
@@ -224,7 +293,20 @@ openBoundary
 insulatingWall
 {
     description "A solid wall that is not an electrode and does not charge.";
-    optional    { material none; }
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { material none; gammaSEE -1; electronReflection -1; }
     // APPROPRIATE MECHANISMS: as thinDielectricSurface, though a wall that
     // does not accumulate charge is usually not the place emission matters.
 

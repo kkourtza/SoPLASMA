@@ -255,7 +255,10 @@ static void writePatchEntry
     const word& fluxFamily,    //!< "Mixed" | "Implicit"
     const scalar wallTeV,      //!< fixed wall Te [eV], or <=0 to follow T_e
     const word& material,      //!< the surface's material, or word::null
-    const dictionary& emission //!< emission mechanisms, possibly empty
+    const dictionary& emission,//!< emission mechanisms, possibly empty
+    const scalar gammaSEE,     //!< declared secondary yield, or -1 if not given
+    const scalar eReflection,  //!< declared electron reflection, or -1
+    const scalar gasTconst     //!< fixed gas T [K], or <=0 to follow T_gas
 )
 {
     const polyPatch& pp = mesh.boundaryMesh()[patchi];
@@ -343,7 +346,23 @@ static void writePatchEntry
         // 2 eV is a factor 1.41 in wall flux, not orders.
         if (kind == "ion")
         {
-            os  << "        T               T_gas;" << nl;
+            // THE ION WALL SPEED NEEDS A GAS TEMPERATURE, and with the gas
+            // energy equation switched off there is no `T_gas` field.
+            //
+            // Exactly the mirror of the LFA/`T_e` case documented above, and it
+            // failed the same way: `T T_gas` was written unconditionally, so the
+            // first isothermal case with derived boundaries died at step 1 with
+            // "Temperature field 'T_gas' not found in registry". Measured
+            // 2026-09-05. The condition accepts a constant in the same key, so
+            // an isothermal case gets the temperature it declared.
+            if (gasTconst > 0)
+            {
+                os  << "        T               " << gasTconst << ";" << nl;
+            }
+            else
+            {
+                os  << "        T               T_gas;" << nl;
+            }
         }
         else if (wallTeV > 0)
         {
@@ -380,6 +399,35 @@ static void writePatchEntry
         if (kind == "electron" && !material.empty())
         {
             os  << "        material        " << material << ";" << nl;
+        }
+
+        // A DECLARED SECONDARY YIELD. `gammaSEE 0.06;` on the patch in
+        // configuration/boundaries, and the generator turns emission on and
+        // sets the coefficient -- the user does not touch a changeDictionary.
+        //
+        // This is the numeric route, and it exists alongside `material`, not
+        // instead of it: a validation case reproducing a published gamma must
+        // use THAT number, not one this framework derives from a work
+        // function. Declaring it therefore WINS over the material.
+        if (kind == "electron" && gammaSEE >= 0)
+        {
+            os  << "        enableSEE       true;" << nl
+                << "        defaultSEEC     " << gammaSEE << ";" << nl;
+        }
+
+        // ELECTRON REFLECTION GOES ON THE ENERGY CONDITION TOO.
+        //
+        // Not a copy-paste: the Hagelaar closure uses the reflection
+        // coefficient in the ENERGY weight as well as the particle flux
+        // (eq. 6.2 with the total wall speed, and eq. 6.15), so writing it on
+        // n_e alone leaves the energy condition running at r = 0 against a
+        // particle condition at r = 0.36 -- two different walls. This is the
+        // same defect class as `includeDriftFlux` needing to be set on the
+        // energy condition (commit 9c2f094); it is written for both kinds here
+        // so a case cannot reproduce it.
+        if ((kind == "electron" || kind == "energy") && eReflection >= 0)
+        {
+            os  << "        electronReflection " << eReflection << ";" << nl;
         }
 
         // EMISSION MECHANISMS, verbatim from the boundary role (or a per-patch
@@ -426,6 +474,7 @@ static void writeDerivedField
     const word& kind,
     const word& fluxFamily,
     const scalar wallTeV,
+    const scalar gasTconst,
     const HashTable<patchRole>& roles,
     const dictionary& decl
 )
@@ -459,6 +508,11 @@ static void writeDerivedField
         // editing the shipped library.
         word material(word::null);
         dictionary emission;
+        // -1 means NOT DECLARED, which is distinct from a declared zero:
+        // `electronReflection 0` is a real, meaningful choice (a perfectly
+        // absorbing wall) and must not be silently dropped as "unset".
+        scalar gammaSEE = -1;
+        scalar eReflection = -1;
 
         if (decl.found(name))
         {
@@ -475,16 +529,26 @@ static void writeDerivedField
                 );
 
                 if (role.found("emission")) emission = role.subDict("emission");
+
+                // A role may carry defaults for these; a patch overrides them.
+                gammaSEE = role.getOrDefault<scalar>("gammaSEE", gammaSEE);
+                eReflection =
+                    role.getOrDefault<scalar>("electronReflection", eReflection);
             }
 
             if (pd.found("emission")) emission = pd.subDict("emission");
+
+            gammaSEE = pd.getOrDefault<scalar>("gammaSEE", gammaSEE);
+            eReflection =
+                pd.getOrDefault<scalar>("electronReflection", eReflection);
         }
 
         writePatchEntry
         (
             os, mesh, patchi,
             roles.found(name) ? roles[name] : prOpen,
-            kind, fluxFamily, wallTeV, material, emission
+            kind, fluxFamily, wallTeV, material, emission,
+            gammaSEE, eReflection, gasTconst
         );
     }
 
@@ -731,6 +795,26 @@ int main(int argc, char* argv[])
     // Overridden with `wallTeV <eV>` at the top level of
     // plasmaSpeciesProperties, beside `electronEnergyModel`, because it is a
     // property of the closure rather than of any one patch.
+    // THE GAS TEMPERATURE FOR THE ION WALL SPEED.
+    //
+    // Only needed when the gas energy equation is NOT solved: then no `T_gas`
+    // field exists and the ion conditions must carry the constant the case
+    // declared. Derived from backgroundGas/energy, so an isothermal case does
+    // not restate its temperature on every patch.
+    scalar gasTconst = -1.0;
+    if (speciesDict.found("backgroundGas"))
+    {
+        const dictionary& bg = speciesDict.subDict("backgroundGas");
+        if (bg.found("energy"))
+        {
+            const dictionary& en = bg.subDict("energy");
+            if (!en.getOrDefault<bool>("solve", false))
+            {
+                gasTconst = en.getOrDefault<scalar>("T", 300.0);
+            }
+        }
+    }
+
     scalar wallTeV = -1.0;
     {
         const word energyModel
@@ -841,7 +925,7 @@ int main(int argc, char* argv[])
         writeDerivedField
         (
             mesh, runTime, fieldName, dimDensity, 0.0,
-            kind, fluxFamily, wallTeV, roles, decl
+            kind, fluxFamily, wallTeV, gasTconst, roles, decl
         );
     }
 
@@ -873,7 +957,7 @@ int main(int argc, char* argv[])
             writeDerivedField
             (
                 mesh, runTime, "nEps_e", dimEnergyDensity, 0.0,
-                "energy", fluxFamily, -1.0, roles, decl
+                "energy", fluxFamily, -1.0, gasTconst, roles, decl
             );
         }
     }
