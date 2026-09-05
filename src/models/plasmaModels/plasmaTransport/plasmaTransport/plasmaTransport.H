@@ -886,6 +886,13 @@ public:
         //- Access the EM model through species
         inline const electromagneticsModel& em() const;
 
+        //- Where the coefficient sweep lives. Exposed so a diagnostic can
+        //  read a table the transport model does not itself consume --
+        //  `meanEnergy_vs_reducedE`, which the time-locality advisory needs
+        //  under LFA, where no mean energy is transported. Resolved ONCE
+        //  here rather than re-derived by every consumer (G1).
+        inline const fileName& tableDir() const { return tableDir_; }
+
         //- Model access
         inline plasmaTransportModel& model(const label i);
         inline const plasmaTransportModel& model(const label i) const;

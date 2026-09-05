@@ -7,11 +7,13 @@ EXE_INC = \
     -I$(SoPLASMA_SRC)/numerics/lnInclude \
     -I$(SoPLASMA_SRC)/models/electromagnetics/lnInclude \
     -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaSpecies/lnInclude \
-    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaTransport/lnInclude
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaTransport/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaReactionRates/lnInclude
 
 LIB_LIBS = \
     -lfiniteVolume \
     -L$(FOAM_USER_LIBBIN) \
     -lplasmaNumerics \
+    -lplasmaReactionRates \
     -lOpenFOAM \
     -lmeshTools

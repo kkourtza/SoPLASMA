@@ -14,6 +14,7 @@
 #include "plasmaSimulationDiagnostics.H"
 #include "plasmaTransport.H"
 #include "plasmaConstants.H"
+#include "plasmaRateTable.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -35,17 +36,30 @@ plasmaSimulationDiagnostics::plasmaSimulationDiagnostics
     printElectromagnetics_(true),
     printLocalityValidity_(true),
     localityMargin_(10.0),
-    localityReportFraction_(0.01),
+    localityReportFraction_(0.1),
+    localityFieldFraction_(0.1),
     reducedEOld_(nullptr),
     reducedEOldTime_(-1),
     lfaCriterionUnavailableReported_(false),
     localityWarmup_(5),
     localityReports_(0),
     lastPctLFA_(-1),
-    lastPctLEA_(-1)
+    lastPctLEA_(-1),
+    meanEofEN_(nullptr),
+    meanEofENTried_(false)
 {
     read();
 }
+
+
+// * * * * * * * * * * * * * * * * Destructor  * * * * * * * * * * * * * * * //
+
+// OUT OF LINE so autoPtr<plasmaRateTable> is destroyed where that type is
+// complete. Keeping it inline in the header would force plasmaRateTable.H on
+// every consumer of the tools library.
+plasmaSimulationDiagnostics::~plasmaSimulationDiagnostics()
+{}
+
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
 
@@ -83,7 +97,10 @@ void plasmaSimulationDiagnostics::read()
             dict_.lookupOrDefault<scalar>("localityMargin", 10.0);
 
         localityReportFraction_ =
-            dict_.lookupOrDefault<scalar>("localityReportFraction", 0.01);
+            dict_.lookupOrDefault<scalar>("localityReportFraction", 0.1);
+
+        localityFieldFraction_ =
+            dict_.lookupOrDefault<scalar>("localityFieldFraction", 0.1);
 
         localityWarmup_ =
             dict_.lookupOrDefault<label>("localityWarmupReports", 5);
@@ -137,6 +154,24 @@ void plasmaSimulationDiagnostics::reportLocalityValidity()
     // LEA criterion is still evaluated; the LFA criterion is not, and the
     // advisory says so ONCE rather than pretending to a number it cannot form.
     const bool haveMeanE = mesh.foundObject<volScalarField>("meanE");
+
+    // Under LFA there is no meanE field; fall back to the sweep's own
+    // E/N -> <eps> map, which is what the LFA assumes by definition.
+    if (!haveMeanE && !meanEofENTried_)
+    {
+        meanEofENTried_ = true;
+        const fileName path =
+            transport_.tableDir()/"meanEnergy_vs_reducedE";
+
+        if (isFile(path))
+        {
+            meanEofEN_.reset
+            (
+                new plasmaRateTable(path, plasmaRateTable::bhClamp)
+            );
+        }
+    }
+    const bool haveMeanEofEN = meanEofEN_.valid();
     const bool havePower =
         mesh.foundObject<volScalarField>("PelasticN")
      && mesh.foundObject<volScalarField>("PgasN")
@@ -148,6 +183,13 @@ void plasmaSimulationDiagnostics::reportLocalityValidity()
 
     const scalar eOverMe =
         constant::plasma::eCharge.value()/constant::plasma::eMass.value();
+
+    // The domain's own peak field sets the floor: a cell at 1% of the peak is
+    // not where the discharge is, and its relative field rate is noise.
+    scalar enPeak = 0;
+    forAll(en, c) enPeak = max(enPeak, en[c]);
+    reduce(enPeak, maxOp<scalar>());
+    const scalar enFloor = max(localityFieldFraction_*enPeak, 1.0e-24);
 
     label nActive = 0, nFailLEA = 0, nFailLFA = 0;
     scalar worstLEA = GREAT, worstLFA = GREAT;
@@ -164,8 +206,11 @@ void plasmaSimulationDiagnostics::reportLocalityValidity()
         // the whole advisory was silently dead: it entered, found every field
         // it needed, and reported nothing. Measured 2026-09-05, and it took a
         // margin of 1e12 (which must fire) to tell "passing" from "dead".
-        // 1e-24 V m^2 is 1e-3 Td.
-        if (en[c] <= 1.0e-24) continue;
+        //
+        // The floor is now RELATIVE to the domain's own peak field, because
+        // nu_EN is a relative rate and diverges wherever E/N is near zero.
+        // See localityFieldFraction_ for the calibration.
+        if (en[c] <= enFloor) continue;
         ++nActive;
 
         const scalar nuEN = mag(en[c] - en0[c])/(dt*en[c]);
@@ -181,10 +226,12 @@ void plasmaSimulationDiagnostics::reportLocalityValidity()
         }
 
         // eq. (2): energy relaxation against the forcing rate.
-        if (haveMeanE && havePower)
+        if ((haveMeanE || haveMeanEofEN) && havePower)
         {
             const scalar eps =
-                mesh.lookupObject<volScalarField>("meanE")[c];
+                haveMeanE
+              ? mesh.lookupObject<volScalarField>("meanE")[c]
+              : meanEofEN_().value(en[c]);
 
             if (eps > SMALL)
             {
@@ -248,7 +295,9 @@ void plasmaSimulationDiagnostics::reportLocalityValidity()
         Info<< "  TIME-LOCALITY: the field is changing faster than the"
             << " electrons can follow." << nl
             << "    Dias & Guerra 2025 eqs (2), (5); \">>\" taken as a ratio"
-            << " above " << localityMargin_ << "." << nl;
+            << " above " << localityMargin_ << "," << nl
+            << "    judged only where E/N exceeds "
+            << 100.0*localityFieldFraction_ << "% of the domain peak." << nl;
 
         if (fLFA > localityReportFraction_)
         {
@@ -270,15 +319,16 @@ void plasmaSimulationDiagnostics::reportLocalityValidity()
         Info<< "    This case runs " << closure << "." << endl;
     }
 
-    if (!haveMeanE && !lfaCriterionUnavailableReported_)
+    if (!haveMeanE && !haveMeanEofEN && !lfaCriterionUnavailableReported_)
     {
         lfaCriterionUnavailableReported_ = true;
-        Info<< "  TIME-LOCALITY: the LFA criterion (nu_eps/nu_EN) needs a mean"
-            << " electron energy, which LFA" << nl
-            << "    does not transport, so only the LMEA criterion is"
-            << " evaluated here. Run the same case once" << nl
-            << "    under `electronEnergyModel LMEA` to get the LFA verdict."
-            << " See Projects/SoEEDF/docs/lfa-vs-lmea.md." << endl;
+        Info<< "  TIME-LOCALITY: the LFA criterion (nu_eps/nu_EN) cannot be"
+            << " evaluated -- this case transports no" << nl
+            << "    mean energy and `"
+            << (transport_.tableDir()/"meanEnergy_vs_reducedE")
+            << "` is absent." << nl
+            << "    Only the LMEA criterion is reported. See"
+            << " Projects/SoEEDF/docs/lfa-vs-lmea.md." << endl;
     }
 }
 

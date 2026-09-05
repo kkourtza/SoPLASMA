@@ -49,8 +49,12 @@ SourceFiles
 namespace Foam
 {
 
-// Forward declaration
+// Forward declarations. plasmaRateTable is held by pointer and its
+// definition is needed only in the .C -- this header is PUBLIC, and
+// including a model header here forces the include path on every
+// consumer of the tools library (it broke soPlasmaFoam, 2026-09-05).
 class plasmaTransport;
+class plasmaRateTable;
 /*---------------------------------------------------------------------------*\
                  Class plasmaSimulationDiagnostics Declaration
 \*---------------------------------------------------------------------------*/
@@ -103,7 +107,34 @@ private:
         scalar localityMargin_;
 
         //- Report only when this fraction of cells fails.
+        //
+        //  0.1, CALIBRATED not chosen -- see localityFieldFraction_.
         scalar localityReportFraction_;
+
+        //- Only judge cells whose E/N is at least this fraction of the
+        //  domain's own maximum.
+        //
+        //  WITHOUT THIS THE CRITERION IS MEANINGLESS, and Dias & Guerra say so
+        //  themselves: the comparison is useful only "if the numerical
+        //  precision is sufficient to prevent ARTIFICIALLY HIGH VALUES of
+        //  nu_EN at low reduced electric fields". nu_EN is a RELATIVE rate,
+        //  |d(E/N)/dt|/(E/N), so it diverges wherever the field is near zero
+        //  -- which is most of a discharge domain, and none of the physics.
+        //
+        //  CALIBRATED 2026-09-05 against a published answer rather than taste.
+        //  Dias & Guerra report, for their nanosecond pulse, LFA errors of
+        //  40-50% for air at 10 Torr and "minimal" at 100 Torr. Evaluating
+        //  their eq. (2) on the same tables, over the pulse:
+        //
+        //    restriction        10 Torr frac below 10   100 Torr
+        //    none (whole tail)        95.3%               46.7%   <- flags both
+        //    E/N > 10% of peak        90.2%                3.0%   <- correct
+        //
+        //  So margin 10 with reportFraction 0.1 and this restriction FLAGS
+        //  10 Torr and PASSES 100 Torr, which is the published verdict. The
+        //  median ratios are 5.5 and 55 -- a factor of ten, the density ratio.
+        //  Script: Projects/SoEEDF/validation/dias2025/calibrate_locality.py
+        scalar localityFieldFraction_;
 
         //- E/N at the previous report, for d(E/N)/dt. Sized on first use.
         autoPtr<volScalarField> reducedEOld_;
@@ -113,6 +144,21 @@ private:
 
         //- One-shot note that the LFA criterion cannot be evaluated.
         bool lfaCriterionUnavailableReported_;
+
+        //- `meanEnergy_vs_reducedE`, for the mean energy under LFA.
+        //
+        //  The LFA criterion needs nu_eps = P_loss/<eps>, and LFA transports
+        //  no mean energy -- which left the criterion that matters most to an
+        //  LFA user unevaluable in the first version of this advisory. The
+        //  table is the sweep's own E/N -> <eps> map, i.e. exactly the
+        //  local-equilibrium mean energy the LFA assumes, so reading it here
+        //  is not an approximation but a statement of what LFA already means.
+        //
+        //  Loaded lazily: absent for a mechanism compiled before the column
+        //  existed, which is not an error, only a criterion that cannot be
+        //  reported.
+        mutable autoPtr<plasmaRateTable> meanEofEN_;
+        mutable bool meanEofENTried_;
 
         //- Reports to skip before the advisory may speak.
         //
@@ -152,8 +198,10 @@ public:
             const plasmaTransport& transport
         );
 
-    //- Destructor
-    virtual ~plasmaSimulationDiagnostics() {}
+    //- Destructor. OUT OF LINE: autoPtr<plasmaRateTable> needs the
+    //  complete type to destroy, and that type is deliberately not
+    //  visible in this header.
+    virtual ~plasmaSimulationDiagnostics();
 
     // Member Functions
 
