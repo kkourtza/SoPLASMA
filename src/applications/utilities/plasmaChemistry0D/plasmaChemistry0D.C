@@ -311,6 +311,7 @@ int main(int argc, char *argv[])
     // both is what makes the comparison a test of the CHEMISTRY rather than of
     // a discharge model we do not have in 0-D.
     DynamicList<scalar> pT, pEN, pNE;
+    bool profilePinsNe = true;
     const bool profiled = args.found("profile");
     if (profiled)
     {
@@ -326,13 +327,37 @@ int main(int argc, char *argv[])
             if (line.empty() || line[0] == '#' || line[0] == 't') continue;
             std::string l(line);
             for (auto& c : l) if (c == ',') c = ' ';
-            IStringStream is(l);
-            scalar a, b, c;
-            is >> a >> b >> c;
-            pT.append(a*1e-9); pEN.append(b); pNE.append(c*1e6);
+
+            // THE DENSITY COLUMN IS OPTIONAL.
+            //
+            //   t_ns,EN_Td,ne_cm3   the measured history: the field AND the
+            //                       electron density are imposed, which is how
+            //                       a 0-D reactor is compared with experiment.
+            //   t_ns,EN_Td          the field only; n_e evolves from the
+            //                       chemistry.
+            //
+            // The two-column form exists for the LFA/LMEA comparison of
+            // Dias & Guerra (2025): pinning n_e would remove exactly the
+            // observable the comparison is about -- how long the two closures
+            // take to reach avalanche -- because the closures differ in when
+            // the electrons acquire ionising energy, which is visible only if
+            // the density is free to respond.
+            std::istringstream ls(l);
+            scalar a = 0, b = 0, c = -1;
+            ls >> a >> b;
+            if (!(ls >> c)) c = -1;
+
+            pT.append(a*1e-9);
+            pEN.append(b);
+            pNE.append(c >= 0 ? c*1e6 : -1.0);
+            if (c < 0) profilePinsNe = false;
         }
         Info<< "profile: " << pT.size() << " points, "
-            << pT[0]*1e9 << " to " << pT[pT.size()-1]*1e9 << " ns" << endl;
+            << pT[0]*1e9 << " to " << pT[pT.size()-1]*1e9 << " ns"
+            << (profilePinsNe
+                    ? "; n_e IMPOSED from the profile"
+                    : "; field only, n_e FREE (2-column profile)")
+            << endl;
     }
 
     auto interpAt = [&](const DynamicList<scalar>& y, const scalar t) -> scalar
@@ -1067,7 +1092,10 @@ int main(int argc, char *argv[])
             // experiment's own n_e(t) is the only honest driver -- the same
             // choice Cheng et al. (Combust. Flame 240 (2022) 111990) and the
             // simulations they compare against make.
-            if (profiled && ie >= 0) n[ie] = interpAt(pNE, t);
+            if (profiled && profilePinsNe && ie >= 0)
+            {
+                n[ie] = interpAt(pNE, t);
+            }
 
             // Floor the state before integrating. Species pushed to denormal
             // values (~1e-323) destabilise the stiff solver without carrying

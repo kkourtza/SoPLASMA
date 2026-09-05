@@ -13,6 +13,7 @@
 
 #include "plasmaSimulationDiagnostics.H"
 #include "plasmaTransport.H"
+#include "plasmaConstants.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -31,7 +32,17 @@ plasmaSimulationDiagnostics::plasmaSimulationDiagnostics
     transport_(transport),
     dict_(dictionary::null),
     printSpecies_(true),
-    printElectromagnetics_(true)
+    printElectromagnetics_(true),
+    printLocalityValidity_(true),
+    localityMargin_(10.0),
+    localityReportFraction_(0.01),
+    reducedEOld_(nullptr),
+    reducedEOldTime_(-1),
+    lfaCriterionUnavailableReported_(false),
+    localityWarmup_(5),
+    localityReports_(0),
+    lastPctLFA_(-1),
+    lastPctLEA_(-1)
 {
     read();
 }
@@ -61,12 +72,225 @@ void plasmaSimulationDiagnostics::read()
 
         printElectromagnetics_ =
             dict_.lookupOrDefault<Switch>("printElectromagnetics", true);
+
+        printLocalityValidity_ =
+            dict_.lookupOrDefault<Switch>("printLocalityValidity", true);
+
+        // What ">>" means. Dias & Guerra state the conditions as strong
+        // inequalities without a number; 10 is this solver's reading of that,
+        // stated as a setting rather than buried as a literal.
+        localityMargin_ =
+            dict_.lookupOrDefault<scalar>("localityMargin", 10.0);
+
+        localityReportFraction_ =
+            dict_.lookupOrDefault<scalar>("localityReportFraction", 0.01);
+
+        localityWarmup_ =
+            dict_.lookupOrDefault<label>("localityWarmupReports", 5);
     }
 }
+
+void plasmaSimulationDiagnostics::reportLocalityValidity()
+{
+    const fvMesh& mesh = transport_.species().mesh();
+
+    // reducedE and mu_e are registered under BOTH closures. Without them there
+    // is nothing to say, so say nothing.
+    if
+    (
+        !mesh.foundObject<volScalarField>("reducedE")
+     || !mesh.foundObject<volScalarField>("mu_e")
+    )
+    {
+        return;
+    }
+
+    const volScalarField& EN = mesh.lookupObject<volScalarField>("reducedE");
+    const volScalarField& mue = mesh.lookupObject<volScalarField>("mu_e");
+
+    // d(E/N)/dt against the PREVIOUS REPORT, not the previous step: the
+    // advisory is a report-interval quantity and differencing against a step
+    // the caller may not have taken would be a different number than the one
+    // named.
+    if (!reducedEOld_.valid())
+    {
+        reducedEOld_.reset
+        (
+            new volScalarField
+            (
+                IOobject
+                (
+                    "reducedE0_locality", runTime_.timeName(), mesh,
+                    IOobject::NO_READ, IOobject::NO_WRITE, IOobject::NO_REGISTER
+                ),
+                EN
+            )
+        );
+        reducedEOldTime_ = runTime_.value();
+        return;                        // no interval yet
+    }
+
+    const scalar dt = runTime_.value() - reducedEOldTime_;
+    if (dt <= VSMALL) return;
+
+    // nu_eps needs a mean energy, and only LMEA transports one. Under LFA the
+    // LEA criterion is still evaluated; the LFA criterion is not, and the
+    // advisory says so ONCE rather than pretending to a number it cannot form.
+    const bool haveMeanE = mesh.foundObject<volScalarField>("meanE");
+    const bool havePower =
+        mesh.foundObject<volScalarField>("PelasticN")
+     && mesh.foundObject<volScalarField>("PgasN")
+     && mesh.foundObject<volScalarField>("PvibN");
+
+    const scalarField& en   = EN.primitiveField();
+    const scalarField& en0  = reducedEOld_().primitiveField();
+    const scalarField& mu   = mue.primitiveField();
+
+    const scalar eOverMe =
+        constant::plasma::eCharge.value()/constant::plasma::eMass.value();
+
+    label nActive = 0, nFailLEA = 0, nFailLFA = 0;
+    scalar worstLEA = GREAT, worstLFA = GREAT;
+
+    forAll(en, c)
+    {
+        // A cell with no field has no forcing to be slow against. Excluded
+        // rather than counted as passing, so the fraction is a fraction of the
+        // cells the criterion actually applies to.
+        //
+        // THE FLOOR IS PHYSICAL, NOT `SMALL`. reducedE is SI (V m^2), so a
+        // discharge sits at 1e-22 to 1e-19 -- entirely BELOW OpenFOAM's
+        // SMALL = 1e-15. Gating on SMALL rejected every cell in the domain and
+        // the whole advisory was silently dead: it entered, found every field
+        // it needed, and reported nothing. Measured 2026-09-05, and it took a
+        // margin of 1e12 (which must fire) to tell "passing" from "dead".
+        // 1e-24 V m^2 is 1e-3 Td.
+        if (en[c] <= 1.0e-24) continue;
+        ++nActive;
+
+        const scalar nuEN = mag(en[c] - en0[c])/(dt*en[c]);
+        if (nuEN <= VSMALL) continue;          // field steady here: both valid
+
+        // eq. (5): momentum transfer against the forcing rate.
+        if (mu[c] > VSMALL)
+        {
+            const scalar nu_m = eOverMe/mu[c];
+            const scalar r = nu_m/nuEN;
+            worstLEA = min(worstLEA, r);
+            if (r < localityMargin_) ++nFailLEA;
+        }
+
+        // eq. (2): energy relaxation against the forcing rate.
+        if (haveMeanE && havePower)
+        {
+            const scalar eps =
+                mesh.lookupObject<volScalarField>("meanE")[c];
+
+            if (eps > SMALL)
+            {
+                // N from the definition of the reduced field, so it cannot
+                // disagree with the field the criterion is built on.
+                const scalar Emag =
+                    mesh.foundObject<volVectorField>("E")
+                  ? mag(mesh.lookupObject<volVectorField>("E")[c]) : 0.0;
+                const scalar N = (Emag > SMALL) ? Emag/en[c] : 0.0;
+
+                const scalar P =
+                    ( mesh.lookupObject<volScalarField>("PelasticN")[c]
+                    + mesh.lookupObject<volScalarField>("PgasN")[c]
+                    + mesh.lookupObject<volScalarField>("PvibN")[c] )*N;
+
+                if (P > VSMALL)
+                {
+                    const scalar r = (P/eps)/nuEN;
+                    worstLFA = min(worstLFA, r);
+                    if (r < localityMargin_) ++nFailLFA;
+                }
+            }
+        }
+    }
+
+    reduce(nActive,  sumOp<label>());
+    reduce(nFailLEA, sumOp<label>());
+    reduce(nFailLFA, sumOp<label>());
+    reduce(worstLEA, minOp<scalar>());
+    reduce(worstLFA, minOp<scalar>());
+
+    reducedEOld_() = EN;
+    reducedEOldTime_ = runTime_.value();
+
+    if (nActive == 0) return;
+
+    const scalar fLEA = scalar(nFailLEA)/scalar(nActive);
+    const scalar fLFA = scalar(nFailLFA)/scalar(nActive);
+
+    const word closure
+    (
+        haveMeanE ? word("LMEA") : word("LFA")
+    );
+
+    // Warm-up: the field establishing from zero is not a locality failure.
+    if (++localityReports_ <= localityWarmup_) return;
+
+    const label pctLFA = label(100.0*fLFA + 0.5);
+    const label pctLEA = label(100.0*fLEA + 0.5);
+
+    const bool changed = (pctLFA != lastPctLFA_) || (pctLEA != lastPctLEA_);
+    lastPctLFA_ = pctLFA;
+    lastPctLEA_ = pctLEA;
+
+    if
+    (
+        changed
+     && (fLFA > localityReportFraction_ || fLEA > localityReportFraction_)
+    )
+    {
+        Info<< "  TIME-LOCALITY: the field is changing faster than the"
+            << " electrons can follow." << nl
+            << "    Dias & Guerra 2025 eqs (2), (5); \">>\" taken as a ratio"
+            << " above " << localityMargin_ << "." << nl;
+
+        if (fLFA > localityReportFraction_)
+        {
+            Info<< "    LFA  invalid in " << pctLFA << "% of "
+                << nActive << " cells (worst nu_eps/nu_EN = " << worstLFA
+                << ")." << nl;
+        }
+        if (fLEA > localityReportFraction_)
+        {
+            Info<< "    LMEA invalid in " << pctLEA << "% of "
+                << nActive << " cells (worst nu_m/nu_EN = " << worstLEA
+                << ")." << nl
+                << "      This is the WEAKER condition -- failing it means"
+                << " NEITHER closure applies here, and only a kinetic or"
+                << nl
+                << "      time-dependent treatment does." << nl;
+        }
+
+        Info<< "    This case runs " << closure << "." << endl;
+    }
+
+    if (!haveMeanE && !lfaCriterionUnavailableReported_)
+    {
+        lfaCriterionUnavailableReported_ = true;
+        Info<< "  TIME-LOCALITY: the LFA criterion (nu_eps/nu_EN) needs a mean"
+            << " electron energy, which LFA" << nl
+            << "    does not transport, so only the LMEA criterion is"
+            << " evaluated here. Run the same case once" << nl
+            << "    under `electronEnergyModel LMEA` to get the LFA verdict."
+            << " See Projects/SoEEDF/docs/lfa-vs-lmea.md." << endl;
+    }
+}
+
 
 void plasmaSimulationDiagnostics::report()
 {
     read();
+
+    if (printLocalityValidity_)
+    {
+        reportLocalityValidity();
+    }
 
     if (!printSpecies_ && !printElectromagnetics_)
         return;
