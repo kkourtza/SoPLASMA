@@ -247,6 +247,27 @@ int main(int argc, char *argv[])
     // OPTION 4: integrate n_eps INSIDE the stiff chemistry ODE rather than
     // updating it by hand after the chemistry. See docs/lmea-option4-plan.md.
     const bool lmeaOde      = (lmeaSrc == "ode");
+    // kCorr is a ratio of the EEDF SOLVE to the TABLE, so its denominator must
+    // be read on the same key as the numerator's consumer. Under `-lmea` the
+    // consumer is the meanE table while kCorr is still formed against the
+    // reducedE one -- harmless while kCorr is 1 (it is, unless the EEDF is
+    // re-solved), and silently inconsistent otherwise. Refused rather than
+    // approximated.
+    if (lmea && args.found("manifest"))
+    {
+        FatalErrorInFunction
+            << "`-lmea` with a dynamic EEDF (`-manifest`) is not supported."
+            << nl
+            << "    The composition correction kCorr is formed as"
+            << " solve/table on the REDUCED-FIELD table, but under -lmea the"
+            << nl
+            << "    rates are read from the MEAN-ENERGY table, so the"
+            << " correction would be applied across two different keys." << nl
+            << "    Use one or the other until the correction is re-keyed too."
+            << nl
+            << exit(FatalError);
+    }
+
     if (lmeaOde && !lmea)
     {
         FatalErrorInFunction
@@ -1041,15 +1062,54 @@ int main(int argc, char *argv[])
             // Table x correction: E/N from the table, where it is resolved;
             // composition and T_gas from the last Boltzmann solve. Refreshed
             // whenever any of the three can have moved.
-            if (pulsed || heating || dynamicEEDF)
+            // `profiled` BELONGS IN THIS LIST and was missing.
+            //
+            // MEASURED 2026-09-05: without it, a `-profile` run never
+            // refreshed kTab, so the rate coefficients stayed at their
+            // initialisation value -- taken at the `-EN` option, default
+            // 150 Td -- for the WHOLE RUN, while the imposed profile drove
+            // only the Joule term of the energy equation. The option whose
+            // entire purpose is to follow a measured discharge history was
+            // silently ignoring that history for the chemistry.
+            //
+            // The discriminating test: with a profile supplied, `-EN` must
+            // make NO difference. Before the fix it changed the final
+            // electron density by a factor of 1.09e6.
+            if (profiled || pulsed || heating || dynamicEEDF || lmea)
             {
+                // THE CLOSURE IS A CHOICE OF LOOKUP KEY, and this is where it
+                // is made. Dias & Guerra (2025) state the LEA as: solve an
+                // equation for <eps>, then take mu_e, P_coll and nu_eff "as
+                // functions of the mean electron energy". The energy equation
+                // exists to PRODUCE that key; reading the rates back at E/N
+                // discards it and leaves two arms that differ in nothing.
+                //
+                // MEASURED 2026-09-05: before this, `-lmea` produced output
+                // bit-identical to the LFA arm in every shared column. The
+                // energy equation was solved, written to the CSV, and ignored.
                 forAll(chem.tabulatedIds(), i)
                 {
-                    kTab[i] = (en > 0)
-                        ? kCorr[i]*tableAt(
-                              tableDir/("k_" + chem.tabulatedIds()[i]
-                                        + "_vs_reducedE"), en*1e-21)
-                        : 0.0;
+                    const word& id = chem.tabulatedIds()[i];
+
+                    if (lmea)
+                    {
+                        // meanELmea is set in the LMEA block above, which runs
+                        // BEFORE the chemistry -- so this is the start-of-step
+                        // mean energy, consistent with the explicit source it
+                        // was integrated with.
+                        kTab[i] =
+                            kCorr[i]*tableAt(
+                                tableDir/("k_" + id + "_vs_meanE"),
+                                meanELmea);
+                    }
+                    else
+                    {
+                        kTab[i] = (en > 0)
+                            ? kCorr[i]*tableAt(
+                                  tableDir/("k_" + id + "_vs_reducedE"),
+                                  en*1e-21)
+                            : 0.0;
+                    }
                 }
             }
 
