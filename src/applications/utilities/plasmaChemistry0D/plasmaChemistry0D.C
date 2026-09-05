@@ -100,6 +100,28 @@ static scalar tableAt(const fileName& path, const scalar x)
 }
 
 
+
+// THE ELECTRON TEMPERATURE handed to the chemistry for electron-keyed heavy
+// reactions -- dissociative recombination and the like, whose Arrhenius
+// exponent is an ELECTRON-temperature exponent.
+//
+// Before 2026-09-05 every heavy rate was evaluated at T_gas, which for
+// e+N2+ (b=-0.39) and e+O2+ (b=-0.7) overstated the rate by 4-8x and 13-40x
+// respectively at 1-5 eV. plasmaChemistry::setTe now supplies it and the
+// solver is FATAL if it is missing rather than falling back.
+//
+// eps = (3/2) k Te, so Te[K] = (2/3) eps[eV] * 11604.518.
+static inline void supplyTe
+(
+    const Foam::plasmaChemistry& chem,
+    const Foam::scalar eps_eV
+)
+{
+    chem.setTe(eps_eV > 0 ? (2.0/3.0)*eps_eV*11604.518 : -1.0);
+}
+
+
+
 // Integrate one substep, carrying the electron energy density in the state
 // vector when Option 4 is active.
 //
@@ -117,11 +139,18 @@ static void integrateWithEnergy
     const Foam::scalar dt,
     const bool withEnergy,
     const Foam::scalar Emag,
-    const Foam::scalar Ngas
+    const Foam::scalar Ngas,
+    const Foam::scalar eps_eV     //!< electron mean energy, for setTe
 )
 {
+    // REQUIRED, not optional: electron-keyed heavy rates (dissociative
+    // recombination) follow Te, and the solver is fatal without it.
+    supplyTe(chem, eps_eV);
+
     if (!withEnergy)
     {
+        // LFA arm: no transported energy here, so the caller must have
+        // supplied Te already (from the meanEnergy table). Left as set.
         chem.integrate(n, kTab, T, dt);
         return;
     }
@@ -732,10 +761,18 @@ int main(int argc, char *argv[])
     const label iN2p = species.find("N2p");
     if (iN2p >= 0) n[iN2p] = ne0;
 
+    // The initial electron temperature, for the start-up diagnostics below.
+    // From the sweep's own E/N -> eps map at the initial field, which is the
+    // local-equilibrium mean energy both closures start from.
+    const scalar meanE0 =
+        (EN_Td > 0)
+      ? tableAt(tableDir/"meanEnergy_vs_reducedE", EN_Td*1e-21)
+      : 0.0;
+
     Info<< "plasmaChemistry0D: E/N = " << EN_Td << " Td, T = " << Tgas
         << " K, N = " << nGas << " 1/m3, n_e0 = " << ne0 << " 1/m3" << nl
         << "  charge residual of the RHS at t=0: "
-        << chem.chargeResidual(n, kTab, Tgas) << endl;
+        << (supplyTe(chem, meanE0), chem.chargeResidual(n, kTab, Tgas)) << endl;
 
     // ---- Jacobian verification -------------------------------------------
     //
@@ -750,6 +787,7 @@ int main(int argc, char *argv[])
         scalarField f0(nEq), fp(nEq), dfdx(nEq);
         scalarSquareMatrix J(nEq, Zero);
 
+        supplyTe(chem, meanE0);
         chem.derivatives(y, kTab, Tgas, f0);
         chem.jacobian(y, kTab, Tgas, dfdx, J);
 
@@ -764,6 +802,7 @@ int main(int argc, char *argv[])
         {
             const scalar h = 1e-6*max(mag(y[j]), scalar(1));
             scalarField yp(y); yp[j] += h;
+            supplyTe(chem, meanE0);
             chem.derivatives(yp, kTab, Tgas, fp);
 
             // Cancellation floor: double precision on the largest |f| in this
@@ -1185,12 +1224,14 @@ int main(int argc, char *argv[])
                 integrateWithEnergy
                 (
                     chem, n, nEps, kTab, T, dt,
-                    lmeaOde, en*1e-21*(pres/(1.380649e-23*T)), pres/(1.380649e-23*T)
+                    lmeaOde, en*1e-21*(pres/(1.380649e-23*T)),
+                    pres/(1.380649e-23*T), lmea ? meanELmea : meanELfa
                 );
                 ++nODEsteps;
             }
             else
             {
+                supplyTe(chem, lmea ? meanELmea : meanELfa);
                 chem.productionLoss(n, kTab, T, Pchem, Lchem);
                 scalar Ldtmax = 0.0;
                 forAll(Lchem, si) Ldtmax = max(Ldtmax, Lchem[si]*dt);
@@ -1209,7 +1250,8 @@ int main(int argc, char *argv[])
                     integrateWithEnergy
                     (
                         chem, n, nEps, kTab, T, dt,
-                        lmeaOde, en*1e-21*(pres/(1.380649e-23*T)), pres/(1.380649e-23*T)
+                        lmeaOde, en*1e-21*(pres/(1.380649e-23*T)),
+                        pres/(1.380649e-23*T), lmea ? meanELmea : meanELfa
                     );
                     ++nODEsteps;
                 }
@@ -1234,7 +1276,11 @@ int main(int argc, char *argv[])
                     n0chem = n;
                     for (label it = 0; it < nOuterCorr; ++it)
                     {
-                        if (it > 0) chem.productionLoss(n, kTab, T, Pchem, Lchem);
+                        if (it > 0)
+                        {
+                            supplyTe(chem, lmea ? meanELmea : meanELfa);
+                            chem.productionLoss(n, kTab, T, Pchem, Lchem);
+                        }
                         forAll(n, si)
                         {
                             n[si] = (n0chem[si] + Pchem[si]*dt)
@@ -1288,6 +1334,7 @@ int main(int argc, char *argv[])
                             const scalarField nStart(nHalf);
                             for (label it = 0; it < nOuterCorr; ++it)
                             {
+                                supplyTe(chem, lmea ? meanELmea : meanELfa);
                                 chem.productionLoss(nHalf, kTab, T, Ph, Lh);
                                 forAll(nHalf, si)
                                 {
@@ -1322,7 +1369,8 @@ int main(int argc, char *argv[])
                         integrateWithEnergy
                         (
                             chem, n, nEps, kTab, T, dt,
-                            lmeaOde, en*1e-21*(pres/(1.380649e-23*T)), pres/(1.380649e-23*T)
+                            lmeaOde, en*1e-21*(pres/(1.380649e-23*T)),
+                            pres/(1.380649e-23*T), lmea ? meanELmea : meanELfa
                         );
                         ++nODEsteps;
                         ++nRejected;
@@ -1615,7 +1663,8 @@ int main(int argc, char *argv[])
     }
 
     Info<< "  charge residual of the RHS at t=end: "
-        << chem.chargeResidual(n, kTab, Tgas) << nl
+        << (supplyTe(chem, lmea ? meanELmea : meanELfa),
+            chem.chargeResidual(n, kTab, Tgas)) << nl
         << "wrote " << out << endl;
     return 0;
 }

@@ -78,6 +78,7 @@ class plasmaEnergy;
 // to build.
 class plasmaReactionRates;
 class plasmaChemistry;
+class plasmaRateTable;
     
 class photoionizationModel;
 /*---------------------------------------------------------------------------*\
@@ -520,6 +521,10 @@ protected:
     //- Where the sweep lives, for the power channels.
     fileName tableDir_;
 
+    //- `meanEnergy_vs_reducedE`, loaded lazily for TeCell() under LFA.
+    mutable autoPtr<plasmaRateTable> meanEofEN_;
+    mutable bool meanEofENTried_ = false;
+
     //- Gas pressure [atm], for the Millikan-White relaxation times.
     scalar pGasAtm_ = 1.0;
 
@@ -545,6 +550,35 @@ protected:
         //  the dictionary constant when it is not. One accessor so the two
         //  cannot diverge, which they did while three call sites each read the
         //  dictionary themselves.
+        //- THE ELECTRON TEMPERATURE IN A CELL [K], for electron-keyed heavy
+        //  reactions (dissociative recombination and the like).
+        //
+        //  Two sources, in order:
+        //    LMEA -- the transported mean energy, via the `meanE` field;
+        //    LFA  -- the sweep's own `meanEnergy_vs_reducedE` map at the local
+        //            reduced field, which IS the local-equilibrium mean energy
+        //            the LFA assumes by definition.
+        //
+        //  Te[K] = (2/3) eps[eV] * 11604.5, since eps = (3/2) k Te.
+        //
+        //  Returns -1 when neither source exists, which plasmaChemistryODE
+        //  turns into a named fatal rather than a silent fallback to T_gas --
+        //  that fallback WAS the defect (gap 11b).
+        scalar TeCell(const label celli) const;
+
+        //- T_gas for a cell, AND the electron temperature handed to the
+        //  chemistry for the same cell.
+        //
+        //  ONE function deliberately doing both, because there are NINE
+        //  chemistry call sites and supplying T_gas without Te at any one of
+        //  them is a silent reversion to gap 11b -- the defect where an
+        //  electron-temperature exponent was evaluated at the gas
+        //  temperature. Coupling them makes that unrepresentable rather than
+        //  merely discouraged.
+        //  Out of line because plasmaChemistry is only forward-declared in
+        //  this header -- see the note on plasmaRateTable above.
+        scalar chemTgas(const label celli) const;
+
         inline scalar TgasCell(const label celli) const
         {
             return (gasHeating_ && TgasField_)

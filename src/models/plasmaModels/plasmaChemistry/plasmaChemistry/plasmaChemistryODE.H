@@ -100,6 +100,28 @@ struct plasmaReactionSpec
     //- k = A T^b exp(-Ta/T) for heavy reactions.
     scalar A = 0.0, b = 0.0, Ta = 0.0;
 
+    //- WHICH TEMPERATURE T IS. In a non-equilibrium plasma the electrons sit
+    //  at Te and the heavy species at T_gas, and a rate coefficient follows
+    //  the temperature of whichever partner's speed sets the collision rate:
+    //
+    //    heavy + heavy      -> T_gas   (Ar+ + 2Ar, N2(A3) quenching, ...)
+    //    electron + heavy   -> Te      (dissociative recombination, ...)
+    //
+    //  DERIVED, not declared: the criterion IS whether an electron is a
+    //  reactant, so asking the mechanism author would be asking them to
+    //  restate what the equation already says (G1).
+    //
+    //  MEASURED DEFECT, 2026-09-05: every heavy reaction was evaluated at
+    //  T_gas. Electron-impact processes with a CROSS SECTION are unaffected --
+    //  they take the `tabulated` branch and come from the EEDF -- but a
+    //  dissociative recombination is written as an Arrhenius rate and so fell
+    //  through to the heavy path. With T_gas at 300 K the rate was frozen at
+    //  its 300 K value, which is why it always looked right: recombination
+    //  WEAKENS as electrons heat up, so the solver destroyed electrons and
+    //  ions too fast. For the shipped air mechanism, e+O2+ (b = -0.7) was
+    //  overstated 13x at Te = 1 eV, 28x at 3 eV and 40x at 5 eV.
+    bool electronKeyed = false;
+
     //- Reaction enthalpy [eV], products minus reactants, from the mechanism's
     //  own thermo. EXOTHERMIC is NEGATIVE, so the heat released to the gas is
     //  -deltaH per event -- emitted with the thermodynamic sign so it cannot be
@@ -138,6 +160,9 @@ class plasmaChemistryODE
 
         //- Gas temperature [K], for the Arrhenius rates
         scalar Tgas_;
+
+        //- Electron temperature [K]; negative until set. See setTe().
+        mutable scalar Te_ = -1.0;
 
         //- Charge number per state entry, for the conservation assertion
         const scalarField& charge_;
@@ -519,6 +544,16 @@ public:
         //- Gas temperature used by the Arrhenius rates
         void setTgas(const scalar T) { Tgas_ = T; }
 
+        //- The ELECTRON temperature [K] used by electron-keyed heavy
+        //  reactions. Set per cell alongside setTgas().
+        //
+        //  NOT DEFAULTED TO Tgas: that is precisely the defect this exists to
+        //  fix, and a silent fallback would reinstate it. It starts NEGATIVE,
+        //  and rateCoeff() refuses to evaluate an electron-keyed reaction
+        //  until a real value has been supplied.
+        void setTe(const scalar T) { Te_ = T; }
+        scalar Te() const noexcept { return Te_; }
+
         //- Warn ONCE if any rate coefficient came back negative. Collective:
         //  call it on every rank. See negativeRateCount_ for why a negative k
         //  matters rather than merely being inaccurate.
@@ -632,8 +667,30 @@ inline Foam::scalar Foam::plasmaChemistryODE::rateCoeff
     const scalar k =
         (rx.tabulated >= 0)
       ? kTab_[rx.tabulated]
-      : rx.A*Foam::pow(Tgas_, rx.b)
-          *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Tgas_) : 1.0);
+      : [&]
+        {
+            // A NEGATIVE Te MEANS NOBODY SUPPLIED ONE. Falling back to Tgas
+            // here would silently restore the very defect electronKeyed
+            // exists to remove, so it is fatal instead -- once, with the
+            // reaction named.
+            if (rx.electronKeyed && Te_ <= 0)
+            {
+                FatalErrorInFunction
+                    << "reaction " << r << " is electron-keyed (an electron is"
+                    << " a reactant) but no electron temperature has been"
+                    << nl
+                    << "    supplied via setTe(). Its rate exponent b = "
+                    << rx.b << " is an ELECTRON-temperature exponent and"
+                    << " evaluating it at" << nl
+                    << "    the gas temperature overstates the rate by ~13x at"
+                    << " Te = 1 eV and ~40x at 5 eV (measured for e+O2+)."
+                    << nl << exit(FatalError);
+            }
+
+            const scalar Trate = rx.electronKeyed ? Te_ : Tgas_;
+            return rx.A*Foam::pow(Trate, rx.b)
+                 *(rx.Ta != 0 ? Foam::exp(-rx.Ta/Trate) : 1.0);
+        }();
 
     // One predictable branch in a hot loop; see negativeRateCount_.
     if (k < 0)

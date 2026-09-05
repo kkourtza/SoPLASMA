@@ -151,8 +151,24 @@ void Foam::plasmaChemistry::readMechanism
             rx.deltaH = h.getOrDefault<scalar>("deltaH", 0.0);
 
             rx.fixedReactantDensity = 1.0;
-            fill(h.get<wordList>("reactants"), rx.reactants,
-                 rx.fixedReactantDensity);
+            const wordList reactantNames(h.get<wordList>("reactants"));
+            fill(reactantNames, rx.reactants, rx.fixedReactantDensity);
+
+            // WHICH TEMPERATURE THIS RATE FOLLOWS, derived from the equation
+            // rather than asked for: an electron among the reactants makes it
+            // an electron-keyed rate. See plasmaReactionSpec::electronKeyed.
+            for (const word& rn : reactantNames)
+            {
+                const word res = resolve(rn);
+                // Both spellings: the mechanism's own electron name and the
+                // case's alias for it, resolved the same way the reactant
+                // indices are.
+                if (res == electron || res == caseElectron)
+                {
+                    rx.electronKeyed = true;
+                    break;
+                }
+            }
             scalar dummy = 1.0;
             fill(h.get<wordList>("products"), rx.products, dummy);
 
@@ -205,6 +221,9 @@ Foam::scalar Foam::plasmaChemistry::checkBackends(const scalar Tgas) const
     ode_->setCantera(nullptr);
     ode_->setHeavy(true);
     ode_->setTgas(Tgas);
+    // Forward the electron temperature. See plasmaChemistry::setTe for why
+    // this is NOT consumed.
+    ode_->setTe(Te_);
 
     scalarField Pn, Ln;
     ode_->productionLoss(n, Pn, Ln);
@@ -519,6 +538,9 @@ void Foam::plasmaChemistry::integrate
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
+    // Forward the electron temperature. See plasmaChemistry::setTe for why
+    // this is NOT consumed.
+    ode_->setTe(Te_);
     ode_->setExternal(ext);
     ode_->setExternalSlope(extSlope, dt);
 
@@ -557,6 +579,9 @@ void Foam::plasmaChemistry::derivatives
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
+    // Forward the electron temperature. See plasmaChemistry::setTe for why
+    // this is NOT consumed.
+    ode_->setTe(Te_);
     dndt.setSize(species_.size());
     ode_->derivatives(0.0, n, dndt);
 }
@@ -570,6 +595,9 @@ void Foam::plasmaChemistry::jacobian
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
+    // Forward the electron temperature. See plasmaChemistry::setTe for why
+    // this is NOT consumed.
+    ode_->setTe(Te_);
     dfdx.setSize(species_.size());
     ode_->jacobian(0.0, n, dfdx, dfdy);
 }
@@ -583,6 +611,9 @@ void Foam::plasmaChemistry::productionLoss
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
+    // Forward the electron temperature. See plasmaChemistry::setTe for why
+    // this is NOT consumed.
+    ode_->setTe(Te_);
     ode_->setExternal(nullptr);
     ode_->productionLoss(n, P, L);
 
@@ -602,6 +633,9 @@ Foam::scalar Foam::plasmaChemistry::heavyHeatRelease
 ) const
 {
     ode_->setTgas(Tgas);
+    // Forward the electron temperature. See plasmaChemistry::setTe for why
+    // this is NOT consumed.
+    ode_->setTe(Te_);
     return ode_->heavyHeatRelease(n);
 }
 
@@ -615,6 +649,9 @@ Foam::scalar Foam::plasmaChemistry::chargeResidual
 {
     kTab_ = kTab;
     ode_->setTgas(Tgas);
+    // Forward the electron temperature. See plasmaChemistry::setTe for why
+    // this is NOT consumed.
+    ode_->setTe(Te_);
     return ode_->chargeResidual(n);
 }
 

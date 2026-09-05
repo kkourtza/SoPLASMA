@@ -84,6 +84,10 @@ class plasmaChemistry
 
         mutable scalarField kTab_;
         mutable autoPtr<plasmaChemistryODE> ode_;
+
+        //- See setTe(). Negative means "not supplied".
+        mutable scalar Te_ = -1.0;
+        mutable bool TeSet_ = false;
         mutable autoPtr<ODESolver> solver_;
 
         dictionary odeDict_;
@@ -153,6 +157,36 @@ public:
         void setCrossSinkLimit(const scalar c)
         {
             ode_->setCrossSinkLimit(c);
+        }
+
+
+        //- THE ELECTRON TEMPERATURE [K] for electron-keyed heavy reactions.
+        //
+        //  Passed out of band rather than as another argument on eight
+        //  methods.
+        //
+        //  IT IS NOT CONSUMED, and that is a deliberate trade-off. The first
+        //  version cleared the flag on every forward, so a caller that set it
+        //  once and then made two chemistry calls got a fatal error. That is
+        //  the stronger guarantee, but there are a dozen entry points across
+        //  the CFD solver, the 0-D reactor, the Jacobian check and the Cantera
+        //  cross-check, and finding them by running into the error one at a
+        //  time is not a design. So the value PERSISTS until replaced.
+        //
+        //  What is still guaranteed: rateCoeff() is FATAL on an electron-keyed
+        //  reaction if no value has EVER been supplied, so the original defect
+        //  -- silently using T_gas -- cannot come back. What is no longer
+        //  guaranteed: a path that forgets to update it uses the previous
+        //  cell's Te. That is wrong by the cell-to-cell variation of Te rather
+        //  than by the 300 K-to-eV factor of 4 to 40, so it is a far smaller
+        //  error, and it is a staleness bug of the kind a callback would
+        //  remove properly. Recorded as the follow-up.
+        //
+        //  Convert from a mean energy with Te[K] = (2/3) eps[eV] * 11604.5.
+        void setTe(const scalar Te) const
+        {
+            Te_ = Te;
+            TeSet_ = true;
         }
 
         label nSpecie() const { return species_.size(); }
