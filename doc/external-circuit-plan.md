@@ -217,7 +217,7 @@ Same route as the ballast, on the electrode it feeds:
 
     cathode
     {
-        kind        circuitDrivenElectrode;
+        kind        currentDrivenElectrode;
         circuit
         {
             type        currentSource;
@@ -233,13 +233,32 @@ reads it through `boundaryRoleLibrary::caseDeclaration`. Current in AMPERES,
 not a density -- the electrode area is a property of the mesh and deriving j
 from it is the solver's job, not the user's.
 
-**`kind ballastedElectrode` was RENAMED to `circuitDrivenElectrode`** on
-2026-09-06, resolving the open question this section used to carry. The role
-says WHAT the surface is, and `ballasted` named one particular circuit, so it
-became wrong the moment a topology with no ballast could sit on it. The old
-spelling is FATAL rather than ignored, because an unknown `kind` here falls
-through to a plain fixed-voltage electrode -- the exact failure this whole
-class exists to remove.
+**TWO ROLES, not one, and `ballastedElectrode` KEEPS ITS NAME.** This resolves
+the open question this section used to carry, and it reverses a rename I made
+and then withdrew the same day.
+
+The rename argument was that the role should say WHAT the surface is, and that
+`ballasted` named one particular circuit. That is half right and reached the
+wrong conclusion. What the surface *is*, physically, includes **which quantity
+the supply imposes** -- and that is not a topology detail, it is the same axis
+as driven / grounded / floating. A voltage source through a ballast and a
+current source are genuinely different instruments:
+
+| role | you set | you find out |
+|---|---|---|
+| `ballastedElectrode` | supply voltage, R, C | the current, and the gap voltage |
+| `currentDrivenElectrode` | the current, and the rail | the gap voltage |
+
+`ballastedElectrode` is the DEFAULT to reach for, because **the operating
+current is usually what the case is trying to determine and is not known at the
+start.** Collapsing both into one generic role would have hidden that choice
+behind a `type` key and taken it away from the user, against G1's "require an
+input only for genuine physics the user alone can know" -- this is exactly such
+an input.
+
+A `type` that disagrees with the `kind` is FATAL in both directions, and so is
+an unknown `kind`: an unrecognised `kind` here falls through to a plain
+fixed-voltage electrode, the exact failure this whole class exists to remove.
 
 **The sign convention, stated once.** `sourceVoltage` and `compliance` are
 SIGNED (negative for a cathode); `setCurrent` is a MAGNITUDE whose polarity

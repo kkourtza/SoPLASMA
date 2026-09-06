@@ -269,13 +269,12 @@ plasmaRegion_to_dielectricRegion
 
     value           uniform 0;     // Initial guess/placeholder
 }
----
 
 ---
 
 # The flux scheme and the wall closure — why they are not independent
 
-Added 2026-09-06, from a measurement that changed which scheme is allowed here.
+Added 2026-09-06.
 
 ## How the mixed condition actually imposes a flux
 
@@ -288,65 +287,112 @@ discretisation's own face-flux formula turn that into a flux. With
 so `f` is the only lever, and it must be chosen so that the flux the
 discretisation extracts equals the closure's `n_p * W` — Hagelaar eq. (6.1).
 
-## The standard branch satisfies that EXACTLY
+**Therefore `f` is scheme-dependent.** The two flux schemes extract the
+boundary flux with different formulae, so they need different `f`, and each is
+exact for its own. This is not a defect; it is the condition doing its job
+against two different discretisations.
 
-    f = uEff / (D/delta + uEff)
+## Standard: `f = uEff/(D/δ + uEff)`
 
-  =>  diffusive flux  D (n_c - n_p)/delta = n_p uEff
-  plus drift          n_p uDrift
-  total               n_p (uEff + uDrift) = n_p W          [since uEff = W - uDrift]
+The boundary flux is diffusion plus drift:
+
+    Γ = (D/δ)(n_c - n_p) + uDrift·n_p
+
+and the choice of `f` gives `(D/δ)(n_c - n_p) = n_p·uEff`, hence
+
+    Γ = n_p(uEff + uDrift) = n_p·W                          [eq. (6.1)]
 
 This is an identity, not a fit. It is why `uEff` is defined as `W - uDrift` in
 the first place — see `calcEffectiveWallVelocity()`.
 
-## The ScharfetterGummel branch did NOT, and is now refused
+## Scharfetter–Gummel: `f = uEff/((D/δ)·Bern(Pe) + W)`
 
-It kept the same `n_p = (1 - f) n_c` but used the denominator
-`D/delta*Bern(Pe) + uAbs`. Same face value, different `f`, therefore a
-different imposed flux. Measured ratio of imposed to intended:
+`fvm::ScharfetterGummel` builds boundary coefficients
+`pCoeffP = (D/δ)·Bern(-Pe)` and `pCoeffB = (D/δ)·Bern(Pe)` and combines them
+with this condition's `valueInternalCoeffs` (see `ScharfetterGummel.H`, the
+physical-boundary branch), so the boundary flux is
 
-| Pe | r = 0 | r = 0.36 |
-|---|---|---|
-| 0.01 | 1.000 | 1.000 |
-| 1 | 1.225 | 0.978 |
-| 10 | **5.50** | 0.438 |
-| 100 | **50.5** | **−5.19** (sign reversed) |
+    Γ = (D/δ)[Bern(-Pe)·n_c - Bern(Pe)·n_p]
 
-Up to 50x wrong, and with reflection the wall flux can *reverse*. The
-combination is now FATAL rather than silently wrong.
+Requiring `Γ = n_p·W` with `n_p = (1-f)n_c`:
 
-**Why refused and not corrected.** The correct `f` for an SG face flux must be
-derived from the scheme's own two-point Bernoulli formula. The derivation
-attempted at the time produced a form that was sign-inconsistent as `Pe -> 0`
-(where it must reduce to the standard branch, and did not), so it was not
-adopted: a guessed formula reintroduces exactly the class of defect this check
-caught. **OPEN ITEM:** derive the SG boundary form properly, verify it reduces
-to the standard branch as `Pe -> 0`, and add it to `testWallFlux` before
-re-enabling.
+    (D/δ)Bern(-Pe) = (1-f)[W + (D/δ)Bern(Pe)]
+
+and using the Bernoulli identity **`Bern(-x) - Bern(x) = x`**, which follows
+from `Bern(x) = x/(e^x - 1)` in one line:
+
+    f = [W + (D/δ)Bern(Pe) - (D/δ)Bern(-Pe)] / [W + (D/δ)Bern(Pe)]
+      = uEff / [(D/δ)Bern(Pe) + W]
+
+and **`uAbs` IS `W`** in every one of the four conditions —
+`calcAbsorptionVelocity()` returns the total loss speed, and for ions
+`v_th + max(0,u_d)` equals `u_d + uEff` on both drift branches — so the shipped
+`D_delta*Bern(Pe) + uAbs` is exactly this.
+
+## Both reduce to each other as Pe → 0
+
+`Bern(0) = 1` and `uDrift → 0`, so `W → uEff` and both give
+`uEff/(D/δ + uEff)`. This is the check that catches a wrong SG form, and it is
+now in `testWallFlux`.
+
+## WITHDRAWN: the "SG imposes 50x the intended flux" claim
+
+**Earlier on 2026-09-06 this document asserted that the SG branch imposed the
+wrong flux — 1.23x at Pe = 1, 5.50x at Pe = 10, 50.5x at Pe = 100, −5.19x at
+r = 0.36 — and the combination was briefly made FATAL. That was wrong, and the
+claim is withdrawn.** The text is kept here rather than deleted so that stale
+copies of it elsewhere can be recognised.
+
+The error was in the diagnostic, not the code: I computed SG's `n_p` and then
+pushed it through the **standard** extraction formula. That compares each
+branch's `f` against the other branch's discretisation, which means nothing.
+The numbers did not even reproduce on recheck — the same wrong quantity gives
+1.00 / 1.67 / 1.96, not 1.23 / 5.50 / 50.5 — so the original measurement was
+wrong in a way that could not be reconstructed, and per rule 22 a number from
+an unreconcilable diagnostic is evidence for nothing.
+
+Two lessons worth more than the retraction:
+
+1. **`fluxScheme` is the INTERIOR scheme** (`driftDiffusion.C:161`), read by
+   the BC only to pick its own `f`. Making it fatal punished a legitimate and
+   valuable interior discretisation for a supposed defect in the boundary
+   treatment. Even had the BC form genuinely been wrong, the right response was
+   to fix or collapse the BC — never to refuse the scheme.
+2. **Compare each branch against ground truth, not against each other.** The
+   two `f` are *supposed* to differ; the invariant they share is
+   `Γ = n_p·W`, each under its own extraction.
 
 ## Consequence for the singularity
 
-`ddWallFluxMixed` reports a singularity when `D/delta + uEff <= 0`, which
-happens when the drift into the wall exceeds what the thermal term and
-near-wall diffusion can carry. Switching to SG was reached for as an escape
-from that, and **it was not a remedy** — it replaced a condition that announces
-itself with a flux that is quietly wrong.
+`ddWallFluxMixed` reports a singularity when `D/δ + uEff <= 0`, i.e. when the
+drift into the wall exceeds what the thermal term and near-wall diffusion can
+carry. With reflection `r` the threshold is
 
-The singularity's remedies are physical and are named in the error message:
-resolve the near-wall cell (`D/delta` grows as the cell shrinks), or accept
-what it represents — a reflecting wall genuinely piles density up, and past a
-point the mixed form cannot represent the wall value that implies. With
-reflection `r` the threshold is
+    uDrift > (1-r)/(2r) · A          (only 0.889·A at r = 0.36)
 
-    uDrift > (1-r)/(2r) * A      (only 0.889*A at r = 0.36)
+so a reflecting wall reaches it far sooner than a non-reflecting one. The
+remedies are physical: resolve the near-wall cell (`D/δ` grows as the cell
+shrinks), or accept what it represents — a reflecting wall genuinely piles
+density up, and past a point the mixed form cannot represent the wall value
+that implies.
 
-so a reflecting wall reaches it far sooner than a non-reflecting one. See the
-error message in `ddWallFluxMixedFvPatchScalarField.C` for the full r-dependence.
+**Switching to `ScharfetterGummel` changes the `f` and so can move that
+threshold, but it is a change of discretisation, not a fix for
+under-resolution.** If the standard branch is singular at your electrode, the
+mesh is telling you something.
 
 ## What is verified, and what is not
 
-`testWallFlux` (26 checks) verifies the CLOSURE ALGEBRA — eqs. (6.1), (6.2),
-(6.8), (6.15), the `(1-r)` factors, the `Dd` floor, degenerate inputs — to
-1.7e-14 over 2430 points. It does **not** exercise the assembled boundary
-condition inside a discretisation; that gap is what let the SG inconsistency
-live. The `f`-identity above is the thing to add.
+`testWallFlux` verifies:
+
+* the CLOSURE ALGEBRA — eqs. (6.1), (6.2), (6.8), (6.15), the `(1-r)` factors,
+  the `Dd` floor, degenerate inputs — to 1.7e-14 over 2430 `(r, Dd, Gc)` points;
+* **the `f`-IDENTITY for BOTH schemes** (added 2026-09-06): each branch imposes
+  `Γ = n_p·W` under its own extraction formula, over 36 `(Pe, r)` points with
+  Pe from 0 to 300 and r from 0 to 0.8, with liveness controls that convict
+  each `f` when used with the *other* branch's extraction, plus the Bernoulli
+  identity and the `Pe → 0` coincidence.
+
+It does **not** exercise the assembled condition inside a running
+discretisation — `valueInternalCoeffs` is reproduced analytically here, not
+called. That remains the gap.

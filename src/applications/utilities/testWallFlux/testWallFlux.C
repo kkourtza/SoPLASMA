@@ -19,7 +19,10 @@ Description
     r -> 1 energy limit are exact numbers the source states, where a CFD run
     could only show that two diagnostics agree with each other.
 
-    Written 2026-09-04, with the reflection closure it verifies.
+    Written 2026-09-04, with the reflection closure it verifies. Extended
+    2026-09-06 with the MIXED CONDITION'S f for both flux schemes -- the
+    closure algebra and the condition that imposes it are separate questions,
+    and only the first was covered.
 
 \*---------------------------------------------------------------------------*/
 
@@ -408,6 +411,148 @@ int main()
         wallBC::hagelaarClosure(0.0, 0.0, 1.0e6, 0.0, w, g);
         check("A = 0 with creation: gRatio guarded to 0",
               g == 0.0, fmt("g = %.1e", g));
+    }
+
+    // ------------------------------- the mixed condition's f, BOTH schemes
+    //
+    // THE GAP THIS CLOSES. Everything above verifies the closure ALGEBRA. It
+    // says nothing about whether the assembled boundary condition actually
+    // IMPOSES that flux -- and that is a separate question, because the mixed
+    // condition sets a face VALUE (n_p = (1-f) n_c) and the flux is whatever
+    // the discretisation's own face-flux formula makes of it. f must therefore
+    // be chosen PER SCHEME, and each choice has to be checked against
+    // Gamma = n_p*W under ITS OWN extraction formula.
+    //
+    // Added 2026-09-06 after reporting a defect that was not one: I had
+    // compared the two branches' f against a SINGLE extraction formula, which
+    // is meaningless. This is the check that would have caught that
+    // immediately -- both branches pass it exactly.
+    std::printf("\n=== the mixed condition's f imposes the closure flux\n");
+    {
+        // Bernoulli, and the identity the SG derivation turns on.
+        auto Bern = [](scalar x) -> scalar
+        {
+            const scalar ax = std::fabs(x);
+            if (ax < 1e-4) return 1.0 - 0.5*x + (x*x)/12.0;
+            if (x > 100.0)  return 0.0;
+            if (x < -100.0) return -x;
+            return x/(std::exp(x) - 1.0);
+        };
+
+        bool idOK = true;
+        for (scalar x = -50.0; x <= 50.0; x += 0.37)
+        {
+            if (std::fabs((Bern(-x) - Bern(x)) - x) > 1e-9*std::max(1.0, std::fabs(x)))
+            {
+                idOK = false;
+            }
+        }
+        check("Bernoulli identity Bern(-x) - Bern(x) = x, which the SG f needs",
+              idOK, "271 points over x = -50..50");
+
+        const scalar g = 1.0;          // D/delta, in velocity units
+        const scalar A = 1.0;          // thermal wall speed
+        scalar worstStd = 0, worstSG = 0;
+        scalar peWorstStd = 0, peWorstSG = 0;
+        int nPt = 0;
+
+        const scalar peList[9] =
+            {0.0, 0.01, 0.1, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0};
+        const scalar rList[4] = {0.0, 0.1, 0.36, 0.8};
+
+        for (int ip = 0; ip < 9; ++ip)
+        {
+            for (int ir = 0; ir < 4; ++ir)
+            {
+                const scalar Pe = peList[ip];
+                const scalar r  = rList[ir];
+                const scalar ud = Pe*g;
+
+                // The closure's total loss speed, with the drift flux in.
+                const scalar W = (1.0 - r)/(1.0 + r)*A + std::max(scalar(0), ud);
+                const scalar uEff = W - ud;    // the bookkeeping identity
+                const scalar nc = 1.0;
+                ++nPt;
+
+                // STANDARD: f = uEff/(D/delta + uEff); extracted as
+                // diffusion + drift.
+                {
+                    const scalar f = uEff/(g + uEff);
+                    const scalar np = (1.0 - f)*nc;
+                    const scalar Gamma = g*(nc - np) + ud*np;
+                    const scalar e = std::fabs(Gamma - np*W)
+                                   / std::max(std::fabs(np*W), scalar(1e-300));
+                    if (e > worstStd) { worstStd = e; peWorstStd = Pe; }
+                }
+
+                // SCHARFETTER-GUMMEL: f = uEff/(D/delta*Bern(Pe) + W);
+                // extracted by ScharfetterGummel.H's boundary coefficients,
+                // Gamma = (D/delta)[Bern(-Pe) n_c - Bern(Pe) n_p].
+                {
+                    const scalar f = uEff/(g*Bern(Pe) + W);
+                    const scalar np = (1.0 - f)*nc;
+                    const scalar Gamma = g*(Bern(-Pe)*nc - Bern(Pe)*np);
+                    const scalar e = std::fabs(Gamma - np*W)
+                                   / std::max(std::fabs(np*W), scalar(1e-300));
+                    if (e > worstSG) { worstSG = e; peWorstSG = Pe; }
+                }
+            }
+        }
+
+        const std::string span =
+            fmt(" over %g (Pe, r) points", scalar(nPt));
+
+        check("STANDARD f imposes Gamma = n_p*W exactly",
+              worstStd < 1e-12,
+              fmt("worst rel. err %.2e at Pe = %g", worstStd, peWorstStd)
+                  + span);
+
+        check("SCHARFETTER-GUMMEL f imposes Gamma = n_p*W exactly, under ITS"
+              " own extraction",
+              worstSG < 1e-12,
+              fmt("worst rel. err %.2e at Pe = %g", worstSG, peWorstSG)
+                  + span);
+
+        // LIVENESS, both ways: the check must CONVICT each branch's f when it
+        // is used with the other branch's extraction formula. Without this,
+        // the two checks above could both be passing on an identity that
+        // holds for any f.
+        {
+            const scalar Pe = 100.0, r = 0.0, ud = Pe*g;
+            const scalar W = (1.0 - r)/(1.0 + r)*A + std::max(scalar(0), ud);
+            const scalar uEff = W - ud, nc = 1.0;
+
+            const scalar fStd = uEff/(g + uEff);
+            const scalar npStd = (1.0 - fStd)*nc;
+            const scalar GstdViaSG =
+                g*(Bern(-Pe)*nc - Bern(Pe)*npStd);
+            check("...and it CONVICTS the standard f under SG extraction",
+                  std::fabs(GstdViaSG - npStd*W)
+                      > 0.01*std::fabs(npStd*W),
+                  fmt("ratio %.3f at Pe = 100", GstdViaSG/(npStd*W)));
+
+            const scalar fSG = uEff/(g*Bern(Pe) + W);
+            const scalar npSG = (1.0 - fSG)*nc;
+            const scalar GsgViaStd = g*(nc - npSG) + ud*npSG;
+            check("...and it CONVICTS the SG f under standard extraction",
+                  std::fabs(GsgViaStd - npSG*W)
+                      > 0.01*std::fabs(npSG*W),
+                  fmt("ratio %.3f at Pe = 100 -- THIS is the number I"
+                      " misreported as a defect", GsgViaStd/(npSG*W)));
+        }
+
+        // And that the two f agree where they must: as Pe -> 0 the drift
+        // vanishes, W -> uEff and Bern(0) = 1, so the schemes coincide.
+        {
+            const scalar Pe = 1e-8, r = 0.36, ud = Pe*g;
+            const scalar W = (1.0 - r)/(1.0 + r)*A + std::max(scalar(0), ud);
+            const scalar uEff = W - ud;
+            const scalar fStd = uEff/(g + uEff);
+            const scalar fSG  = uEff/(g*Bern(Pe) + W);
+            check("the two f COINCIDE as Pe -> 0, as they must",
+                  std::fabs(fStd - fSG) < 1e-7,
+                  fmt("f_std = %.10f, f_SG = %.10f", fStd, fSG));
+        }
     }
 
     std::printf("\n%s: %d checks, %d failed\n",

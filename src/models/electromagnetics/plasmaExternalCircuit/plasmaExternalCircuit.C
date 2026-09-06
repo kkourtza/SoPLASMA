@@ -31,7 +31,8 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     //
     // It used to live in system/plasmaSimulationControls with an `electrode`
     // key naming the patch -- so the patch was named twice, once there and
-    // once as `kind circuitDrivenElectrode` in configuration/boundaries. Two
+    // once as `kind ballastedElectrode` (or `currentDrivenElectrode`) in
+    // configuration/boundaries. Two
     // copies of one name is a defect even while they agree (CLAUDE.md G1),
     // and the failure mode is silent: rename the patch in one file and the
     // circuit quietly drives nothing.
@@ -40,7 +41,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     //
     //     cathode
     //     {
-    //         kind        circuitDrivenElectrode;
+    //         kind        ballastedElectrode;
     //         circuit
     //         {
     //             type          seriesResistor;
@@ -57,33 +58,17 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     {
         if (!iter().isDict()) continue;
         const dictionary& pd = iter().dict();
+        // TWO ROLES, because the physical difference is WHICH QUANTITY THE
+        // SUPPLY IMPOSES -- the same axis as driven / grounded / floating, not
+        // a topology detail. `ballastedElectrode` sets a voltage and lets the
+        // current find itself; `currentDrivenElectrode` does the reverse.
+        // Which one a case wants is the user's choice and cannot be derived:
+        // the operating current is usually the ANSWER, not an input.
         const word kind = pd.getOrDefault<word>("kind", word::null);
 
-        if (kind == "circuitDrivenElectrode")
+        if (kind == "ballastedElectrode" || kind == "currentDrivenElectrode")
         {
             ballasted.append(iter().keyword());
-        }
-        // THE OLD NAME IS FATAL, NOT SILENTLY IGNORED.
-        //
-        // Renamed 2026-09-06. Accepting `ballastedElectrode` quietly would be
-        // survivable; IGNORING it is not, and ignoring is what an unknown
-        // `kind` does here -- the patch would fall through to whatever the
-        // role library makes of it and the circuit would simply not exist,
-        // leaving a fixed-voltage electrode above breakdown. That is the
-        // failure this class was written to remove, so it must not be
-        // reachable by a stale spelling.
-        else if (kind == "ballastedElectrode")
-        {
-            FatalIOErrorInFunction(pd)
-                << "`kind ballastedElectrode` was renamed to"
-                << " `circuitDrivenElectrode` on 2026-09-06." << nl
-                << "    The role names WHAT the surface is, and `ballasted`"
-                << " named one particular circuit --" << nl
-                << "    it became wrong as soon as `type currentSource`, which"
-                << " has no ballast, could sit" << nl
-                << "    on it. The `circuit` sub-dictionary is unchanged;"
-                << " only the `kind` line changes." << nl
-                << exit(FatalIOError);
         }
     }
 
@@ -98,7 +83,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     if (ballasted.size() > 1)
     {
         FatalErrorInFunction
-            << "several patches are declared `circuitDrivenElectrode`: "
+            << "several patches are declared with a circuit: "
             << ballasted << nl
             << "    Only ONE external circuit is supported today. Coupling"
             << " several electrodes through one network is a netlist -- stage"
@@ -113,7 +98,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     {
         FatalIOErrorInFunction(pd)
             << "patch `" << electrode_ << "` is declared"
-            << " `kind circuitDrivenElectrode` but carries no `circuit`"
+            << " `kind ballastedElectrode`/`currentDrivenElectrode` but carries no `circuit`"
             << " sub-dictionary." << nl
             << "    A ballasted electrode's potential is an OUTPUT of its"
             << " circuit, so without one there is nothing to compute it from."
@@ -149,6 +134,40 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     }
 
     const bool isSource = (type_ == "currentSource");
+
+    // THE ROLE AND THE TOPOLOGY MUST AGREE, both ways.
+    //
+    // `kind` says which quantity the supply imposes; `type` picks the topology
+    // within that. A mismatch means the case has asked for two different
+    // instruments, and guessing which one it meant is exactly the class of
+    // silent wrong-answer this whole model exists to remove.
+    const word kind = pd.getOrDefault<word>("kind", word::null);
+
+    if (isSource && kind == "ballastedElectrode")
+    {
+        FatalIOErrorInFunction(cd)
+            << "`type currentSource` on a `ballastedElectrode`." << nl
+            << "    `ballastedElectrode` means the SUPPLY VOLTAGE is what you"
+            << " set and the current is" << nl
+            << "    an output. A current source imposes the current instead,"
+            << " so it belongs on" << nl
+            << "    `kind currentDrivenElectrode`." << nl
+            << "    If what you want is a ballast, use `type seriesRC` with a"
+            << " sourceVoltage." << nl
+            << exit(FatalIOError);
+    }
+
+    if (!isSource && kind == "currentDrivenElectrode")
+    {
+        FatalIOErrorInFunction(cd)
+            << "`type " << type_ << "` on a `currentDrivenElectrode`." << nl
+            << "    `currentDrivenElectrode` means the CURRENT is what you"
+            << " set. `" << type_ << "` sets a" << nl
+            << "    voltage through a ballast and lets the current find"
+            << " itself, which is" << nl
+            << "    `kind ballastedElectrode`." << nl
+            << exit(FatalIOError);
+    }
 
     // A CURRENT SOURCE HAS NO BALLAST, so `resistance` is not merely optional
     // here -- supplying it means the case is asking for something this type

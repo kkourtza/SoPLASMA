@@ -144,7 +144,7 @@ public:
     //- Construct from the mesh alone.
     //
     //  The circuit is read from configuration/boundaries, on the patch
-    //  declared `kind circuitDrivenElectrode`. There is no separate circuit
+    //  declared `kind ballastedElectrode` or `currentDrivenElectrode`. There is no separate circuit
     //  dictionary and no `electrode` key: the electrode a circuit feeds is
     //  the patch it was written on, so the name cannot be stated twice and
     //  cannot drift.

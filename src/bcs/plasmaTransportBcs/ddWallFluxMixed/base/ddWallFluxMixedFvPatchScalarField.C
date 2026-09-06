@@ -420,66 +420,51 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
     const scalarField D_delta(Df * delta);
     const word scheme = ddModel.fluxScheme();
 
-    // SCHARFETTER-GUMMEL IS REFUSED HERE, and refusing is the honest answer.
+    // WHY EACH BRANCH USES THE `f` IT DOES, and why they differ.
     //
-    // The mixed condition works by setting the FACE VALUE: with refValue = 0
-    // and refGradient = 0 it gives n_p = (1 - f) n_c, and the flux the
-    // discretisation then extracts is whatever its own face-flux formula makes
-    // of that n_p. So f has to be chosen to make that flux equal the closure's
-    // n_p * W. For the standard branch it does, EXACTLY and by construction:
+    // The mixed condition does not set a flux. It sets the FACE VALUE: with
+    // refValue = 0 and refGradient = 0 it gives n_p = (1 - f) n_c, and the
+    // flux is whatever the DISCRETISATION'S OWN face-flux formula makes of
+    // that n_p. So f must be chosen to make that flux equal the closure's
+    // n_p*W -- and since the two schemes extract the boundary flux with
+    // DIFFERENT formulae, they need different f. Each is exact for its own.
     //
-    //     f = uEff/(D/delta + uEff)
-    //       => diffusive flux D(n_c - n_p)/delta = n_p uEff
-    //       => total = n_p (uEff + uDrift) = n_p W       [Hagelaar eq. (6.1)]
+    // STANDARD: the boundary flux is diffusion plus drift,
+    //     Gamma = (D/delta)(n_c - n_p) + uDrift n_p
+    // and f = uEff/(D/delta + uEff) gives (D/delta)(n_c - n_p) = n_p uEff,
+    // hence Gamma = n_p(uEff + uDrift) = n_p W.          [Hagelaar eq. (6.1)]
     //
-    // The SG branch kept that same n_p = (1 - f) n_c but used a DIFFERENT
-    // denominator, D/delta*Bern(Pe) + uAbs, so the flux it imposes is not the
-    // closure's. MEASURED 2026-09-06, ratio of imposed to intended flux:
+    // SCHARFETTER-GUMMEL: fvm::ScharfetterGummel builds boundary coefficients
+    // pCoeffP = (D/delta) Bern(-Pe) and pCoeffB = (D/delta) Bern(Pe) and
+    // combines them with this condition's own valueInternalCoeffs, so
+    //     Gamma = (D/delta)[Bern(-Pe) n_c - Bern(Pe) n_p]
+    // (see ScharfetterGummel.H, the physical-boundary branch). Requiring that
+    // to equal n_p W and using the Bernoulli identity Bern(-x) - Bern(x) = x,
     //
-    //     Pe:            0.01     1.0     10      100
-    //     r = 0:         1.000   1.225   5.50    50.5
-    //     r = 0.36:      1.000   0.978   0.438   -5.19   <-- SIGN FLIP
+    //     f = (W + (D/delta)Bern(Pe) - (D/delta)Bern(-Pe))/(W + (D/delta)Bern(Pe))
+    //       = uEff/((D/delta)Bern(Pe) + W)
     //
-    // Up to 50x wrong, and with reflection it can reverse the wall flux. That
-    // is worse than the singularity it was reached for: a singular condition
-    // announces itself, a wrong flux does not.
+    // and uAbs IS W in every one of the four conditions -- calcAbsorption-
+    // Velocity returns the total loss speed, and for ions
+    // v_th + max(0,u_d) equals u_d + uEff on both drift branches -- so this is
+    // exactly `D_delta*Bern(Pe) + uAbs` below.
     //
-    // WHY IT IS REFUSED RATHER THAN CORRECTED. The right f for an SG face flux
-    // has to be derived from the scheme's own two-point formula, and the
-    // derivation attempted here produced a form that is sign-inconsistent as
-    // Pe -> 0 (it must reduce to the standard branch there, and did not). A
-    // guessed formula would put back exactly the class of defect this check
-    // found. So the combination is rejected until the boundary form is derived
-    // properly -- tracked in the boundary-condition document.
+    // BOTH REDUCE TO EACH OTHER AS Pe -> 0: Bern(0) = 1 and u_drift -> 0, so
+    // W -> uEff and both give uEff/(D/delta + uEff).
     //
-    // NOTE what this means for the singularity: switching to SG was NOT a
-    // remedy for it. The singularity is a real limitation of the mixed form at
-    // high drift and its remedies are physical -- resolve the near-wall cell,
-    // or accept the reflecting-wall density pile-up it represents.
+    // VERIFIED 2026-09-06 in testWallFlux: each branch imposes its own
+    // closure flux to 1.0000 over Pe = 0.01..100 and r = 0, 0.36.
+    //
+    // A WARNING FROM THE DAY THIS COMMENT WAS WRITTEN. Earlier the same day I
+    // reported the SG branch as a defect imposing "up to 50x" the intended
+    // flux, and briefly made it fatal. THAT WAS A MEASUREMENT ERROR: I pushed
+    // SG's n_p through the STANDARD extraction formula, which is meaningless --
+    // it compares each branch's f against the other's discretisation. The
+    // numbers did not even reproduce on recheck. If you are tempted to compare
+    // the two branches' f directly, DON'T: compare each branch's imposed flux
+    // against n_p*W under ITS OWN extraction formula, which is what
+    // testWallFlux now does.
     if (scheme == "ScharfetterGummel")
-    {
-        FatalErrorInFunction
-            << "fluxScheme `ScharfetterGummel` is not supported by the"
-            << " Hagelaar wall-flux conditions." << nl << nl
-            << "    The mixed condition sets the face VALUE, and f must be"
-            << " chosen so the flux the" << nl
-            << "    discretisation extracts equals the closure's n_p*W. The"
-            << " standard branch does that" << nl
-            << "    exactly; the SG branch used a different denominator and"
-            << " imposed up to 50x the" << nl
-            << "    intended flux (and reversed its sign at r = 0.36,"
-            << " Pe = 100). Measured 2026-09-06." << nl << nl
-            << "    Use `fluxScheme standard` on the species carrying a"
-            << " ddWallFlux condition. If that" << nl
-            << "    branch reports a singularity, the remedy is to resolve the"
-            << " near-wall cell -- not" << nl
-            << "    to change the flux scheme, which only replaces a"
-            << " detectable failure with a" << nl
-            << "    silent one." << nl
-            << exit(FatalError);
-    }
-
-    if (false)
     {
         const auto Bern = [](scalar x) -> scalar
         {

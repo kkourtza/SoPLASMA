@@ -290,15 +290,12 @@ openBoundary
     plasmaTransport { surface open; }
 }
 
-circuitDrivenElectrode
+ballastedElectrode
 {
-    description "A conductor fed through an external circuit: its potential is an OUTPUT, set by the circuit and the plasma together, not a waveform the user imposes.";
-    // RENAMED from `ballastedElectrode` on 2026-09-06. The role says WHAT the
-    // surface IS -- an electrode driven by a circuit -- and `ballasted` named
-    // one particular circuit, so it became wrong the moment a second topology
-    // (currentSource, which has no ballast at all) could sit here. Per G3 a
-    // concept has one name; the old name is now fatal with a pointer to this
-    // one, rather than silently accepted.
+    description "A conductor fed from a VOLTAGE source through a ballast: the supply voltage is what you set, and the electrode's own potential is an OUTPUT, found where the load line meets the discharge characteristic.";
+    // THE CLASSIC CASE, and the one to reach for by default. You know your
+    // supply voltage and your ballast resistor; you do NOT generally know the
+    // current the discharge will settle at -- that is the answer, not an input.
     //
     // The circuit is declared HERE, on the electrode it feeds, so the patch
     // name is never written twice and cannot drift:
@@ -307,18 +304,16 @@ circuitDrivenElectrode
     //               resistance <Ohm>; }
     //     circuit { type seriesRC;       sourceVoltage <Function1>;
     //               resistance <Ohm>; capacitance <F>; }
-    //     circuit { type currentSource;  setCurrent <Function1>;
-    //               compliance <V>; capacitance <F>; }
     //
-    // `type` selects the topology, and an unrecognised name is fatal rather
-    // than silently resistive. WHICH KEYS ARE REQUIRED IS DECIDED BY `type`:
-    // a `resistance` on a currentSource is fatal too, because it means the
-    // case believes it has a ballast it does not have.
+    // `sourceVoltage` is SIGNED -- negative for a cathode. Prefer seriesRC:
+    // the shunt capacitance is what makes a real rig light gently, and with
+    // the gap's own capacitance alone the electrode snaps to full voltage
+    // before any plasma exists.
     //
-    // SIGNS. `sourceVoltage` and `compliance` are SIGNED -- negative for a
-    // cathode -- and `setCurrent` is a MAGNITUDE, whose polarity comes from
-    // the sign of `compliance`. That is deliberate: it is the one convention
-    // a user cannot be expected to guess.
+    // `type currentSource` here is FATAL: it imposes a current, so it belongs
+    // on `currentDrivenElectrode`. The role names WHICH QUANTITY THE SUPPLY
+    // IMPOSES, and that is a genuine physical difference, not a topology
+    // detail -- exactly as driven / grounded / floating are.
     requires    ( circuit );
     optional    { material none; gammaSEE -1; electronReflection -1; }
     electrostatics
@@ -329,7 +324,43 @@ circuitDrivenElectrode
         type            fixedValue;
         value           uniform 0;
     }
-    plasmaTransport { surface conductor; }
+}
+
+currentDrivenElectrode
+{
+    description "A conductor fed from a CURRENT source: the current is what you set, and both the electrode potential and the gap voltage are OUTPUTS.";
+    // USE THIS WHEN THE CURRENT IS THE KNOWN QUANTITY -- a paper quoting a
+    // current density, a supply run in constant-current mode, or a sweep that
+    // traces the V-I CHARACTERISTIC directly (Townsend, subnormal, normal,
+    // abnormal), which is not obtainable at fixed voltage at all because the
+    // flat normal-glow branch is not a function there.
+    //
+    // IT IS NOT THE DEFAULT, deliberately. The operating current is usually
+    // what you are trying to find out, and it is not known at the start of a
+    // case; the ballast is the honest instrument then. This role exists so
+    // that the choice is the user's rather than the framework's.
+    //
+    //     circuit { type currentSource; setCurrent <Function1>;
+    //               compliance <V>; capacitance <F>; }
+    //
+    // `setCurrent` is a MAGNITUDE in amperes -- not a density; the electrode
+    // area is a property of the mesh. `compliance` is the supply's voltage
+    // rail, REQUIRED and SIGNED, and its sign is what gives the current its
+    // polarity. `capacitance` is optional but sets the pre-ignition ramp,
+    // dV/dt = I_set/C, so a case that omits it gets whatever the gap's own
+    // capacitance gives -- usually far too fast.
+    //
+    // A `resistance` here is FATAL: a current source has no ballast, and
+    // silently ignoring it is how a case comes to believe it has one.
+    requires    ( circuit );
+    optional    { material none; gammaSEE -1; electronReflection -1; }
+    electrostatics
+    {
+        // Plain fixedValue, for the same reason as ballastedElectrode: the
+        // circuit writes the value each step.
+        type            fixedValue;
+        value           uniform 0;
+    }
 }
 
 insulatingWall

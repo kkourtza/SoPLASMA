@@ -493,14 +493,15 @@ its sign, both limits, both guards, and restart round-tripping) — see
 [`docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md`](docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md).
 
 
-## Electrodes: the four things a conductor can know
+## Electrodes: the five things a conductor can know
 
 ```
                           potential          charge / current
-  driven electrode        known (waveform)   whatever the supply gives
-  grounded electrode      known (0)          whatever flows to ground
+  drivenElectrode         known (waveform)   whatever the supply gives
+  groundedElectrode       known (0)          whatever flows to ground
   floatingElectrode       UNKNOWN            KNOWN (conserved)
-  circuitDrivenElectrode  UNKNOWN            set by an external circuit
+  ballastedElectrode      UNKNOWN            supply VOLTAGE known, via a ballast
+  currentDrivenElectrode  UNKNOWN            supply CURRENT known
 ```
 
 A **floating electrode** is a conductor connected to nothing — a probe, an
@@ -546,31 +547,42 @@ has a ballast, and why the discharge's negative differential resistance
 (`dV/dj < 0` on the normal-glow branch) is stabilised by it rather than by the
 plasma.
 
-Declare the circuit **on the electrode it feeds**, so the patch name is never
-written twice:
+**Which quantity does your supply impose?** That is a real physical choice and
+it is yours, so it is the *role*, not a topology detail:
 
 ```
-cathode
-{
-    kind        circuitDrivenElectrode;
-    circuit
-    {
-        type          seriesRC;
-        sourceVoltage table ((0 0) (5e-8 -602));   // SIGNED
-        resistance    1e8;                          // [Ohm]
-        capacitance   5e-14;                        // [F], shunt
-    }
+cathode                                 cathode
+{                                       {
+    kind        ballastedElectrode;         kind        currentDrivenElectrode;
+    circuit                                 circuit
+    {                                       {
+        type          seriesRC;                 type        currentSource;
+        sourceVoltage table                     setCurrent  1.022e-6;  // [A] MAG
+                      ((0 0) (5e-8 -602));      compliance  -1500;     // [V] SIGNED
+        resistance    1e8;      // [Ohm]        capacitance 5e-14;     // [F]
+        capacitance   5e-14;    // [F] shunt  }
+    }                                     }
 }
 ```
 
-Three topologies, and an unrecognised `type` is fatal rather than silently
-resistive:
+`ballastedElectrode` is **the one to reach for by default**: you know your
+supply voltage and your ballast, and you generally do *not* know the current the
+discharge will settle at — that is the answer. `currentDrivenElectrode` is for
+when the current *is* the known quantity: a paper quoting a current density, a
+supply in constant-current mode, or a sweep that traces the V–I characteristic
+directly (Townsend → subnormal → normal → abnormal), which cannot be obtained
+at fixed voltage at all because the flat normal-glow branch is not a function
+there. Declaring the circuit on the electrode means the patch name is never
+written twice.
 
-| `type` | keys | what it does |
-|---|---|---|
-| `seriesResistor` | `sourceVoltage`, `resistance` | `V = V_src − R·I` |
-| `seriesRC` | `+ capacitance` | adds the shunt C a real rig has |
-| `currentSource` | `setCurrent`, `compliance`, `capacitance` | regulates the current directly |
+Three topologies. An unrecognised `type` is fatal rather than silently
+resistive, and so is a `type` that disagrees with the `kind`:
+
+| `type` | `kind` | keys | what it does |
+|---|---|---|---|
+| `seriesResistor` | `ballastedElectrode` | `sourceVoltage`, `resistance` | `V = V_src − R·I` |
+| `seriesRC` | `ballastedElectrode` | `+ capacitance` | adds the shunt C a real rig has |
+| `currentSource` | `currentDrivenElectrode` | `setCurrent`, `compliance`, `capacitance` | regulates the current directly |
 
 **The coupling is implicit, and it has to be.** The ballast and the gap form an
 RC circuit, so `V = V_src − R(I_cond + C dV/dt)` is an ODE; evaluated explicitly
@@ -852,48 +864,44 @@ independent fixed-point solve of (6.2)+(6.8) over 2430 `(r, Dd, Gc)` points
 (1.7e-14) and two liveness controls that convict the wrong floor and the wrong
 `(1+r)` placement.
 
-### `fluxScheme ScharfetterGummel` is REFUSED on these conditions
+### The mixed condition's `f` is scheme-dependent, and both forms are exact
 
-The mixed condition does not set a flux — it sets a face **value**, and lets the
-discretisation's own face-flux formula turn that into a flux. With `refValue 0`
+The condition does not set a flux — it sets a face **value**. With `refValue 0`
 and `refGradient 0` it gives `n_p = (1−f)·n_c`, so `f` is the only lever, and it
-must be chosen to make the extracted flux equal the closure's `n_p·W`. The
-standard branch does that **exactly, as an identity**:
+must be chosen so the flux the discretisation extracts equals the closure's
+`n_p·W`. Since the two flux schemes extract the boundary flux with different
+formulae, **they need different `f`** — and each is exact for its own:
 
 ```
-f = uEff/(D/δ + uEff)   ⟹   D(n_c−n_p)/δ = n_p·uEff
-                        ⟹   total = n_p(uEff + uDrift) = n_p·W     [eq. 6.1]
+standard  Γ = (D/δ)(n_c−n_p) + uDrift·n_p       f = uEff/(D/δ + uEff)
+SG        Γ = (D/δ)[B(−Pe)n_c − B(Pe)n_p]       f = uEff/((D/δ)B(Pe) + W)
 ```
 
-The SG branch kept the same `n_p` but used a different denominator, so the flux
-it imposed was not the closure's — measured 2026-09-06 as the ratio of imposed
-to intended:
+The SG form follows in one step from the Bernoulli identity
+`B(−x) − B(x) = x`, and `uAbs` *is* `W` in all four conditions — so the shipped
+`D_delta*Bern(Pe) + uAbs` is exactly it. Both coincide as `Pe → 0`, where
+`B(0) = 1` and `W → uEff`.
 
-| Pe | r = 0 | r = 0.36 |
-|---|---|---|
-| 0.01 | 1.000 | 1.000 |
-| 1 | 1.225 | 0.978 |
-| 10 | **5.50** | 0.438 |
-| 100 | **50.5** | **−5.19** (sign reversed) |
+`fluxScheme` is the **interior** drift-diffusion scheme; the wall condition
+reads it only to pick its own `f`. Either scheme is fine at a wall.
 
-Up to 50× wrong, and with reflection the wall flux can *reverse*. It is now
-fatal. It is **refused rather than corrected** deliberately: the right `f` for
-an SG face flux must come from that scheme's own two-point Bernoulli formula,
-and the derivation attempted produced a form that was sign-inconsistent as
-`Pe → 0`, where it must reduce to the standard branch. A guessed formula would
-reintroduce exactly the class of defect this check found.
+**Retracted 2026-09-06:** an earlier version of this README claimed the SG
+branch imposed up to 50× the intended flux and that the combination was fatal.
+That was a measurement error — SG's `n_p` pushed through the *standard*
+extraction formula, which compares each branch's `f` against the other's
+discretisation — and it did not reproduce on recheck. The code was correct; the
+diagnostic was not.
 
-Note what this means for the **singularity** guard: switching to SG was *not* a
-remedy for it — it replaced a condition that announces itself with a flux that
-is quietly wrong. The singularity's remedies are physical: resolve the near-wall
-cell, or accept the density pile-up a reflecting wall genuinely produces. Its
-threshold is `uDrift > (1−r)/(2r)·A`, only `0.889·A` at `r = 0.36`, so a
-reflecting wall reaches it far sooner. Full treatment:
+`testWallFlux` now covers the `f`-identity for **both** schemes over 36
+`(Pe, r)` points, with liveness controls that convict each `f` under the other
+branch's extraction. It still does not exercise the assembled condition inside
+a running discretisation; that remains the gap.
+
+The **singularity** guard (`D/δ + uEff ≤ 0`) is unaffected and its remedies are
+physical: resolve the near-wall cell, or accept the density pile-up a reflecting
+wall genuinely produces. Its threshold is `uDrift > (1−r)/(2r)·A` — only
+`0.889·A` at `r = 0.36`. Full treatment:
 [`docs/models/transport/drift_diffusion/boundary_conditions/ddSolidSurfaceFlux.md`](docs/models/transport/drift_diffusion/boundary_conditions/ddSolidSurfaceFlux.md).
-
-**`testWallFlux` verifies the closure *algebra*, not the assembled condition
-inside a discretisation** — and that gap is what let the SG inconsistency live.
-The `f`-identity above is the check to add.
 
 
 ## Two currents, and they are not the same thing
