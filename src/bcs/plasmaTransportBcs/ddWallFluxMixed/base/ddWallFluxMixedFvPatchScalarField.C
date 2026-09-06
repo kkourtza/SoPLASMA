@@ -502,18 +502,37 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
                 << "    value it implies is unbounded. Worst face:"
                    " (D/delta + uEff)/(D/delta) = "
                 << minDenFrac << "." << nl << nl
-                << "    Two remedies, both physical:" << nl
+                << "    Three remedies, all physical:" << nl
                 << "      * `includeDriftFlux true` on this patch -- the"
                    " Hagelaar & Kroesen (2000) wall" << nl
-                << "        flux Gamma = (1/4) n v_th + mu n E, whose uEff is"
-                   " never below u_th, so this" << nl
-                << "        failure mode does not exist. The present default,"
-                   " `false`, imposes the" << nl
-                << "        thermal flux alone and is what allows uEff to go"
-                   " negative." << nl
+                << "        flux Gamma = (1/4) n v_th + mu n E. THIS REMOVES"
+                   " THE MODE ONLY FOR A" << nl
+                << "        NON-REFLECTING WALL. With reflection r the closure"
+                   " returns" << nl
+                << "        W = (1-r)*w_w, so uEff = (1-r)/(1+r)*(A + uDrift)"
+                   " - uDrift, which is" << nl
+                << "        negative once uDrift > (1-r)/(2r)*A -- at r = 0.36"
+                   " that is only" << nl
+                << "        0.889*A. At r = 0 it reduces to uEff = A > 0"
+                   " always, which is why" << nl
+                << "        this remedy was stated unconditionally before"
+                   " 2026-09-06." << nl
+                << "      * `fluxScheme ScharfetterGummel` -- its denominator"
+                   " is" << nl
+                << "        D/delta*Bern(Pe) + uAbs, and both terms are"
+                   " non-negative for ANY r," << nl
+                << "        so it cannot invert. It is also the better scheme"
+                   " for the" << nl
+                << "        drift-dominated cell this failure happens in." << nl
                 << "      * refine the near-wall cell: D/delta grows as the"
                    " cell shrinks, which is the" << nl
-                << "        term holding the denominator open."
+                << "        term holding the denominator open. Needed here:"
+                   " D/delta larger by" << nl
+                << "        about " << (1.0 - minDenFrac)
+                << "x." << nl << nl
+                << "    Present settings on this patch: reflection r = "
+                << this->reflectionCoefficient() << ", fluxScheme `"
+                << scheme << "`." << nl
                 << exit(FatalError);
         }
 

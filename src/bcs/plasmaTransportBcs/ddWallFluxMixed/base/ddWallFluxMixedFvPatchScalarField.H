@@ -162,6 +162,16 @@ protected:
         ) const = 0;
 
         //- Calculate the effective wall velocity
+        //- The reflection coefficient this condition applies, for
+        //  DIAGNOSTICS ONLY. Zero for every member that has no notion of
+        //  reflection, which is why it is not pure virtual. The singularity
+        //  message needs it: whether `includeDriftFlux true` removes the
+        //  failure mode depends entirely on whether r is zero.
+        virtual scalar reflectionCoefficient() const
+        {
+            return 0.0;
+        }
+
         virtual tmp<scalarField> calcEffectiveWallVelocity
         (
             const dimensionedScalar& m,

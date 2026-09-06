@@ -305,6 +305,12 @@ protected:
         ) const override;
 
         //- Calculate the electron-specific wall effective velocity
+        //- The declared electron reflection coefficient (see the base).
+        virtual scalar reflectionCoefficient() const
+        {
+            return electronReflection_;
+        }
+
         virtual tmp<scalarField> calcEffectiveWallVelocity
         (
             const dimensionedScalar& m,

@@ -859,22 +859,36 @@ plasmaEnergy::plasmaEnergy
           : static_cast<const dictionary&>(globalControls);
         const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
 
-        // LMEA is the case the joint relaxation exists for, so it is the
-        // default there: an electron-energy equation means the n_e / nEps_e
-        // Picard pair exists and can enter the period-2 cycle that killed this
-        // benchmark. A case can still switch it off explicitly.
-        bool hasLMEA = false;
-        forAll(energyModels_, i)
-        {
-            if (energyModels_.set(i) && energyModels_[i].nEpsPtr())
-            {
-                hasLMEA = true;
-                break;
-            }
-        }
-
+        // ON BY DEFAULT FOR EVERY ENERGY MODEL, since 2026-09-06.
+        //
+        // SUPERSEDED, kept for the reasoning: it used to default to `hasLMEA`,
+        // on the grounds that "LMEA is the case the joint relaxation exists
+        // for: an electron-energy equation means the n_e / nEps_e Picard pair
+        // exists and can enter the period-2 cycle that killed this benchmark."
+        // That is still true about the ORIGIN of the scheme; it is too narrow
+        // as a statement about where damping helps. `n_e` and `ePotential` are
+        // themselves a Picard pair -- the density sets the space charge, the
+        // space charge sets the field, the field moves the density -- and that
+        // pair exists whatever the energy model is.
+        //
+        // MEASURED 2026-09-06 on the Grubert dc glow, LFA arm: with relaxation
+        // off (the old default) the contraction diagnostic reported `residual
+        // GREW`, rho = 1.0000002, at every step from t = 1.1e-7 s; the timestep
+        // governor cut dt by 0.794 per step and printed "too slow to finish",
+        // while EVERY physical limiter still sat at ~3% of its cap (Co_conv
+        // 0.05 against 1.5). Switching it on took rejections from 340 to 3 over
+        // the same interval. Nothing about that failure needed an nEps_e.
+        //
+        // This also completes a fix already half-made: the ENROLMENT gate was
+        // widened to LFA on 2026-09-01 precisely so that `rho` would be
+        // measured on LFA cases (see plasmaTransport.C), and the note there
+        // records that the gate defaulting to `hasLMEA` was the reason it never
+        // was. The measurement was freed then; the actuation was left behind.
+        //
+        // A case can still switch it off explicitly with
+        // `outerCoupling/adaptiveRelaxation false`.
         plasmaOuterRelaxation& r =
-            plasmaOuterRelaxation::New(mesh_, oc, hasLMEA);
+            plasmaOuterRelaxation::New(mesh_, oc, true);
 
         // NOT gated on active() -- enrolling only records the field so the
         // joint Picard residual (and rho) can be formed. See
