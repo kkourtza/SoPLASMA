@@ -290,10 +290,19 @@ public:
         //- Non-const access to the potential.
         //
         //  Deliberately named apart from ePotential() so every mutation of the
-        //  solved field is greppable. Its one legitimate user is the
-        //  floating-electrode constraint, which adds dV_f*psi AFTER the solve;
-        //  that is an exact superposition, not a fix-up, because psi solves the
-        //  homogeneous problem.
+        //  solved field is greppable. TWO legitimate users:
+        //
+        //   1. the floating-electrode constraint, which adds dV_f*psi AFTER
+        //      the solve; that is an exact superposition, not a fix-up,
+        //      because psi solves the homogeneous problem;
+        //   2. plasmaExternalCircuit, which sets a driven electrode's
+        //      BOUNDARY value from V_source - R*I before the next step. It
+        //      touches the boundary field only, never the interior, so it
+        //      changes the problem being solved rather than the solution --
+        //      which is what an electrode fed through a ballast IS.
+        //
+        //  Added 2026-09-06; the comment said "one legitimate user" and would
+        //  otherwise have read as a prohibition on the second.
         volScalarField& ePotentialRef() { return ePotential_; }
 
         //- Apply the floating-electrode constraint, if the case has one.

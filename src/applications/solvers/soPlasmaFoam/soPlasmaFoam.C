@@ -64,6 +64,7 @@ Author
 #include "driftDiffusion.H"
 #include "plasmaSimulationDiagnostics.H"
 #include "plasmaDischargeCurrent.H"
+#include "plasmaExternalCircuit.H"
 #include "plasmaSimulationProfiler.H"
 
 int main(int argc, char *argv[])
@@ -274,6 +275,25 @@ int main(int argc, char *argv[])
     (
         gasMesh(), plasmaControlsDict, em()
     );
+
+    // THE EXTERNAL CIRCUIT, if the case declares one. When it does, the driven
+    // electrode's potential stops being an input and becomes an output:
+    // V_electrode = V_source(t) - R*I_circuit. See plasmaExternalCircuit.H for
+    // why a fixed-voltage gap above breakdown cannot select an operating point.
+    plasmaExternalCircuit circuit(gasMesh(), plasmaControlsDict);
+
+    if (circuit.enabled() && !dischargeCurrent.enabled())
+    {
+        FatalErrorInFunction
+            << "externalCircuit needs the dischargeCurrent diagnostic, which"
+            << " is disabled." << nl
+            << "    The circuit drops its ballast voltage across Sato's"
+            << " I_total, and that is what dischargeCurrent computes. Without"
+            << " it the circuit would ballast against a current of zero and"
+            << " quietly behave as a plain fixed-voltage electrode." << nl
+            << "    Set `dischargeCurrent { enabled true; }`." << nl
+            << exit(FatalError);
+    }
 
     #include "reportSimulationSummary.H"
 
@@ -495,6 +515,13 @@ int main(int argc, char *argv[])
         // AFTER the retry loop, so a discarded step never contributes: the
         // current is a diagnostic of the state that was actually accepted.
         dischargeCurrent.update(transport, species, em());
+
+        // THE CIRCUIT CLOSES THE LOOP, and it must come after the current is
+        // measured: the potential it sets applies to the NEXT step, so the
+        // (V, I) coupling is explicit with one step of lag. That is stated
+        // here and in circuit.csv rather than hidden, because a large ballast
+        // makes the lag stiff -- `externalCircuit/relaxation` is the knob.
+        circuit.update(dischargeCurrent.Itotal(), em().ePotentialRef());
 
         // TEMPORAL ERROR MEASUREMENT (Phase 1: report only).
         //

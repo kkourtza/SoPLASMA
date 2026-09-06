@@ -290,6 +290,28 @@ openBoundary
     plasmaTransport { surface open; }
 }
 
+ballastedElectrode
+{
+    description "A conductor fed through an external circuit: the potential is
+                 an OUTPUT, set by V_source - R*I, not a waveform the user
+                 imposes.";
+    // No `requires`: the circuit itself is declared once in
+    // system/plasmaSimulationControls/externalCircuit, because a circuit can
+    // connect SEVERAL electrodes and is therefore a property of the system
+    // rather than of one surface. This role only says that this patch's
+    // potential is driven by that circuit.
+    optional    { material none; gammaSEE -1; electronReflection -1; }
+    electrostatics
+    {
+        // Plain fixedValue, NOT uniformFixedValue: the circuit writes the
+        // value each step, and a uniformFixedValue would re-evaluate its own
+        // Function1 on every updateCoeffs and overwrite it.
+        type            fixedValue;
+        value           uniform 0;
+    }
+    plasmaTransport { surface conductor; }
+}
+
 insulatingWall
 {
     description "A solid wall that is not an electrode and does not charge.";

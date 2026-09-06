@@ -141,6 +141,12 @@ class plasmaDischargeCurrent
         scalarField prevEFlux_;
         bool eFluxSeeded_ = false;
 
+        //- The external-circuit current I_total from the last update() [A].
+        scalar Itot_;
+
+        //- Whether update() has run at least once.
+        bool measured_;
+
         //- The surface-integral current [A], conduction and displacement.
         void surfaceIntegralCurrent
         (
@@ -211,6 +217,25 @@ public:
 
         //- Gap capacitance [F]. Zero when disabled.
         inline scalar Cg() const { return Cg_; }
+
+        //- The EXTERNAL-CIRCUIT current from the last update() [A].
+        //
+        //  This is Sato's I_total = I_cond + I_disp, which is the current an
+        //  external circuit actually carries -- see the header this class
+        //  writes into current.csv. It is what a series ballast drops its
+        //  voltage across, so plasmaExternalCircuit reads it from here rather
+        //  than forming a second, independently-derived current: two
+        //  expressions for one quantity is how they come to disagree.
+        //
+        //  Zero before the first update(), and zero when the diagnostic is
+        //  disabled -- a circuit therefore requires `dischargeCurrent enabled`,
+        //  and plasmaExternalCircuit makes that a fatal, stated dependency
+        //  rather than silently ballasting against nothing.
+        inline scalar Itotal() const { return Itot_; }
+
+        //- Whether update() has ever run, so a caller can tell a real zero
+        //  current from "not measured yet".
+        inline bool measured() const { return measured_; }
 
         //- The shared unit-potential field, for callers that need a DIFFERENT
         //  functional of psi_hat than Sato's energy integral -- notably the

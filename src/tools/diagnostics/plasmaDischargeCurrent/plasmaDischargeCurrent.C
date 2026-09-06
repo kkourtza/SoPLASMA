@@ -22,7 +22,9 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
     const electromagneticsModel& em
 )
 :
-    mesh_(mesh)
+    mesh_(mesh),
+    Itot_(0.0),
+    measured_(false)
 {
     // ON BY DEFAULT, and the sub-dictionary is OPTIONAL.
     //
@@ -493,6 +495,11 @@ void Foam::plasmaDischargeCurrent::update
     seeded_ = true;
 
     const scalar Itot = Icond + Idisp;
+
+    // Kept for plasmaExternalCircuit, which drops the ballast voltage across
+    // THIS current rather than deriving its own.
+    Itot_ = Itot;
+    measured_ = true;
 
     // CROSS-CHECK. The identity is
     //     INT_electrode J_tot . dS = - INT_V e_hat . J_tot dV

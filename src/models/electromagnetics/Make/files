@@ -6,4 +6,6 @@ materialLibrary/materialLibrary.C
 unitPotentialField/unitPotentialField.C
 floatingElectrode/floatingElectrode.C
 
+plasmaExternalCircuit/plasmaExternalCircuit.C
+
 LIB = $(FOAM_USER_LIBBIN)/libplasmaElectromagnetics
