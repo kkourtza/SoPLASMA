@@ -66,6 +66,7 @@ Author
 #include "plasmaDischargeCurrent.H"
 #include "plasmaExternalCircuit.H"
 #include "plasmaSimulationProfiler.H"
+#include "plasmaStepAudit.H"
 
 int main(int argc, char *argv[])
 {
@@ -296,6 +297,17 @@ int main(int argc, char *argv[])
     }
 
     #include "reportSimulationSummary.H"
+
+    // PER-STEP UPDATES THAT MUST RUN, declared here rather than trusted.
+    //
+    // Both of these derive a field that a LATER equation consumes:
+    // chargeDensity is Poisson's source, and surfCharge is the dielectric
+    // boundary condition. A step in which they do not run leaves those
+    // equations solving yesterday's problem, and the result looks like
+    // physics -- which is precisely what happened on 2026-09-06, for 364670
+    // steps, at 0.04% coverage. CLAUDE.md rule 27.
+    plasmaStepAudit::expect("updateChargeDensity");
+    plasmaStepAudit::expect("updateSurfaceCharge");
 
     runTime.writeNow();
 
@@ -625,10 +637,16 @@ int main(int argc, char *argv[])
         }
 
 
+        // CLOSE THE AUDIT before the write, so a step that skipped a
+        // required update fails BEFORE its fields land on disk. A stale field
+        // written to a time directory outlives the run that produced it.
+        plasmaStepAudit::endStep(runTime.timeIndex());
+
         runTime.write();
         runTime.printExecutionTime(Info);
     }
 
+    plasmaStepAudit::report();
     plasmaSimulationProfiler::report();
     Info<< "End\n" << endl;
 

@@ -11,6 +11,7 @@
       See: <http://www.gnu.org/licenses/>.
 \*---------------------------------------------------------------------------*/
 
+#include "plasmaStepAudit.H"
 #include "plasmaSpecies.H"
 #include "IFstream.H"
 #include "HashSet.H"
@@ -1124,6 +1125,10 @@ void Foam::plasmaSpecies::deriveElectronTransportKey()
 
 void Foam::plasmaSpecies::updateChargeDensity()
 {
+    // Audited: this ran on 0.04% of steps on 2026-09-06 and froze Poisson's
+    // source. See plasmaStepAudit.H and CLAUDE.md rule 27.
+    plasmaStepAudit::record("updateChargeDensity");
+
     em_.chargeDensity() == dimensionedScalar
                                         (em_.chargeDensity().dimensions(), 0.0);
 

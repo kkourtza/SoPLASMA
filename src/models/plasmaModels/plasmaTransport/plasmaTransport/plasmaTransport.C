@@ -12,6 +12,7 @@
 \*---------------------------------------------------------------------------*/
 
 #include "floatingElectrode.H"
+#include "plasmaStepAudit.H"
 #include "plasmaTransport.H"
 #include "plasmaReactionRates.H"
 #include "plasmaChemistry.H"
@@ -1585,6 +1586,9 @@ S_iz_.correctBoundaryConditions();
 
 void plasmaTransport::updateSurfaceCharge()
 {
+    // Audited alongside updateChargeDensity: both sat behind the same guard.
+    plasmaStepAudit::record("updateSurfaceCharge");
+
     const scalar dt = mesh_.time().deltaTValue();
 
     volScalarField& sigma = species_.em().surfCharge();
