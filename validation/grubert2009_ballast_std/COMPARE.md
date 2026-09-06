@@ -115,3 +115,41 @@ Reports steps, sim time, rejections, n_e range, and |j| in mA/cm^2 with the
 reference alongside. The discriminating observable is **whether n_e settles
 near 1e15-1e16 or continues past 1e17**; per rule 17 that is visible within a
 few us of breakdown, so an arm can be judged long before endTime.
+
+## The machine-readable contract
+
+```compare
+question:  Does a tighter current pin get the discharge through breakdown without overshooting into runaway?
+baseline:  /home/kkourtza/soplasma-scratch/validation/grubert2009_R1e9
+baseline:  /home/kkourtza/soplasma-scratch/validation/grubert2009_R5e9
+varies:    resistance
+matches:   capacitance, driftDiffusionFluxScheme, electronEnergyModel, mesh, chemistry, Courant settings, endTime
+time:      4.5e-5
+field:     n_e
+region:    domain
+```
+
+`varies: resistance` only -- `sourceVoltage` also differs, but it is NOT a
+second free variable: the load line pins it to `V_src = -500 - R*I_op` so that
+every arm has the SAME correct operating point available. This arm is
+R = 1e8 Ohm, V_src = -602 V, short-circuit current 5.89x the operating point.
+
+**`time: 4.5e-5` is endTime, deliberately.** The question is where the
+discharge SETTLES, so the contract compares the settled state. An arm that
+never reaches endTime has diverged -- and the tool erroring on a missing time
+is then the answer, not an obstacle. Use `--time` to look earlier.
+
+**`region: domain`, and the band regions MUST NOT be used on this case.**
+`compare_cases.py`'s `cathode-band` / `anode-band` / `bulk` slice along **y**
+(`b[0]`, `b[1]` are the y bounds). This case's gap runs along **x** -- see
+`gap1cm.geo`, "cathode at x = 0, anode at x = L" -- and y is the 200 um
+transverse direction closed by symmetry planes. A band region here would
+measure a slab of the transverse direction and mean nothing. Recorded
+2026-09-06; the tool needs an axis option before those regions are usable on a
+plane-parallel case.
+
+**No `reference:` line yet, and that is not an oversight.** The tool re-measures
+`reference` entries against a baseline CASE, so it cannot hold a literature
+value. Grubert's numbers are in the table above and are the physical target; a
+`reference:` line gets added once a baseline arm has a settled time directory
+to reproduce.
