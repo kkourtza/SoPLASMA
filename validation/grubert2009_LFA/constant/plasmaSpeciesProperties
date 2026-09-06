@@ -72,8 +72,36 @@ speciesProperties
         {
             fluxScheme  $driftDiffusionFluxScheme;
 
-            mobility    { type fromMechanism; quantity muN;  tableDir "constant/plasmaTables"; }
-            diffusivity { type fromMechanism; quantity DLN;  tableDir "constant/plasmaTables"; }
+            // GRUBERT'S LFA FREEZES THE ELECTRON TRANSPORT COEFFICIENTS.
+            //
+            // Sec. III A: "In the description using the LFA, the transport
+            // coefficients of the electrons at the mean electron energy of
+            // 1.5 eV have been used [64]." Only the RATE coefficients follow
+            // the local field -- which is what makes it a local-FIELD
+            // approximation; the transport is constant.
+            //
+            // This is NOT what `electronEnergyModel LFA` does on its own, and
+            // deliberately so: the general LFA keys transport on the tabulated
+            // _vs_reducedE data, which is the textbook form. Grubert's frozen
+            // transport is a specific simplification they cite [64] for, so it
+            // is expressed HERE, per case, rather than built into the switch.
+            // The solver announces the override at start-up ("is not
+            // table-based ... does NOT follow electronEnergyModel").
+            //
+            // WHY IT MATTERS HERE, measured 2026-09-06: with transport keyed on
+            // the local field, the sheath drives reducedE to 6.4e7 Td -- 1170x
+            // past the top of the tables -- so mu_e explodes and the arm runs
+            // away (I_cond 1.9e7 mA/cm^2, n_e 1.7e20) and finally SIGFPEs
+            // inside the chemistry ODE. Grubert report the opposite failure for
+            // their LFA, and only at a different pd: "an ignition of the
+            // discharge was not predicted". Ours could not be their model.
+            //
+            // The two numbers are OUR OWN Boltzmann tables evaluated at
+            // <U> = 1.5 eV, so the closure differs but the cross-sections do
+            // not: muN = 6.387072e+24, DLN = 1.622804e+25 (SI), divided by
+            // N = 2.4143e22 m^-3 at 100 Pa, 300 K.
+            mobility    { type constant; value 2.645517e+02; }   // m^2/(V s)
+            diffusivity { type constant; value 6.721635e+02; }   // m^2/s
         }
     }
 

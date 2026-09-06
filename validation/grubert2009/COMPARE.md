@@ -44,7 +44,41 @@ different input data. Do not read this case's result without that one.
 | LMEA | `/home/kkourtza/soplasma-scratch/validation/grubert2009` |
 | LFA | `/home/kkourtza/soplasma-scratch/validation/grubert2009_LFA` |
 
-**WHAT MAKES THIS A VALID CONTROL:** the two trees differ in **exactly one
+**THE CONTROL CHANGED 2026-09-06, and this is the important paragraph.**
+
+The two arms no longer differ in exactly one key, and they must not, because
+GRUBERT'S TWO CLOSURES DO NOT. Sec. III A: "In the description using the LFA,
+the transport coefficients of the electrons at the mean electron energy of
+1.5 eV have been used [64]." Their LFA freezes the electron TRANSPORT and lets
+only the RATE coefficients follow the local field. So the arms differ by the
+closure AS THEY DEFINE IT:
+
+| | LMEA arm | LFA arm |
+|---|---|---|
+| `electronEnergyModel` | `LMEA` | `LFA` |
+| electron transport | tabulated vs mean energy | **constant**, mu_e = 264.55 m^2/Vs, D_e = 672.16 m^2/s |
+| rate coefficients | tabulated vs mean energy | tabulated vs `reducedE` |
+| everything else | identical | identical |
+
+The two constants are OUR OWN Boltzmann tables evaluated at <U> = 1.5 eV
+(muN = 6.387072e+24, DLN = 1.622804e+25 SI, divided by N = 2.4143e22), so the
+CLOSURE differs between the arms but the CROSS-SECTIONS do not -- which is what
+keeps the comparison about the closure.
+
+This is NOT a licence to differ freely: every other setting is still verified
+identical, and the general `electronEnergyModel LFA` still keys transport on
+the tabulated `_vs_reducedE` data (the textbook form). Grubert's frozen
+transport is a simplification they cite [64] for, expressed per-case, and the
+solver announces the override at start-up.
+
+WHY IT MATTERS: with transport keyed on the local field, our LFA arm drove
+reducedE to 6.4e7 Td in the sheath -- 1170x past the top of its own tables --
+and ran away to I_cond 1.9e7 mA/cm^2 before SIGFPEing inside the chemistry ODE.
+Grubert report the opposite failure mode for their LFA, and only at a different
+pd: "an ignition of the discharge was not predicted". Ours could not have been
+their model, and no mesh or solver tuning would have closed that gap.
+
+**The former control, superseded:** the two trees differ in **exactly one
 key** — `electronEnergyModel LMEA` against `LFA` in
 `constant/plasmaSpeciesProperties`. Same mesh, same mechanism, same ion
 transport tables, same boundary declarations, same numerics. Verified with
