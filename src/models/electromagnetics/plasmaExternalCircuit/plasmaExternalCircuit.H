@@ -92,6 +92,16 @@ class plasmaExternalCircuit
         //- Whether V_ has been set from a measured current yet.
         bool started_;
 
+        //- Previous accepted (V, I) pair, for the secant estimate of the
+        //  plasma's differential conductance dI/dV.
+        scalar Vprev_;
+        scalar Iprev_;
+        bool   havePrev_;
+
+        //- Last conductance estimate [S], kept so a step with a negligible
+        //  voltage change reuses it rather than discarding the linearisation.
+        scalar g_;
+
         //- postProcessing/externalCircuit/circuit.csv
         autoPtr<OFstream> file_;
 
@@ -135,9 +145,28 @@ public:
     //
     //      V^{n+1} = (V_src + (RC/dt) V^n - R I_cond) / (1 + RC/dt),
     //
-    //  is unconditionally stable and costs nothing extra. There is no explicit
-    //  option: it was tried, it is unusable, and keeping it would only offer a
-    //  way to reproduce the divergence.
+    //  is unconditionally stable AGAINST THE CAPACITIVE TERM -- but not
+    //  against the plasma, whose current was still explicit. That failed
+    //  post-breakdown: the discharge drew 8.5x the current the circuit could
+    //  supply at that instant, the ballast demanded a gap voltage the source
+    //  could not provide, and the CATHODE WAS DRIVEN POSITIVE (+43.5 V) with
+    //  dt -> 0. Measured 2026-09-06.
+    //
+    //  So the plasma is linearised implicitly too. With
+    //  I(V) = I^n + g (V - V^n) and g = dI/dV estimated by secant from the
+    //  last two accepted steps,
+    //
+    //      V^{n+1} = (V_src - R I^n + (Rg + a) V^n) / (1 + Rg + a).
+    //
+    //  This damps itself exactly where the explicit form diverged: after
+    //  breakdown g is large, so Rg dominates the denominator and the step
+    //  shrinks. Before breakdown g -> 0 and it reduces to the RC form above.
+    //  g is clamped non-negative -- a discharge cannot have negative
+    //  differential conductance to the CIRCUIT without the circuit being the
+    //  thing that stabilises it, which is the case a ballast exists for.
+    //
+    //  There is no explicit option: it was tried, it is unusable, and keeping
+    //  it would only offer a way to reproduce the divergence.
     void update
     (
         const scalar Icond,

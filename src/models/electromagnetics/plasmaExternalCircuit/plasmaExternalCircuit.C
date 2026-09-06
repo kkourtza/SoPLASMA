@@ -19,7 +19,11 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     R_(0.0),
     relax_(1.0),
     V_(0.0),
-    started_(false)
+    started_(false),
+    Vprev_(0.0),
+    Iprev_(0.0),
+    havePrev_(false),
+    g_(0.0)
 {
     // THE CIRCUIT IS DECLARED WHERE THE ELECTRODE IS, AND NOWHERE ELSE.
     //
@@ -186,7 +190,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
                   " makes V = V_src - R*I the RC" << nl
                << "# equation evaluated explicitly, which amplifies by R*C/dt"
                   " per step (885 measured)." << nl
-               << "time,V_source,I_cond,V_electrode" << endl;
+               << "time,V_source,I_cond,V_electrode,g_dIdV" << endl;
     }
 }
 
@@ -223,7 +227,43 @@ void Foam::plasmaExternalCircuit::update
     const scalar tau = R_*Cgap;          // [s]
     const scalar a   = tau/max(dt, SMALL);
 
-    const scalar Vtarget = (Vsrc + a*V_ - R_*Icond)/(1.0 + a);
+    // THE PLASMA IS LINEARISED IMPLICITLY, via a secant estimate of its
+    // differential conductance g = dI/dV from the last two accepted steps.
+    //
+    // Without this the circuit is implicit only in its own capacitance, and
+    // post-breakdown that is not enough: the current the circuit sees is one
+    // step old, the discharge outruns it, and the ballast demands a voltage
+    // the source cannot supply. Including g makes the update contract exactly
+    // where the discharge is stiff, because Rg then dominates the denominator.
+    if (havePrev_)
+    {
+        const scalar dV = V_ - Vprev_;
+
+        // A negligible voltage change gives no information about dI/dV; reuse
+        // the previous estimate rather than dividing by nothing. The threshold
+        // is relative to the working voltage, not absolute, so it means the
+        // same thing on a 100 V and a 1000 V discharge.
+        if (mag(dV) > 1e-6*max(mag(V_), scalar(1)))
+        {
+            const scalar gNew = (Icond - Iprev_)/dV;
+
+            // NON-NEGATIVE. A negative estimate means the sampled pair
+            // straddled a fold in the characteristic (the flat normal-glow
+            // branch does this readily), and feeding it back would make the
+            // denominator 1 + Rg + a small or negative -- an amplifier, which
+            // is precisely the failure being fixed.
+            g_ = max(gNew, scalar(0));
+        }
+    }
+
+    Vprev_ = V_;
+    Iprev_ = Icond;
+    havePrev_ = true;
+
+    const scalar Rg = R_*g_;
+
+    const scalar Vtarget =
+        (Vsrc - R_*Icond + (Rg + a)*V_)/(1.0 + Rg + a);
 
     // Optional extra damping. Not needed for stability; 1 by default.
     V_ = started_ ? (V_ + relax_*(Vtarget - V_)) : Vtarget;
@@ -233,7 +273,8 @@ void Foam::plasmaExternalCircuit::update
 
     if (file_.valid() && Pstream::master())
     {
-        *file_ << t << ',' << Vsrc << ',' << Icond << ',' << V_ << endl;
+        *file_ << t << ',' << Vsrc << ',' << Icond << ',' << V_
+               << ',' << g_ << endl;
     }
 }
 
