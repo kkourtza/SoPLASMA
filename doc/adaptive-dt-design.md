@@ -135,7 +135,7 @@ That reframes the whole question. The Courant caps are not redundant with the
 governor. They are what keeps the outer loop resolved enough that the
 robustness and accuracy controllers can act in time.
 
-### PROVISIONAL -- THE PREMISE IS NOT YET ESTABLISHED (flagged 2026-09-06)
+### RESOLVED 2026-09-06: THE REASONING ABOVE WAS BACKWARDS
 
 **The paragraph above depends on the BASELINE RECOVERING from its overshoot,
 and that is not yet measured.** At the time of writing `iset` is at
@@ -153,9 +153,41 @@ Two readings remain open:
   reasoning above is BACKWARDS. The instability would then be physical and the
   question returns to the ramp rate and the circuit.
 
-**Do not build on this section until `iset` has passed t = 9.5e-7.** The
-0.35% agreement between the baseline and the energy-cap arms is measured at
-common times and stands independently; the divergence reasoning does not.
+**MEASURED, and it is the second reading.** The FINE arms diverged too, at the
+same time and to the same order as the coarse ones:
+
+| arm | dt | t | n_e |
+|---|---|---|---|
+| `En150` (fine) | **1e-12** | 9.52e-7 | **3.79e17** |
+| `En1500` (fine) | 1e-12 | 9.52e-7 | 3.99e17 |
+| `All150` (coarse) | 1.2e-10 | 9.51e-7 | 2.66e17 |
+| `All1500` (coarse) | 2.4e-10 | 9.53e-7 | 1.22e18 |
+
+`En150` ran at dt = 1e-12, FINER than the baseline's 6e-12, and diverged
+anyway. n_e increments accelerated `+5.7e14 -> +2.3e15 -> +3.7e16 -> +3.4e17`,
+i.e. superexponentially.
+
+**So the Courant caps prevented nothing, and dt is not the cause.** The
+paragraph above -- that the coarse arms "could not resolve a recoverable
+overshoot" -- is WRONG and is retained only so the mistake stays recognisable.
+
+WHAT SURVIVES: the 0.35% agreement between the baseline and the energy-cap arms
+at common times, and the fact that `En150` and `En1500` are identical to the
+digit. Those are measured against a real control. **The energy Courant cap is
+an efficiency knob**, confirmed in the hard regime.
+
+WHAT FALLS: the claim that the caps are load-bearing, and the growth-rate
+proposal INSOFAR AS IT RESTED ON THAT. `dt*gamma << 1` may still be a good
+criterion, but this measurement is no longer evidence for it -- finer dt did
+not help, so a dt criterion is not what was missing.
+
+WHAT THIS NOW POINTS AT: the divergence is in the PHYSICS or the MODEL, not the
+timestep. One specific lead, not yet established: `I_cond` REVERSES SIGN
+relative to `I_set` during the runaway (ratio -1786%). If that is real, the
+current source's update `dV = dt(I_set - I_cond)/C` drives V the WRONG WAY and
+the regulator ADDS to the runaway instead of opposing it. That must be checked
+against the code path, and against whether the sign flip is physical or a
+diagnostic artefact, before it is believed.
 
 **And the accuracy controller reacted TOO LATE.** At All1500 it eventually
 clamped dt by 400x and forced 11 discards -- after the solution had left.
