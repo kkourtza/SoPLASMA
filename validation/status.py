@@ -10,7 +10,12 @@ for d in sys.argv[1:]:
     ts=[]; lim="-"; rej=0; crash=0
     for line in open(L, errors="replace"):
         m=NUM.match(line)
-        if m: ts.append(float(m.group(1)))
+        if m:
+            v=float(m.group(1))
+            # A LIVE log can be caught mid-write, and a truncated "9.30000e-07"
+            # reads as a perfectly valid "9.3000". Times here are microseconds,
+            # so anything at or above 1 s is a torn line, not a time.
+            if v < 1.0: ts.append(v)
         elif "deltaT set by:" in line: lim=line.split("by:",1)[1].strip()
         elif "DISCARDING this step" in line: rej+=1
         elif "stack trace" in line: crash+=1

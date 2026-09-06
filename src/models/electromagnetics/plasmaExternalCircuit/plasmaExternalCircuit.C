@@ -155,10 +155,47 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
             << exit(FatalIOError);
     }
 
-    // The source at t = 0, so the first step starts from the open-circuit
-    // value rather than from zero -- before any current is measured the
-    // circuit carries none, and V = V_source is then exactly right.
+    // ON A RESTART, TAKE V FROM THE FIELD, NOT FROM THE SOURCE.
+    //
+    // The electrode potential is this class's own state, and it is NOT the
+    // open-circuit value once current is flowing. Re-initialising from
+    // V_source after a restart injects a step: at t = 1e-6 s on the Grubert
+    // case, V_source is -202 V while the gap was actually at -163 V, so the
+    // circuit would have jerked the electrode by 39 V at the resume.
+    //
+    // ePotential already carries the value, having been read back from the
+    // restart directory, so the state is recoverable without checkpointing
+    // anything of our own.
     V_ = source_->value(mesh_.time().value());
+
+    if (mesh_.foundObject<volScalarField>("ePotential"))
+    {
+        const volScalarField& phi =
+            mesh_.lookupObject<volScalarField>("ePotential");
+
+        const fvPatchScalarField& pf = phi.boundaryField()[patchi_];
+
+        if (pf.size())
+        {
+            const scalar Vfield = gAverage(pf);
+
+            // A FRESH START has the generated `uniform 0`, which is not a
+            // state to resume from; the open-circuit source value is right
+            // there. Anything else is a genuine restart.
+            if (mag(Vfield) > SMALL)
+            {
+                V_ = Vfield;
+                started_ = true;
+
+                Info<< "plasmaExternalCircuit: RESUMED from the field,"
+                    << " V_electrode = " << V_ << " V" << nl
+                    << "    (the open-circuit source value here would be "
+                    << source_->value(mesh_.time().value())
+                    << " V -- resuming from that would step the electrode)."
+                    << endl;
+            }
+        }
+    }
 
     Info<< "plasmaExternalCircuit: seriesResistor on patch `" << electrode_
         << "`" << nl
@@ -247,12 +284,32 @@ void Foam::plasmaExternalCircuit::update
         {
             const scalar gNew = (Icond - Iprev_)/dV;
 
-            // NON-NEGATIVE. A negative estimate means the sampled pair
-            // straddled a fold in the characteristic (the flat normal-glow
-            // branch does this readily), and feeding it back would make the
-            // denominator 1 + Rg + a small or negative -- an amplifier, which
-            // is precisely the failure being fixed.
-            g_ = max(gNew, scalar(0));
+            // THE MAGNITUDE, NOT THE SIGNED VALUE, AND NOT CLAMPED TO ZERO.
+            //
+            // dI/dV IS GENUINELY NEGATIVE through breakdown, and that is the
+            // physics rather than a sampling artefact: the current rises while
+            // the ballast drags the gap voltage back up, so dI < 0 while
+            // dV > 0. It is the NEGATIVE DIFFERENTIAL RESISTANCE of the glow --
+            // the very thing a ballast exists to stabilise. Measured
+            // 2026-09-06: g went negative exactly as j started to climb.
+            //
+            // Using it signed is wrong: 1 + Rg + a then shrinks and can change
+            // sign, which inverts the update -- an amplifier. Clamping it to
+            // zero is also wrong, and was the first attempt: it discards the
+            // damping precisely where the discharge is stiffest, leaving the
+            // RC-only form that already failed.
+            //
+            // The magnitude is right because of what the update then is:
+            //
+            //     V^{n+1} = V^n + (T - V^n)/(1 + R|g| + a),
+            //     T = V_src - R I^n
+            //
+            // a damped step towards the explicit target, with a factor in
+            // (0, 1] for ANY sign of g, and the fixed point V = T preserved
+            // exactly. Steeper characteristic -> smaller step, which is the
+            // behaviour wanted, and it is a relaxed Newton rather than a
+            // heuristic.
+            g_ = mag(gNew);
         }
     }
 
@@ -260,7 +317,7 @@ void Foam::plasmaExternalCircuit::update
     Iprev_ = Icond;
     havePrev_ = true;
 
-    const scalar Rg = R_*g_;
+    const scalar Rg = R_*g_;   // g_ is already a magnitude
 
     const scalar Vtarget =
         (Vsrc - R_*Icond + (Rg + a)*V_)/(1.0 + Rg + a);
