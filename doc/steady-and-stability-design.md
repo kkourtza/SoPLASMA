@@ -134,16 +134,92 @@ so it costs no new machinery. **It also preserves the transient solver, which
 the user wants** -- and it is a real capability regardless of Grubert, since
 inductive ballasts are common in dc and pulsed rigs.
 
+## 2c. RESULT of the stability analysis, 2026-09-06 (`tools/glow_stability.py`)
+
+Model: the discharge as `Y_d(s) = G + I*nu'/(s - gamma)` -- conductance plus an
+ionisation pole -- in parallel with `C_gap`, in series with `Z(s)`. Clearing the
+pole gives a polynomial; Routh-Hurwitz is the criterion. `gamma = nu_iz -
+nu_loss` is the LINEARISATION POINT: zero at the operating point by definition,
+`1/tau_g = 1.47e9` during the runaway.
+
+**LIVENESS PASSED** -- the model predicts UNSTABLE for both configurations
+already observed unstable (`fix_n11` R=1e8 C=5e-14; `fix_fast` R=1e6 C=5e-14),
+so it is usable.
+
+**THE OPERATING POINT IS STABLE -- WITH THE CIRCUIT WE ALREADY HAVE.**
+
+| circuit | at gamma = 0 | at gamma = 1.47e9 |
+|---|---|---|
+| R=1e8, C=5e-14 (as run) | **STABLE** | unstable |
+| R=1e8, C=0 | **STABLE** | unstable |
+| R=1e6, C=0 | **STABLE** | unstable |
+| R=1e8, L=1 mH, C=0 | **STABLE** | unstable |
+
+The blocking coefficient is `c0 = R(I*nu' - gamma*G) - gamma`. **At gamma = 0
+this is `R*I*nu' > 0` ALWAYS**, for any circuit. So the instability is a
+property of being FAR FROM THE OPERATING POINT, not of the ballast. No circuit
+change is needed for the target state, and none rescues the path to it.
+
+### WITHDRAWN: "no lumped circuit can stabilise it"
+
+At `gamma = 1.47e9` the criterion needs `nu' > gamma/V`, which contains no
+circuit parameter -- which is why the R x L search found nothing. But that
+conclusion is **NOT ROBUST**: it fails by only 1.95x, and `nu'` here is a
+two-point estimate that assumed a UNIFORM field (`V = E*d`), while a cathode
+fall is anything but. A 1.95x error in `nu'` flips the answer, and that is well
+inside the uncertainty. So the honest statement is: *no circuit was found, and
+the search is inconclusive because `nu'` is not known well enough.* Tightening
+`nu'` would require differentiating `nu_iz` along the ACTUAL profile.
+
+## 2d. THE CONSEQUENCE: seed the transient AT the operating point
+
+Since the target state is stable with the existing circuit, the fix is not a
+new circuit or a new solver -- it is **not traversing the unstable path**.
+Start the transient near the operating point so `gamma ~ 0` from the first step.
+
+**And the ideal seed already exists: Grubert's own digitised figure 3.**
+`SoEEDF/validation/dias2025/reference/grubert_fig3_na_LMEA_{electrons,Arp}.csv`
+carry `n_e(z/d)` and `n_Ar+(z/d)` for exactly this case, in 1e9 cm^-3 = 1e15
+m^-3. Interpolate them onto the mesh, let Poisson solve the field from the
+resulting charge density, and run.
+
+This is a STRONGER test than reaching the state from scratch, and cheaper:
+
+* if the solution STAYS -- Grubert's profile is a fixed point of our model.
+  That is a direct validation of the closure, the coefficients and the wall
+  fluxes, and it is the claim we actually want to make.
+* if it DRIFTS -- we learn WHERE and HOW, on a profile we understand, instead
+  of watching a runaway. A localised discrepancy is diagnosable; a runaway is
+  not.
+* it needs no new solver, no new circuit topology, and no new physics. Only an
+  initial-condition utility.
+
+Note this also finally uses the figure-3 digitisation for the purpose it was
+done for.
+
+**Risk, stated in advance:** the seed will not be exactly self-consistent --
+digitised profiles carry a few percent of error, `nEps_e` must be seeded from
+the LFA equilibrium at the seeded field, and the ion and electron profiles were
+digitised independently so their difference (the space charge) is noisier than
+either. Expect an initial transient of a few `tau_diel`; judge drift only after
+it settles, and judge it on the structural discriminators, not on peak values.
+
 ## 3. Recommended order
 
-1. **Task 2a, the stability map.** Minutes, no run, and it decides everything
-   downstream. Must reproduce the two observed instabilities first.
-2. **If 2a finds a realisable stable (R, L):** implement `seriesRL`, run it,
-   and the transient route is saved.
-3. **If 2a proves no lumped circuit works:** the steady + current-imposed
-   solver of section 1, which is worth building anyway -- it is the only way to
-   get a V-I characteristic, and the `floatingElectrode` superposition
-   machinery already does the hard part.
+**REVISED after 2c, which changed the answer.**
+
+1. **SEED FROM GRUBERT'S FIGURE 3 and run the existing transient solver**
+   (section 2d). Cheapest by far, needs no new solver or circuit, uses the
+   circuit already validated as stable at the operating point, and answers the
+   question we actually care about: is the reference profile a fixed point of
+   our model?
+2. **Steady + current-imposed solver** (section 1). Still worth building --
+   it is the only route to a V-I characteristic, it removes the dependence on
+   a good initial guess, and the `floatingElectrode` superposition machinery
+   already does the hard part. But it is no longer the FIRST thing to try.
+3. **`seriesRL`/`seriesRLC`** only if 2d drifts in a way that a faster circuit
+   would fix, and only after `nu'` is measured along the actual profile so the
+   search is conclusive. Worth having as a capability regardless.
 
 Both routes end with the same validation: the centreline profiles against
 Grubert figure 3 via `extract_centreline.py` and `plot_grubert_profiles.py`,
