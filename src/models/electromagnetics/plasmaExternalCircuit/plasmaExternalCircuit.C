@@ -5,14 +5,11 @@
 #include "plasmaExternalCircuit.H"
 #include "OFstream.H"
 #include "OSspecific.H"
+#include "boundaryRoleLibrary.H"
 
 // * * * * * * * * * * * * * * * * Constructor  * * * * * * * * * * * * * * //
 
-Foam::plasmaExternalCircuit::plasmaExternalCircuit
-(
-    const fvMesh& mesh,
-    const dictionary& dict
-)
+Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
 :
     mesh_(mesh),
     enabled_(false),
@@ -24,18 +21,82 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit
     V_(0.0),
     started_(false)
 {
-    if (!dict.found("externalCircuit"))
+    // THE CIRCUIT IS DECLARED WHERE THE ELECTRODE IS, AND NOWHERE ELSE.
+    //
+    // It used to live in system/plasmaSimulationControls with an `electrode`
+    // key naming the patch -- so the patch was named twice, once there and
+    // once as `kind ballastedElectrode` in configuration/boundaries. Two
+    // copies of one name is a defect even while they agree (CLAUDE.md G1),
+    // and the failure mode is silent: rename the patch in one file and the
+    // circuit quietly drives nothing.
+    //
+    // Now the user writes ONE thing, in the semantic layer:
+    //
+    //     cathode
+    //     {
+    //         kind        ballastedElectrode;
+    //         circuit
+    //         {
+    //             type          seriesResistor;
+    //             sourceVoltage table ((0 0) (5e-6 -1011));
+    //             resistance    5e8;
+    //         }
+    //     }
+    //
+    // and the electrode this circuit feeds is the patch it was declared on.
+    const dictionary decl(boundaryRoleLibrary::caseDeclaration(mesh_.time()));
+
+    wordList ballasted;
+    forAllConstIters(decl, iter)
     {
-        return;
+        if (!iter().isDict()) continue;
+        const dictionary& pd = iter().dict();
+        if (pd.getOrDefault<word>("kind", word::null) == "ballastedElectrode")
+        {
+            ballasted.append(iter().keyword());
+        }
     }
 
-    const dictionary& cd = dict.subDict("externalCircuit");
-
-    enabled_ = cd.getOrDefault<Switch>("enabled", true);
-    if (!enabled_)
+    if (ballasted.empty())
     {
-        return;
+        return;                       // no ballasted electrode: no circuit
     }
+
+    // ONE CIRCUIT TODAY. Several ballasted electrodes means a netlist, which
+    // is stage 2 of doc/external-circuit-plan.md; refusing is better than
+    // driving the first one and silently ignoring the rest.
+    if (ballasted.size() > 1)
+    {
+        FatalErrorInFunction
+            << "several patches are declared `ballastedElectrode`: "
+            << ballasted << nl
+            << "    Only ONE external circuit is supported today. Coupling"
+            << " several electrodes through one network is a netlist -- stage"
+            << " 2 of doc/external-circuit-plan.md." << nl
+            << exit(FatalError);
+    }
+
+    electrode_ = ballasted[0];
+    const dictionary& pd = decl.subDict(electrode_);
+
+    if (!pd.found("circuit"))
+    {
+        FatalIOErrorInFunction(pd)
+            << "patch `" << electrode_ << "` is declared"
+            << " `kind ballastedElectrode` but carries no `circuit`"
+            << " sub-dictionary." << nl
+            << "    A ballasted electrode's potential is an OUTPUT of its"
+            << " circuit, so without one there is nothing to compute it from."
+            << nl
+            << "    Add, inside the patch's block in configuration/boundaries:"
+            << nl
+            << "        circuit { type seriesResistor; sourceVoltage"
+            << " <Function1>; resistance <Ohm>; }" << nl
+            << exit(FatalIOError);
+    }
+
+    const dictionary& cd = pd.subDict("circuit");
+    enabled_ = true;
 
     // ONE TOPOLOGY TODAY, AND UNKNOWN NAMES ARE FATAL.
     //
@@ -48,34 +109,34 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit
     if (type_ != "seriesResistor")
     {
         FatalIOErrorInFunction(cd)
-            << "externalCircuit/type is `" << type_
+            << "circuit/type is `" << type_
             << "`, which is not implemented." << nl
             << "    Available: seriesResistor" << nl
             << "    Planned (doc/external-circuit-plan.md): seriesRC,"
-            << " seriesRLC, currentSource, matchedRF, netlist." << nl
+            << " seriesRLC, currentSource, matchedRF." << nl
             << exit(FatalIOError);
     }
 
-    electrode_ = cd.get<word>("electrode");
     R_ = cd.get<scalar>("resistance");
     relax_ = cd.getOrDefault<scalar>("relaxation", 1.0);
 
     if (R_ <= 0)
     {
         FatalIOErrorInFunction(cd)
-            << "externalCircuit/resistance must be positive; got " << R_
-            << "." << nl
+            << "circuit/resistance must be positive; got " << R_ << "." << nl
             << "    A zero ballast is a fixed-voltage electrode, which is what"
-            << " a drivenElectrode already is -- use that instead of a circuit"
-            << " that does nothing." << nl
+            << " `kind drivenElectrode` already is -- use that instead of a"
+            << " circuit that does nothing." << nl
             << exit(FatalIOError);
     }
 
     if (relax_ <= 0 || relax_ > 1)
     {
         FatalIOErrorInFunction(cd)
-            << "externalCircuit/relaxation must be in (0, 1]; got " << relax_
-            << "." << nl << exit(FatalIOError);
+            << "circuit/relaxation must be in (0, 1]; got " << relax_ << "."
+            << nl
+            << "    It is not needed for stability -- the update is implicit."
+            << nl << exit(FatalIOError);
     }
 
     source_ = Function1<scalar>::New("sourceVoltage", cd);
@@ -103,8 +164,12 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit
         << "    THE ELECTRODE POTENTIAL IS NOW AN OUTPUT. A fixed-voltage gap"
         << " above breakdown has nothing to limit its current; with a ballast"
         << " the operating point is self-selecting." << nl
-        << "    I_circuit is Sato's I_total from the dischargeCurrent"
-        << " diagnostic, which must therefore be enabled." << nl
+        << "    Coupling is IMPLICIT (backward Euler on the RC relation the"
+        << " ballast forms with the gap), so it is unconditionally stable and"
+        << " needs no relaxation." << nl
+        << "    It uses the CONDUCTION current from the dischargeCurrent"
+        << " diagnostic, which must therefore be enabled; the capacitive part"
+        << " is carried by the RC term, not taken from I_total." << nl
         << "    Starting from the open-circuit value V = " << V_ << " V."
         << endl;
 

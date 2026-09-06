@@ -293,11 +293,15 @@ openBoundary
 ballastedElectrode
 {
     description "A conductor fed through an external circuit: its potential is an OUTPUT, set by V_source - R*I, not a waveform the user imposes.";
-    // No `requires`: the circuit itself is declared once in
-    // system/plasmaSimulationControls/externalCircuit, because a circuit can
-    // connect SEVERAL electrodes and is therefore a property of the system
-    // rather than of one surface. This role only says that this patch's
-    // potential is driven by that circuit.
+    // The circuit is declared HERE, on the electrode it feeds, so its name is
+    // never written twice and cannot drift:
+    //
+    //     circuit { type seriesResistor; sourceVoltage <Function1>;
+    //               resistance <Ohm>; }
+    //
+    // `type` selects the topology; today only seriesResistor, and an
+    // unrecognised name is fatal rather than silently resistive.
+    requires    ( circuit );
     optional    { material none; gammaSEE -1; electronReflection -1; }
     electrostatics
     {

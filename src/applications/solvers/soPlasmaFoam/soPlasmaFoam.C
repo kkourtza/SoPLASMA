@@ -280,7 +280,7 @@ int main(int argc, char *argv[])
     // electrode's potential stops being an input and becomes an output:
     // V_electrode = V_source(t) - R*I_circuit. See plasmaExternalCircuit.H for
     // why a fixed-voltage gap above breakdown cannot select an operating point.
-    plasmaExternalCircuit circuit(gasMesh(), plasmaControlsDict);
+    plasmaExternalCircuit circuit(gasMesh());
 
     if (circuit.enabled() && !dischargeCurrent.enabled())
     {

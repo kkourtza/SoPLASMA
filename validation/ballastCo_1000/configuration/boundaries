@@ -33,6 +33,20 @@ cathode
     // breakdown cannot select an operating point.
     kind        ballastedElectrode;
 
+    // THE CIRCUIT, declared on the electrode it feeds. One place: the patch
+    // name is never written twice, so it cannot drift.
+    //
+    // SIZING: Grubert's operating point is j = 0.511 mA/cm^2 at a gap voltage
+    // of -500 V. This electrode is 5 faces of 200 x 200 um = 2.0e-3 cm^2, so
+    // I = 1.022e-6 A, and V_source = -500 - R*I gives -1011 V at R = 5e8 --
+    // an ordinary ballast for a microamp-scale glow.
+    circuit
+    {
+        type          seriesResistor;
+        sourceVoltage table ((0 0) (5e-6 -1011));
+        resistance    5e8;
+    }
+
     gammaSEE            0.06;
 }
 

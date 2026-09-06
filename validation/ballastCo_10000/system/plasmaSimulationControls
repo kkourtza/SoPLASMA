@@ -98,44 +98,6 @@ outerCoupling
 
 // Sato's equation: external circuit current. See
 // docs/discharge-current-sato-plan.md
-// THE EXTERNAL CIRCUIT.
-//
-// SIZING, so the numbers are not magic. Grubert's operating point is
-// j = 0.511 mA/cm^2 at a gap voltage of -500 V. Our electrode is 5 faces of
-// 200 x 200 um = 2.0e-7 m^2 = 2.0e-3 cm^2, so that current is
-//     I = 0.511e-3 A/cm^2 * 2.0e-3 cm^2 = 1.022e-6 A.
-// V_electrode = V_source - R*I, so putting the gap at -500 V there needs
-//     V_source = -500 - R*1.022e-6.
-// R = 5e8 Ohm gives V_source = -1011 V, and 5e8 is an ordinary ballast for a
-// microamp-scale glow.
-//
-// WHAT THE BALLAST IS FOR: not to create a steady state -- Grubert's point is
-// on the ABNORMAL branch, where dV/dj > 0 and fixed voltage is stable. It is
-// to TRAVERSE the flat normal-glow region on the way there, where dV/dj ~ 0
-// and the current at fixed voltage is undetermined. That is where the
-// unballasted run ran away: the current tripled while V moved 0.1 V.
-//
-// The ramp still rises over 5 us, so before breakdown (no current) the gap
-// simply follows V_source and ignites near -179 V as before.
-externalCircuit
-{
-    type          seriesResistor;
-    electrode     cathode;
-    sourceVoltage table ((0 0) (5e-6 -1011));
-    resistance    5e8;
-
-    // NO RELAXATION. The update is implicit (backward Euler on the RC
-    // relation the ballast really forms), so it is unconditionally stable and
-    // needs none.
-    //
-    // 0.2 was left here from the EXPLICIT attempt, where it was a failed
-    // stabiliser, and it then silently slowed the circuit by 5x: measured
-    // V_elec = -59.56 V against -59.97 predicted for tau_eff = tau/0.2, where
-    // the correct value is -110.19 V. A damping factor on a stable integrator
-    // is not a safety margin, it is a wrong time constant.
-    relaxation    1.0;
-}
-
 dischargeCurrent
 {
     enabled         true;

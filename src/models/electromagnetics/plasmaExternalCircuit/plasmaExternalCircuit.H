@@ -104,8 +104,14 @@ class plasmaExternalCircuit
 
 public:
 
-    //- Construct from the mesh and the controls dictionary
-    plasmaExternalCircuit(const fvMesh& mesh, const dictionary& dict);
+    //- Construct from the mesh alone.
+    //
+    //  The circuit is read from configuration/boundaries, on the patch
+    //  declared `kind ballastedElectrode`. There is no separate circuit
+    //  dictionary and no `electrode` key: the electrode a circuit feeds is
+    //  the patch it was written on, so the name cannot be stated twice and
+    //  cannot drift.
+    explicit plasmaExternalCircuit(const fvMesh& mesh);
 
     //- Is a circuit active?
     inline bool enabled() const { return enabled_; }
