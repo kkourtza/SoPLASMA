@@ -368,6 +368,60 @@ the ramp, so the loop was never in the quasi-static regime the design assumed.
 A slower ramp through ignition reduces the excursion the controller has to
 handle, independently of the damping fix.
 
+### STAIRCASE TEST 2026-09-06: the "ramp too fast" diagnosis is FALSIFIED
+
+The `tau_loop = C_gap/g` bound was first attributed to the ramp being 4-7x
+faster than the ion transit, with the remedy being a STAIRCASE -- hold each
+current level for 2-3 ion transits so `gamma` relaxes to 0. Both a CURRENT
+staircase (`grubert2009_iset_stair`, I_set held at 5e-8 A) and a VOLTAGE
+staircase (`grubert2009_stair_V`, V_src held at -250 V through R = 1e8, no
+shunt C) were run.
+
+**BOTH DIVERGED INSIDE THE FIRST PLATEAU**, with the set point CONSTANT:
+
+    iset_stair  t=9.3e-7  I_set = -5e-8 A held since t=0   n_e -> 3.2e18
+    stair_V     t=1.4e-7  V_src = -250 V held since t=0    n_e -> 4.4e18
+
+Plateau 1 spans t = 0..14 us in both, so nothing was ramping. **The remedy
+addressed the wrong cause.**
+
+**WHY, and this is the durable result.** `tau_loop/tau_growth` through the
+ignition of the held-current arm:
+
+| t | Ic/Is | g [S] | tau_loop/tau_growth |
+|---|---|---|---|
+| 3.6e-7 | 6% | 9.25e-11 | **4790** |
+| 5.2e-7 | 23% | 4.13e-10 | 1070 |
+| 7.0e-7 | 80% | 4.05e-09 | 109 |
+| 9.3e-7 | -674% | 1.33e-07 | 3.3 |
+| 9.3e-7 | -4330% | 9.52e-06 | 0.047 (fast enough -- far too late) |
+
+**At ignition `g` is small BECAUSE THE PLASMA IS JUST FORMING, and that is
+exactly when `gamma` is large.** So `tau_loop >> tau_growth` at ignition is
+INTRINSIC, not a consequence of how the gap is driven. The loop becomes fast
+enough only after the current has overshot by ~4000x.
+
+**CONCLUSION: no two-terminal circuit can carry this discharge through
+ignition.** Changing the gap voltage requires moving charge on or off the
+electrode, so the response time is bounded below by `C_gap/g` for ANY such
+circuit; at ignition `g` is 3-4 decades too small and no choice of R, L, C or
+set point alters it. The ballast bound
+`tau_RC*(I_sc/I_op - 1) = C_gap*V_gap/I_op = 86.6 ns` and the current-source
+bound `C_gap/g` are two faces of the same limit.
+
+Confirmed by the two arms having UNRELATED ACTUATORS -- one imposes current,
+one imposes voltage -- and failing identically. That is why the voltage arm was
+worth running.
+
+**THEREFORE the steady, current-imposed solver is the REQUIRED instrument, not
+a fallback:** it never traverses ignition. This now rests on measurement,
+unlike the earlier `nu'`-based "no lumped circuit works" argument, which was
+withdrawn for resting on a 1.95x margin.
+
+**What is still untested:** whether the steady operating point, once reached by
+any means, is stable under the transient solver. The linear analysis says yes
+(`gamma = 0` is stable for every circuit) but no run has ever held it.
+
 ### WHAT IS NOT YET VERIFIED
 
 Syntax-checked and reasoned, **but not yet run**: the build guard correctly
