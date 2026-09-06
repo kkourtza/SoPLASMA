@@ -312,18 +312,55 @@ resolutions: `iset` (dt ~6e-12) and `En150` (dt ~1e-12) track each other to
 arms at dt 1.2e-10 and 2.4e-10 diverge to the same 1e18. Six decades of dt, one
 trajectory.
 
-**TWO CANDIDATE FIXES, not yet chosen between:**
+**CANDIDATE 1 (the estimator) IS EXCLUDED, measured.** The reported `g`
+matches a direct finite-difference `dI_cond/dV` at EVERY window width -- 1, 10,
+100 and 1000 steps -- to 1-2%:
 
-1. **`g` is estimated too small.** It is a secant `dI/dV` from successive
-   accepted steps; at dt ~1e-12 the per-step `dV` is tiny, so the estimate may
-   be dominated by noise or suppressed by the relative-change guard on it, and
-   never reflect the true plant gain. If so, fix the estimator.
-2. **The controller FORM is wrong for this plant.** A pure integrator cannot
-   stabilise an exponentially-nonlinear plant however well `g` is estimated; it
-   needs proportional action, a slew limit on `dV/dt`, or both.
+    t=8.50e-7  reported 4.24e-9  w=1 4.24e-9  w=10 4.23e-9  w=100 4.23e-9  w=1000 4.29e-9
+    t=9.42e-7  reported 1.70e-7  w=1 1.70e-7  w=10 1.73e-7  w=100 1.71e-7  w=1000 1.54e-7
 
-These are distinguishable: instrument `g` against a directly measured
-`dI_cond/dV` over a finite perturbation. Do that before changing the form.
+So `g` IS the true plant gain, and the estimator is sound.
+
+**THE REAL BOUND: the loop response time is `tau_loop = C_gap/g`, and it is
+PHYSICS, not a design parameter.** `|g|dt/C_gap` is just `dt/tau_loop`, so the
+per-step "damping" reading was a red herring. Regulation requires
+`tau_loop < tau_growth`, with `tau_growth = 0.400 ns` measured:
+
+| t | Ic/Is | g [S] | tau_loop | tau_loop/tau_growth |
+|---|---|---|---|---|
+| 7.99e-7 | 84% | 1.86e-09 | 95 ns | **238x too slow** |
+| 9.15e-7 | 227% | 1.16e-09 | 153 ns | **383x too slow** |
+| 9.45e-7 | -96% | 6.36e-08 | 2.8 ns | 7x too slow |
+| 9.535e-7 | -12045% | 4.15e-05 | 4.3 ps | fast enough -- TOO LATE |
+
+    threshold:  g > C_gap/tau_growth = 4.43e-07 S
+    at onset:   g = 1.86e-09 S        -> 238x short
+
+The loop only becomes fast enough once `n_e ~ 1e18`, i.e. after the discharge
+is gone.
+
+**AND THIS CORRECTS AN EARLIER CLAIM IN THIS PROJECT.** The statement that
+"the gap self-discharges in `tau_gap = C_gap/G = 0.28 ns`, faster than the
+0.68 ns growth, so the gap wants to quench itself" used the CHORD conductance
+`G = I/V = 6.25e-7 S`. **A feedback loop is governed by the DIFFERENTIAL
+conductance `dI/dV`, which at the critical moment is 336x SMALLER.** That is
+why the earlier reasoning looked encouraging and the outcome was not. The
+0.28 ns figure is superseded for any stability argument.
+
+**THE BOUND IS GENERAL for a two-terminal circuit.** The only way to change the
+gap voltage is to move charge on or off the electrode, so ANY circuit whose
+sole actuator is the electrode potential has response time `>= C_gap/g`. This
+is the same character as the ballast bound
+`tau_RC*(I_sc/I_op - 1) = C_gap*V_gap/I_op = 86.6 ns` -- set by geometry and
+plasma state, not by component values.
+
+Unlike the earlier "no lumped circuit works" claim, which was WITHDRAWN because
+it rested on a crude `nu'` with a 1.95x margin, this rests on a MEASURED `g`
+(verified at four window widths) with a **238x** margin.
+
+**dt IS CONCLUSIVELY EXCLUDED.** Four arms spanning six decades of dt -- 1e-12,
+6e-12, 1.2e-10, 2.4e-10 -- followed ONE trajectory (agreeing to 0.66% through
+the overshoot, peak and turnover) to the same endpoint, n_e ~ 1e18.
 
 **AND A SEPARATE CONTRIBUTOR:** the `setCurrent` ramp is too fast through
 ignition. `I_cond` overshot to 229% because the discharge's own growth outran
