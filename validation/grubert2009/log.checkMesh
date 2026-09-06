@@ -8,10 +8,10 @@
 Build  : _b8cf4d35-20260127 OPENFOAM=2412 patch=260127 version=2412
 Arch   : "LSB;label=32;scalar=64"
 Exec   : checkMesh
-Date   : Sep 05 2026
-Time   : 18:55:01
+Date   : Sep 06 2026
+Time   : 12:39:04
 Host   : Kourtzanidis-PC
-PID    : 2346286
+PID    : 2606252
 I/O    : uncollated
 Case   : /home/kkourtza/soplasma-scratch/validation/grubert2009
 nProcs : 1
@@ -27,22 +27,18 @@ Create time
     in file db/dynamicLibrary/dlLibraryTable/dlLibraryTable.C at line 188
     Could not load "libpetscFoam.so"
 libpetsc.so.3.24: cannot open shared object file: No such file or directory
---> FOAM Warning : 
-    From static Foam::instantList Foam::timeSelector::select0(Foam::Time&, const Foam::argList&)
-    in file db/Time/timeSelector.C at line 284
-    No time specified or available, selecting 'constant'
-Create mesh for time = constant
+Create mesh for time = 0
 
 Check mesh...
 
-Time = constant
+Time = 0
 
 Mesh stats 
-    points:           2412
+    points:           4812
     internal points:  0
-    faces:            4205
-    internal faces:   1795
-    cells:            1000
+    faces:            8405
+    internal faces:   3595
+    cells:            2000
     faces per cell:   6
     boundary patches: 6
     point zones:      0
@@ -50,7 +46,7 @@ Mesh stats
     cell zones:       1
 
 Overall number of cells of each type:
-    hexahedra:     1000
+    hexahedra:     2000
     prisms:        0
     wedges:        0
     pyramids:      0
@@ -68,13 +64,13 @@ Checking topology...
 
 Checking patch topology for multiply connected surfaces...
     Patch               Faces    Points     Surface topology
-    side_lo             200      402      ok (non-closed singly connected)  
+    side_lo             400      802      ok (non-closed singly connected)  
     anode               5        12       ok (non-closed singly connected)  
-    side_hi             200      402      ok (non-closed singly connected)  
+    side_hi             400      802      ok (non-closed singly connected)  
     cathode             5        12       ok (non-closed singly connected)  
-    front               1000     1206     ok (non-closed singly connected)  
-    back                1000     1206     ok (non-closed singly connected)  
-    ".*"                2410     2412     ok (closed singly connected)      
+    front               2000     2406     ok (non-closed singly connected)  
+    back                2000     2406     ok (non-closed singly connected)  
+    ".*"                4810     4812     ok (closed singly connected)      
 
 
 Checking faceZone topology for multiply connected surfaces...
@@ -82,7 +78,7 @@ Checking faceZone topology for multiply connected surfaces...
 
 Checking basic cellZone addressing...
     CellZone            Cells        Points       Volume       BoundingBox
-    gas                 1000         2412         2e-09        (0 0 0) (0.01 0.001 0.0002)
+    gas                 2000         4812         2e-09        (0 0 0) (0.01 0.001 0.0002)
 
 Checking basic pointZone addressing...
     No pointZones found.
@@ -92,15 +88,15 @@ Checking geometry...
     Mesh has 2 geometric (non-empty/wedge) directions (1 1 0)
     Mesh has 2 solution (non-empty) directions (1 1 0)
     All edges aligned with or perpendicular to non-empty directions.
-    Boundary openness (1.62724054928e-18 8.00059936732e-17 -5.87162631534e-17) OK.
-    Max cell openness = 1.65436122515e-16 OK.
-    Max aspect ratio = 4.00000000016 OK.
-    Minimum face area = 9.999999998e-09. Maximum face area = 4.00000000002e-08.  Face area magnitudes OK.
-    Min volume = 1.9999999998e-12. Max volume = 2.0000000002e-12.  Total volume = 2e-09.  Cell volumes OK.
-    Mesh non-orthogonality Max: 0 average: 0
+    Boundary openness (1.62724054928e-18 2.5368425907e-17 -3.6401032079e-18) OK.
+    Max cell openness = 2.03431677507e-16 OK.
+    Max aspect ratio = 147.807305597 OK.
+    Minimum face area = 2.70622617999e-10. Maximum face area = 4.00000000002e-08.  Face area magnitudes OK.
+    Min volume = 5.41245235997e-14. Max volume = 2.6708097138e-12.  Total volume = 2e-09.  Cell volumes OK.
+    Mesh non-orthogonality Max: 6.27392936746e-06 average: 0
     Non-orthogonality check OK.
     Face pyramids OK.
-    Max skewness = 1.2507356262e-10 OK.
+    Max skewness = 4.80448619248e-10 OK.
     Coupled point location match (average 0) OK.
 
 Mesh OK.

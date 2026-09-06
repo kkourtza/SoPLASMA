@@ -1,5 +1,5 @@
 Info    : Running 'gmsh -2 -format msh2 gap1cm.geo -o gap1cm.msh' [Gmsh 4.12.1, 1 node, max. 1 thread]
-Info    : Started on Sat Sep  5 18:54:10 2026
+Info    : Started on Sun Sep  6 12:39:04 2026
 Info    : Reading 'gap1cm.geo'...
 Info    : Done reading 'gap1cm.geo'
 Info    : Meshing 1D...
@@ -7,11 +7,11 @@ Info    : [  0%] Meshing curve 1 (Line)
 Info    : [ 30%] Meshing curve 2 (Line)
 Info    : [ 50%] Meshing curve 3 (Line)
 Info    : [ 80%] Meshing curve 4 (Line)
-Info    : Done meshing 1D (Wall 0.000187135s, CPU 2.1e-05s)
+Info    : Done meshing 1D (Wall 0.00933668s, CPU 0.004669s)
 Info    : Meshing 2D...
 Info    : Meshing surface 1 (Transfinite)
-Info    : Done meshing 2D (Wall 0.000211873s, CPU 2.4e-05s)
-Info    : 1206 nodes 1414 elements
+Info    : Done meshing 2D (Wall 0.000202879s, CPU 0.000101s)
+Info    : 2406 nodes 2814 elements
 Info    : Writing 'gap1cm.msh'...
 Info    : Done writing 'gap1cm.msh'
-Info    : Stopped on Sat Sep  5 18:54:10 2026 (From start: Wall 0.0136712s, CPU 0.008241s)
+Info    : Stopped on Sun Sep  6 12:39:04 2026 (From start: Wall 0.0123476s, CPU 0.018764s)

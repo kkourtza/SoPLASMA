@@ -15,7 +15,7 @@
 
 L  = 0.01;      // gap [m] -- Grubert's 1 cm
 W  = 0.001;     // lateral width [m]; arbitrary, closed by symmetry
-NX = 200;       // cells across the gap: dx = 50 um
+NX = 400;       // cells across the gap, GRADED -- see the Bump below
 NY = 5;         // cells across the width
 
 Point(1) = {0, 0, 0};
@@ -31,10 +31,30 @@ Line(4) = {4, 1};   // cathode   (x = 0)
 Curve Loop(1) = {1, 2, 3, 4};
 Plane Surface(1) = {1};
 
-// Structured: the gap direction must be uniform, because the cathode fall is
-// resolved by cell count and a graded mesh would make "200 cells" ambiguous
-// when comparing against a published profile.
-Transfinite Curve{1, 3} = NX + 1;
+// GRADED TOWARDS BOTH ELECTRODES, changed 2026-09-06.
+//
+// It was uniform at 50 um, on the reasoning that "a graded mesh would make
+// '200 cells' ambiguous when comparing against a published profile". That
+// reasoning was wrong, because it compared against the wrong length scale: the
+// thing a glow discharge must resolve is not the cathode-fall THICKNESS (~2 mm
+// here, 40 uniform cells, ample) but the space-charge SHEATH inside it, whose
+// scale is the Debye length.
+//
+// MEASURED on this case: at the runaway density it reached, n_e = 6.27e19
+// m^-3, lambda_D = 1.33 um against a 50 um cell -- under-resolved 37.7x. The
+// sheath is precisely the mechanism that chokes the current in a glow, so a
+// mesh that cannot form it cannot limit the current: I_cond ran to 663
+// mA/cm^2, 1300x Grubert's 0.511, essentially all conduction (I_disp 0.009).
+//
+// Note the mesh WOULD be adequate at the right answer -- at Grubert's peak
+// n_e = 2.478e15, lambda_D = 211 um and dx/lambda_D = 0.24. So this only bites
+// once the solution has overshot, which is why a uniform mesh looked defensible
+// until it did.
+//
+// Bump 0.02 refines BOTH ends: min cell 1.35 um, max 66.8 um, ratio 49.
+// 1.35 um resolves lambda_D even at the runaway density, and gives ~150 cells
+// per lambda_D at the density the answer should have.
+Transfinite Curve{1, 3} = NX + 1 Using Bump 0.02;
 Transfinite Curve{2, 4} = NY + 1;
 Transfinite Surface{1};
 Recombine Surface{1};        // quads -> hexes after extrusion

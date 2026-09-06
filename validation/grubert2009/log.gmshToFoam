@@ -8,10 +8,10 @@
 Build  : _b8cf4d35-20260127 OPENFOAM=2412 patch=260127 version=2412
 Arch   : "LSB;label=32;scalar=64"
 Exec   : gmshToFoam gap1cm_3D.msh
-Date   : Sep 05 2026
-Time   : 18:54:45
+Date   : Sep 06 2026
+Time   : 12:39:04
 Host   : Kourtzanidis-PC
-PID    : 2345770
+PID    : 2606249
 I/O    : uncollated
 Case   : /home/kkourtza/soplasma-scratch/validation/grubert2009
 nProcs : 1
@@ -41,11 +41,11 @@ Physical names:7
     Volume 7	gas
 
 Starting to read points at line 15
-Vertices to be read: 2412
-Vertices read:2412
+Vertices to be read: 4812
+Vertices read:4812
 
-Starting to read cells at line 2430
-Cells to be read: 3410
+Starting to read cells at line 4830
+Cells to be read: 6810
 
 Mapping region 7 to Foam cellZone 0
 Mapping region 3 to Foam patch 0
@@ -55,15 +55,15 @@ Mapping region 1 to Foam patch 3
 Mapping region 5 to Foam patch 4
 Mapping region 6 to Foam patch 5
 Cells:
-    total:1000
-    hex  :1000
+    total:2000
+    hex  :2000
     prism:0
     pyr  :0
     tet  :0
 
 CellZones:
 Zone	Size
-    0	1000
+    0	2000
 
 Patch 0 gets name side_lo
 Patch 1 gets name anode
@@ -75,7 +75,7 @@ Patch 5 gets name back
 --> FOAM Warning : 
     From Foam::polyMesh::polyMesh(const Foam::IOobject&, Foam::pointField&&, const Foam::cellShapeList&, const Foam::faceListList&, const Foam::wordList&, const Foam::wordList&, const Foam::word&, const Foam::word&, const Foam::wordList&, bool)
     in file meshes/polyMesh/polyMeshFromShapeMesh.C at line 640
-    Found 2410 undefined faces in mesh; adding to default patch defaultFaces
+    Found 4810 undefined faces in mesh; adding to default patch defaultFaces
 Finding faces of patch 0
 Finding faces of patch 1
 Finding faces of patch 2
