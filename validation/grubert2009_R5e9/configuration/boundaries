@@ -62,7 +62,7 @@ cathode
         //
         // 50 ns rather than a true step is numerical hygiene only; the ballast,
         // not the ramp, is what limits the current now.
-        sourceVoltage table ((0 0) (5e-8 -602));
+        sourceVoltage table ((0 0) (5e-8 -5610));
         // R = 1e8, NOT 5e8. Same load line -- V_gap = -602 + R*I still gives
         // -500 V at j = 0.511 mA/cm^2 -- but far more TRANSIENT HEADROOM.
         //
@@ -77,7 +77,7 @@ cathode
         // point. This is the same R > |dV/dj| load-line condition that makes a
         // ballast stabilise at all, applied to the transient rather than only
         // to the fixed point.
-        resistance    1e8;
+        resistance    5e9;
 
         // THE SHUNT CAPACITANCE IS WHAT MAKES A REAL RIG LIGHT GENTLY.
         //
@@ -96,7 +96,7 @@ cathode
         // the IONISATION and SCREENING times (both ~1.5e-10 s) while staying
         // simulable: 5e-14 F gives 5 us, gentle by 3e4 and comparable to the
         // 4.5 us ion transit.
-        capacitance   5e-14;
+        capacitance   1e-15;
     }
 
     gammaSEE            0.06;
