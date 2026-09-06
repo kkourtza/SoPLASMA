@@ -80,6 +80,15 @@ private:
         // Control switches and limits
 
             //- Switch to enable/disable time step adjustment
+            //- Has read() already ANNOUNCED the resolved settings?
+            //  read() is called from adjustDeltaT() on EVERY step, so without
+            //  this its nine Info banners were printed once per step: 15036
+            //  copies in a 15034-step run, ~12 kB/step, a 58 MB log in four
+            //  minutes. Measured 2026-09-06. The settings themselves are
+            //  re-resolved every step (MUST_READ_IF_MODIFIED, so a user can
+            //  change them mid-run); only the ANNOUNCEMENT is once.
+            mutable bool settingsAnnounced_;
+
             bool adjustTimeStep_;
 
             //- Maximum physical time step allowed

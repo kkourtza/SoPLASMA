@@ -12,6 +12,7 @@
 \*---------------------------------------------------------------------------*/
 
 #include "plasmaTimeControl.H"
+#include "OStringStream.H"
 #include "fvcGrad.H"
 #include "fvcAverage.H"
 #include "plasmaTransport.H"
@@ -26,6 +27,7 @@ namespace Foam
 plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
 :
     runTime_(runTime),
+    settingsAnnounced_(false),
     mesh_(mesh),
     dict_(dictionary::null),
     adjustTimeStep_(false),
@@ -70,6 +72,23 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
 
 void plasmaTimeControl::read()
 {
+
+    // ANNOUNCE ONCE, THEN GO QUIET.
+    //
+    // read() is called from adjustDeltaT() on EVERY step, so its nine
+    // banners were printed once per step: 15036 copies in a 15034-step run,
+    // ~12 kB/step, a 58 MB log in four minutes -- which is why the case had
+    // to pipe the solver through grep to stay readable. Measured 2026-09-06.
+    //
+    // The SETTINGS are still re-resolved every step (the dictionary is
+    // MUST_READ_IF_MODIFIED, so a user may change them mid-run); only the
+    // announcement is suppressed. Writing to a discarded OStringStream keeps
+    // every banner's formatting identical to what it was.
+    OStringStream announceSink;
+    Ostream& announce =
+        settingsAnnounced_
+      ? static_cast<Ostream&>(announceSink)
+      : static_cast<Ostream&>(Info);
     IOdictionary plasmaDict
         (
             IOobject
@@ -178,11 +197,11 @@ void plasmaTimeControl::read()
 
         if (adjustTimeStep_)
         {
-            Info<< "plasmaTimeControl: deltaT floor " << minDeltaT_ << " s";
+            announce << "plasmaTimeControl: deltaT floor " << minDeltaT_ << " s";
 
             if (minDeltaTAuto_)
             {
-                Info<< " (derived, "
+                announce << " (derived, "
                     << (floorFromStep < floorFromSpan
                           ? "from the initial step"
                           : "from endTime")
@@ -190,10 +209,10 @@ void plasmaTimeControl::read()
             }
             else
             {
-                Info<< " (set by minDeltaT)";
+                announce << " (set by minDeltaT)";
             }
 
-            Info<< nl
+            announce << nl
                 << "    below it the run stops with a diagnostic rather than"
                 << " descending forever" << endl;
         }
@@ -248,7 +267,7 @@ void plasmaTimeControl::read()
                 errAtolDict_ = dict_.subDict("errorAtol");
             }
 
-            Info<< "plasmaTimeControl: temporal-error REPORT is on (rtol "
+            announce << "plasmaTimeControl: temporal-error REPORT is on (rtol "
                 << errRtol_ << ", " << errAtolDict_.size()
                 << " atol entries, fallback "
                 << errAtolDefault_ << ")." << nl
@@ -272,7 +291,7 @@ void plasmaTimeControl::read()
             {
                 errorControlDeltaT_ = false;
 
-                Info<< "plasmaTimeControl: temporal-error PI control is"
+                announce << "plasmaTimeControl: temporal-error PI control is"
                     << " DEFAULT-ON but stands down here, because" << nl
                     << "    `adjustTimeStep` is off and the controller works"
                     << " by changing deltaT. The error is" << nl
@@ -302,7 +321,7 @@ void plasmaTimeControl::read()
                         << exit(FatalError);
                 }
 
-                Info<< "plasmaTimeControl: temporal-error PI CONTROL is on"
+                announce << "plasmaTimeControl: temporal-error PI CONTROL is on"
                     << " (target " << errTarget_
                     << ", kI " << errKi_ << ", kP " << errKp_
                     << ", grow <= " << errMaxGrow_
@@ -329,7 +348,7 @@ void plasmaTimeControl::read()
                 contractionBackoffSteps_ =
                     dict_.lookupOrDefault<label>("contractionBackoffSteps", 2);
 
-                Info<< "plasmaTimeControl: CONTRACTION BACKOFF is on (factor "
+                announce << "plasmaTimeControl: CONTRACTION BACKOFF is on (factor "
                     << contractionBackoffFactor_ << " after "
                     << contractionBackoffSteps_
                     << " consecutive steps with rho above target)." << nl
@@ -437,7 +456,7 @@ void plasmaTimeControl::read()
             {
                 outerOnNonConvergence_ = "reduceDeltaT";
 
-                Info<< "    outerCoupling/onNonConvergence: defaulting to"
+                announce << "    outerCoupling/onNonConvergence: defaulting to"
                        " `reduceDeltaT` because adjustTimeStep is off" << nl
                     << "      (the default `retryStep` retries by shortening"
                        " deltaT). Non-converged steps will be ACCEPTED."
@@ -634,7 +653,7 @@ void plasmaTimeControl::read()
         // way to tell an ignored key from a broken one.
         if (dict_.found("printVoltageRiseRate"))
         {
-            Info<< "plasmaTimeControl: `printVoltageRiseRate` is NO LONGER READ"
+            announce << "plasmaTimeControl: `printVoltageRiseRate` is NO LONGER READ"
                 << " -- remove it." << nl
                 << "    Reporting now follows the limiter: it prints when"
                 << " `maxVoltageRisePerStep` is non-zero" << nl
@@ -671,7 +690,7 @@ void plasmaTimeControl::read()
                 limitVoltageRiseRate_ = false;
                 printVoltageRiseRate_ = false;
 
-                Info<< "plasmaTimeControl: voltage-rise control is OFF"
+                announce << "plasmaTimeControl: voltage-rise control is OFF"
                     << " (no `voltagePatchName`)." << nl
                     << "    It limits deltaT so the APPLIED voltage changes by"
                     << " at most maxVoltageRisePerStep" << nl
@@ -683,6 +702,8 @@ void plasmaTimeControl::read()
             }
         }
     }
+
+    settingsAnnounced_ = true;
 }
 
 scalar plasmaTimeControl::patchVoltageAvg
@@ -1448,7 +1469,36 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
                 newDeltaT = dtFailCeiling_;
                 dtLimiterName_ = "rejection memory";
             }
+
+            // RELAX, THEN DISARM ONCE IT CAN NO LONGER BIND.
+            //
+            // This multiplication used to run unconditionally and forever, so
+            // the ceiling grew geometrically with no cap and eventually
+            // OVERFLOWED A DOUBLE -- a SIGFPE inside adjustDeltaT, because
+            // OpenFOAM traps overflow.
+            //
+            // MEASURED 2026-09-06 on the Grubert dc glow, LMEA arm, and
+            // reproducible to the step: one rejection early on armed the
+            // ceiling at ~1e-11, and 1.05^n from there crosses 1.798e308 after
+            // 15067 steps. The crash was at step 15034, t = 1.18744e-07 s.
+            //
+            // The failure mode is the perverse one: it needs a run that
+            // rejects a step ONCE and then behaves WELL for ~15000 steps. A
+            // case that keeps rejecting keeps re-arming the ceiling low and
+            // never gets there. The better the rest of the solver does, the
+            // more certainly this kills it -- which is why it survived every
+            // short bed and only appeared on the first long, clean run.
+            //
+            // Disarming at maxDeltaT_ is exact rather than arbitrary: dt is
+            // capped by maxDeltaT_ regardless, so a ceiling at or above it can
+            // never be the binding constraint again. The memory has expired,
+            // so it is switched off instead of being grown forever.
             dtFailCeiling_ *= retryCeilingRelax_;
+
+            if (dtFailCeiling_ >= maxDeltaT_)
+            {
+                dtFailCeiling_ = 0;
+            }
         }
 
         // (3) ABSOLUTE FLOOR, applied LAST so nothing can push below it. Note
