@@ -1,3 +1,26 @@
+# INVALID -- ALL RESULTS FROM 2026-09-06 ARE VOID
+
+**Every number this case produced on 2026-09-06 was computed with a FROZEN
+POISSON SOURCE and must not be used.** `updateChargeDensity()` sat behind
+`if (pimple.finalIter())`, and the `relativeChange` break added the same day
+exits the outer loop with a raw `break` at the top of an iteration, so
+finalIter was never reached. Measured: **151 charge-density updates in 364670
+timesteps (0.04%)**.
+
+Consequence: the field stayed at the VACUUM value -- E/N = 1104 Td against
+V/L = 1106 Td, agreeing to 0.2% -- while the ion density grew three decades
+past the point where space charge should dominate. With no screening there is
+nothing to arrest ionisation, so the "runaway" this sweep was built to
+investigate WAS THE BUG, not physics.
+
+Fixed in `23cd599`; verified by the field range going from 12943..12989 V/m
+(uniform) to 8062..14310 V/m (structured) at the same physical time.
+
+**This case must be re-run before any row of it is quoted.** The question below
+is still the right question; only the data is void.
+
+---
+
 # R sweep: does a larger ballast get through the breakdown transient?
 
 ## The question
