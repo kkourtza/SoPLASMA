@@ -493,13 +493,14 @@ its sign, both limits, both guards, and restart round-tripping) — see
 [`docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md`](docs/models/poisson_equation/boundary_conditions/thinDielectricPotential.md).
 
 
-## Electrodes: the three things a conductor can know
+## Electrodes: the four things a conductor can know
 
 ```
-                        potential          charge
-  driven electrode      known (waveform)   whatever the supply gives
-  grounded electrode    known (0)          whatever flows to ground
-  floatingElectrode     UNKNOWN            KNOWN (conserved)
+                          potential          charge / current
+  driven electrode        known (waveform)   whatever the supply gives
+  grounded electrode      known (0)          whatever flows to ground
+  floatingElectrode       UNKNOWN            KNOWN (conserved)
+  circuitDrivenElectrode  UNKNOWN            set by an external circuit
 ```
 
 A **floating electrode** is a conductor connected to nothing — a probe, an
@@ -533,6 +534,79 @@ each correction (measured 2.8e-14 V). `V_f`, `Q` and `I_plasma` are written per
 step to `postProcessing/floatingElectrode/floating.csv`. Details and the
 measured tests:
 [`docs/models/poisson_equation/floating-electrode.md`](docs/models/poisson_equation/floating-electrode.md).
+
+
+## An external circuit, because a fixed voltage cannot select an operating point
+
+A **dc glow does not run at a voltage you impose.** Above breakdown a
+fixed-potential gap has nothing to limit its current: ionisation grows, the
+current grows with it, and nothing in the equations picks a value. The operating
+point is chosen by the *circuit* — which is why every laboratory dc discharge
+has a ballast, and why the discharge's negative differential resistance
+(`dV/dj < 0` on the normal-glow branch) is stabilised by it rather than by the
+plasma.
+
+Declare the circuit **on the electrode it feeds**, so the patch name is never
+written twice:
+
+```
+cathode
+{
+    kind        circuitDrivenElectrode;
+    circuit
+    {
+        type          seriesRC;
+        sourceVoltage table ((0 0) (5e-8 -602));   // SIGNED
+        resistance    1e8;                          // [Ohm]
+        capacitance   5e-14;                        // [F], shunt
+    }
+}
+```
+
+Three topologies, and an unrecognised `type` is fatal rather than silently
+resistive:
+
+| `type` | keys | what it does |
+|---|---|---|
+| `seriesResistor` | `sourceVoltage`, `resistance` | `V = V_src − R·I` |
+| `seriesRC` | `+ capacitance` | adds the shunt C a real rig has |
+| `currentSource` | `setCurrent`, `compliance`, `capacitance` | regulates the current directly |
+
+**The coupling is implicit, and it has to be.** The ballast and the gap form an
+RC circuit, so `V = V_src − R(I_cond + C dV/dt)` is an ODE; evaluated explicitly
+it amplifies by `R·C/Δt` per step — measured 885× on the case above, which drove
+the electrode to −1.25e17 V in five steps. Backward Euler on it is
+unconditionally stable. The *plasma* is linearised implicitly too, by a secant
+estimate of its differential conductance `g = dI/dV` from the last two accepted
+steps; without that the circuit is implicit only in its own capacitance and the
+discharge outruns it. `g` enters as a **magnitude**: `dI/dV` is genuinely
+negative through breakdown — that *is* the negative differential resistance —
+and using it signed inverts the update exactly where the discharge is stiffest.
+
+**Why a shunt capacitance matters more than it looks.** With only the gap's own
+capacitance (1.77e-16 F here) `R·C` is 17.7 ns: the electrode snaps to full
+voltage before any plasma exists, the gap sits far past Paschen, and the first
+avalanche overshoots by orders of magnitude before space charge can screen it.
+A real bench rig has ~100 pF/m of coax across the gap — `R·C ≈ 10 ms` — which is
+precisely why a laboratory dc discharge lights *gently*, breaking down at the
+lowest voltage that sustains it. `capacitance` is how a case buys that behaviour
+at a simulable cost.
+
+**A `currentSource` is the `R → ∞` limit of a ballast.** With the load line
+pinned through the operating point, the short-circuit current is
+`I_sc/I_op = 1 + V_gap/(R·I_op)` — measured 5.89× the operating point at
+R = 1e8 and 1.10× at R = 5e9 — so only large R pins the current, and the source
+is the 1.00× end. Its update keeps the `C dV/dt` term, which makes the
+pre-ignition phase physical with no mode switch: with no plasma,
+`dV/dt = I_set/C`, the source charging the electrode capacitance at constant
+current exactly as a current-limited supply does. **The voltage ramp to
+breakdown is therefore produced by the circuit, not written by the user.**
+`compliance` is the supply's voltage rail, required, and signed — `setCurrent`
+is a magnitude taking its polarity from it.
+
+Written per step to `postProcessing/externalCircuit/circuit.csv`. Design,
+staging and what remains unverified:
+[`doc/external-circuit-plan.md`](doc/external-circuit-plan.md).
 
 
 ## One semantic file describes every boundary
@@ -777,6 +851,49 @@ checks, no mesh or case needed, including the closed form against an
 independent fixed-point solve of (6.2)+(6.8) over 2430 `(r, Dd, Gc)` points
 (1.7e-14) and two liveness controls that convict the wrong floor and the wrong
 `(1+r)` placement.
+
+### `fluxScheme ScharfetterGummel` is REFUSED on these conditions
+
+The mixed condition does not set a flux — it sets a face **value**, and lets the
+discretisation's own face-flux formula turn that into a flux. With `refValue 0`
+and `refGradient 0` it gives `n_p = (1−f)·n_c`, so `f` is the only lever, and it
+must be chosen to make the extracted flux equal the closure's `n_p·W`. The
+standard branch does that **exactly, as an identity**:
+
+```
+f = uEff/(D/δ + uEff)   ⟹   D(n_c−n_p)/δ = n_p·uEff
+                        ⟹   total = n_p(uEff + uDrift) = n_p·W     [eq. 6.1]
+```
+
+The SG branch kept the same `n_p` but used a different denominator, so the flux
+it imposed was not the closure's — measured 2026-09-06 as the ratio of imposed
+to intended:
+
+| Pe | r = 0 | r = 0.36 |
+|---|---|---|
+| 0.01 | 1.000 | 1.000 |
+| 1 | 1.225 | 0.978 |
+| 10 | **5.50** | 0.438 |
+| 100 | **50.5** | **−5.19** (sign reversed) |
+
+Up to 50× wrong, and with reflection the wall flux can *reverse*. It is now
+fatal. It is **refused rather than corrected** deliberately: the right `f` for
+an SG face flux must come from that scheme's own two-point Bernoulli formula,
+and the derivation attempted produced a form that was sign-inconsistent as
+`Pe → 0`, where it must reduce to the standard branch. A guessed formula would
+reintroduce exactly the class of defect this check found.
+
+Note what this means for the **singularity** guard: switching to SG was *not* a
+remedy for it — it replaced a condition that announces itself with a flux that
+is quietly wrong. The singularity's remedies are physical: resolve the near-wall
+cell, or accept the density pile-up a reflecting wall genuinely produces. Its
+threshold is `uDrift > (1−r)/(2r)·A`, only `0.889·A` at `r = 0.36`, so a
+reflecting wall reaches it far sooner. Full treatment:
+[`docs/models/transport/drift_diffusion/boundary_conditions/ddSolidSurfaceFlux.md`](docs/models/transport/drift_diffusion/boundary_conditions/ddSolidSurfaceFlux.md).
+
+**`testWallFlux` verifies the closure *algebra*, not the assembled condition
+inside a discretisation** — and that gap is what let the SG inconsistency live.
+The `f`-identity above is the check to add.
 
 
 ## Two currents, and they are not the same thing
