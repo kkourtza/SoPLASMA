@@ -124,9 +124,16 @@ externalCircuit
     sourceVoltage table ((0 0) (5e-6 -1011));
     resistance    5e8;
 
-    // The coupling is explicit with one step of lag, and R*dI/dV is large, so
-    // an unrelaxed update oscillates. Stage 3 of the plan removes the need.
-    relaxation    0.2;
+    // NO RELAXATION. The update is implicit (backward Euler on the RC
+    // relation the ballast really forms), so it is unconditionally stable and
+    // needs none.
+    //
+    // 0.2 was left here from the EXPLICIT attempt, where it was a failed
+    // stabiliser, and it then silently slowed the circuit by 5x: measured
+    // V_elec = -59.56 V against -59.97 predicted for tau_eff = tau/0.2, where
+    // the correct value is -110.19 V. A damping factor on a stable integrator
+    // is not a safety margin, it is a wrong time constant.
+    relaxation    1.0;
 }
 
 dischargeCurrent

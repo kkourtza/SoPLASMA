@@ -24,6 +24,7 @@ Foam::plasmaDischargeCurrent::plasmaDischargeCurrent
 :
     mesh_(mesh),
     Itot_(0.0),
+    Icond_(0.0),
     measured_(false)
 {
     // ON BY DEFAULT, and the sub-dictionary is OPTIONAL.
@@ -499,6 +500,7 @@ void Foam::plasmaDischargeCurrent::update
     // Kept for plasmaExternalCircuit, which drops the ballast voltage across
     // THIS current rather than deriving its own.
     Itot_ = Itot;
+    Icond_ = Icond;
     measured_ = true;
 
     // CROSS-CHECK. The identity is

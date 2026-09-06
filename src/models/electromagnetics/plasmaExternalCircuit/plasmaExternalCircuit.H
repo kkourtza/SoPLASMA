@@ -80,10 +80,10 @@ class plasmaExternalCircuit
         //- Ballast resistance [Ohm].
         scalar R_;
 
-        //- Under-relaxation on the electrode potential. A large R makes the
-        //  V <-> I coupling stiff, and the current here is LAGGED by one step
-        //  (it is measured after the step that produced it), so an
-        //  unrelaxed update can oscillate. 1 = no relaxation.
+        //- OPTIONAL extra damping. The implicit update below does not need
+        //  it -- it is unconditionally stable -- so this defaults to 1 (none)
+        //  and exists only for a case that wants to slow the approach to the
+        //  operating point deliberately.
         scalar relax_;
 
         //- The electrode potential [V]: a RESULT, not an input.
@@ -117,8 +117,27 @@ public:
     inline const word& electrode() const { return electrode_; }
 
     //- Apply the circuit: set the electrode potential from the measured
-    //  circuit current and write the trace. Does nothing when disabled.
-    void update(const scalar Icircuit, volScalarField& ePotential);
+    //  CONDUCTION current and the gap capacitance, and write the trace.
+    //  Does nothing when disabled.
+    //
+    //  IMPLICIT, UNCONDITIONALLY. The electrode sees a ballast in series with
+    //  the gap capacitance, so V = V_source - R*(I_cond + C dV/dt) is an RC
+    //  differential equation, not an algebraic relation. Evaluated explicitly
+    //  it amplifies by R*C/dt per step -- MEASURED 885 at dt = 1e-10 s on the
+    //  Grubert case, which took the electrode from 0 to -1.25e17 V in five
+    //  steps. Backward Euler on the same relation,
+    //
+    //      V^{n+1} = (V_src + (RC/dt) V^n - R I_cond) / (1 + RC/dt),
+    //
+    //  is unconditionally stable and costs nothing extra. There is no explicit
+    //  option: it was tried, it is unusable, and keeping it would only offer a
+    //  way to reproduce the divergence.
+    void update
+    (
+        const scalar Icond,
+        const scalar Cgap,
+        volScalarField& ePotential
+    );
 };
 
 } // End namespace Foam

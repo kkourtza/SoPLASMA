@@ -144,6 +144,9 @@ class plasmaDischargeCurrent
         //- The external-circuit current I_total from the last update() [A].
         scalar Itot_;
 
+        //- The conduction current from the last update() [A].
+        scalar Icond_;
+
         //- Whether update() has run at least once.
         bool measured_;
 
@@ -236,6 +239,17 @@ public:
         //- Whether update() has ever run, so a caller can tell a real zero
         //  current from "not measured yet".
         inline bool measured() const { return measured_; }
+
+        //- The CONDUCTION current from the last update() [A].
+        //
+        //  An external circuit needs this one, NOT I_total. I_total includes
+        //  the displacement current C dV/dt, so using it in V = V_source - R I
+        //  makes that relation the RC differential equation in disguise, and
+        //  evaluating it explicitly amplifies by R*C/dt per step -- measured
+        //  885 at dt = 1e-10 s on the Grubert case, which diverged to 1e17 V
+        //  in five steps. The circuit therefore takes I_cond and carries the
+        //  capacitive part itself, implicitly.
+        inline scalar Icond() const { return Icond_; }
 
         //- The shared unit-potential field, for callers that need a DIFFERENT
         //  functional of psi_hat than Sato's energy integral -- notably the

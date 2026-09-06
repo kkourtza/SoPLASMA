@@ -516,12 +516,19 @@ int main(int argc, char *argv[])
         // current is a diagnostic of the state that was actually accepted.
         dischargeCurrent.update(transport, species, em());
 
-        // THE CIRCUIT CLOSES THE LOOP, and it must come after the current is
-        // measured: the potential it sets applies to the NEXT step, so the
-        // (V, I) coupling is explicit with one step of lag. That is stated
-        // here and in circuit.csv rather than hidden, because a large ballast
-        // makes the lag stiff -- `externalCircuit/relaxation` is the knob.
-        circuit.update(dischargeCurrent.Itotal(), em().ePotentialRef());
+        // THE CIRCUIT CLOSES THE LOOP, after the current is measured.
+        //
+        // It takes the CONDUCTION current and the gap capacitance, and does a
+        // backward-Euler update of the RC relation the ballast really forms.
+        // Passing I_total instead would make V = V_src - R*I the RC equation
+        // evaluated explicitly, which amplifies by R*C/dt per step -- measured
+        // 885 here, and it diverged to 1e17 V in five steps.
+        circuit.update
+        (
+            dischargeCurrent.Icond(),
+            dischargeCurrent.Cg(),
+            em().ePotentialRef()
+        );
 
         // TEMPORAL ERROR MEASUREMENT (Phase 1: report only).
         //

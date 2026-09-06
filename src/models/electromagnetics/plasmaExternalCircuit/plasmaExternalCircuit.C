@@ -115,11 +115,13 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit
         file_.reset(new OFstream(dir/"circuit.csv"));
         *file_ << "# external circuit: V_electrode = V_source - R*I_circuit" << nl
                << "# R = " << R_ << " Ohm, electrode = " << electrode_ << nl
-               << "# I_circuit is Sato's I_total (conduction + displacement),"
-                  " LAGGED by one step:" << nl
-               << "#   it is measured after the step it belongs to, so the"
-                  " potential it sets applies to the NEXT step." << nl
-               << "time,V_source,I_circuit,V_electrode" << endl;
+               << "# I_cond is the CONDUCTION current. The capacitive part is"
+                  " carried implicitly by the" << nl
+               << "# RC update, NOT taken from I_total -- using I_total here"
+                  " makes V = V_src - R*I the RC" << nl
+               << "# equation evaluated explicitly, which amplifies by R*C/dt"
+                  " per step (885 measured)." << nl
+               << "time,V_source,I_cond,V_electrode" << endl;
     }
 }
 
@@ -128,7 +130,8 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit
 
 void Foam::plasmaExternalCircuit::update
 (
-    const scalar Icircuit,
+    const scalar Icond,
+    const scalar Cgap,
     volScalarField& ePotential
 )
 {
@@ -137,18 +140,27 @@ void Foam::plasmaExternalCircuit::update
         return;
     }
 
-    const scalar t = mesh_.time().value();
+    const scalar t  = mesh_.time().value();
+    const scalar dt = mesh_.time().deltaTValue();
     const scalar Vsrc = source_->value(t);
 
-    // Ohm's law across the ballast. The sign works out without a special case:
-    // a cathode at negative potential draws negative current, and
-    // -1011 - 5e8*(-1.02e-6) = -500 raises the electrode towards zero, which
-    // is the direction a ballast must act.
-    const scalar Vtarget = Vsrc - R_*Icircuit;
+    // THE ELECTRODE SEES AN RC CIRCUIT, NOT A RESISTOR.
+    //
+    // The ballast is in series with the gap, and the gap has capacitance, so
+    //     V = V_source - R*(I_cond + C dV/dt)
+    // which is an ODE. Backward Euler on it gives the update below; it is
+    // unconditionally stable, which the explicit form is emphatically not
+    // (R*C/dt = 885 at dt = 1e-10 s here).
+    //
+    // C is the GAP capacitance the discharge-current diagnostic already
+    // derives from its unit-potential solve, so it is a computed property of
+    // this geometry rather than a number anybody types.
+    const scalar tau = R_*Cgap;          // [s]
+    const scalar a   = tau/max(dt, SMALL);
 
-    // Under-relax, because the current is LAGGED: it was measured after the
-    // step that produced it, so this is an explicit fixed-point iteration in
-    // (V, I) with one step of delay. A large R makes it stiff.
+    const scalar Vtarget = (Vsrc + a*V_ - R_*Icond)/(1.0 + a);
+
+    // Optional extra damping. Not needed for stability; 1 by default.
     V_ = started_ ? (V_ + relax_*(Vtarget - V_)) : Vtarget;
     started_ = true;
 
@@ -156,7 +168,7 @@ void Foam::plasmaExternalCircuit::update
 
     if (file_.valid() && Pstream::master())
     {
-        *file_ << t << ',' << Vsrc << ',' << Icircuit << ',' << V_ << endl;
+        *file_ << t << ',' << Vsrc << ',' << Icond << ',' << V_ << endl;
     }
 }
 
