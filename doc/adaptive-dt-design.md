@@ -222,6 +222,36 @@ available and costs nothing. Unlike a Courant number its threshold is
 physical -- "resolve the fastest growth" -- and therefore transfers between
 regimes without retuning.
 
+## THE BOTTLENECK IS THE OUTER COUPLING, not dt (measured 2026-09-06)
+
+Measured on `grubert2009_ballast_clean`, a HEALTHY pre-breakdown run:
+
+    73,567 PIMPLE iterations / 3,306 steps  = 22 correctors per step (tail 141, cap 150)
+    omega [coupling margin] = 0.148          Aitken damping to 15%
+    accuracy controller: dt could be 83x LARGER (7.65e-8 vs 9.19e-10)
+
+**One cause, paid for twice.** The Poisson-species-energy coupling contracts
+badly, so Aitken cuts `omega` to 0.148 and the loop needs 22-141 correctors --
+AND the `coupling margin` dt governor is keyed on that same `omega`, so it also
+clamps dt to 1/83 of what accuracy allows. Compounded, ~1000x more work than an
+accuracy-limited solve with a healthy loop.
+
+**This reframes the whole dt question.** Making the accuracy controller primary
+buys nothing while `omega` is 0.148, because the coupling margin will clamp dt
+anyway -- correctly, since a loop that needs 15% damping genuinely cannot take
+large steps. **Fix the coupling and the dt governor follows; fix the governor
+alone and nothing changes.**
+
+Leads for whoever takes it: the semi-implicit Poisson scheme is ALREADY on, so
+it is not simply a switch; weight `omega` (actuated) over `rho [contraction]`,
+which read 18,504 here and is already established as unreliable; and the
+temporal error names `nEps_e` as the worst field, so suspect the ENERGY coupling
+first.
+
+Deferred at the user's request 2026-09-06, kept in
+`memory/deferred-action-items.md`. It is an OPTIMISATION, not a blocker --
+that same run was 7-15x faster than anything else that day.
+
 ## Staged plan
 
 1. **DONE -- step 1:** `rho` is not usable; the rejection path is untested.
