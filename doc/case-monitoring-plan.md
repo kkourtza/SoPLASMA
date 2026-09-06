@@ -70,31 +70,53 @@ That is a one-line, self-explaining failure instead of a day.
 where it MUST fire (rule 23) before it is trusted. A silent invariant is
 indistinguishable from an absent one.
 
-## Part B -- OBSERVABLES: one `history.csv` per run
+## Part B -- OBSERVABLES: PROBES, not fields, not just min/max
 
-Written every `historyInterval` steps (default: every step up to a cap, then
-throttled) to `postProcessing/history/history.csv`. **No case should ever
-require parsing the log to get a time series again.**
+**Written at PROBE POINTS.** One to three per case. This is the user's call
+(2026-09-06) and it is the right one: a full field history is unwritable in
+2-D and unthinkable in 3-D, and domain min/max -- which is what the log already
+prints -- throws away WHERE, which is usually the answer. Today the ion peak
+sat at x = 9.63 mm and the electron peak at 9.26 mm, and reading their maxima
+as a ratio produced a "143x non-neutrality" that does not exist.
 
-Columns, using the framework's existing names (G3):
+**Probe positions are DERIVED by default, per G1.** For a plane-parallel gap
+the electrode patches already fix the axis, so the default is three probes at
+5%, 50% and 95% of the gap -- near-cathode (in the fall), mid-gap (negative
+glow), near-anode. A case overrides with explicit coordinates when it knows
+better; it should never be *required* to supply them.
 
-* `time`, `deltaT`, **`deltaT_limiter`** (which limiter set it -- already
-  computed, currently only printed), `outerIters`, `rejectedSteps`
-* per species: `n_<sp>_min`, `n_<sp>_max`, `n_<sp>_mean`
-* `chargeDensity_min/max` **-- next to the densities, deliberately.** This
-  adjacency is what makes the flat-vs-growing failure visible at a glance.
-* `Emag_min/max`, `reducedE_max` in **Td**
-* `meanE_min/max` (LMEA) or `Te` (LFA), plus `meanE_clampedCells`
-* `I_total`, `I_cond`, `I_disp` and per-species currents (already exist)
-* `V_electrode` per driven/circuit electrode (already exists for circuits)
-* `surfCharge_min/max` where a dielectric exists
+    probes                     // optional; derived if absent
+    (
+        (0.0005 0.0001 0.0001)   // cathode fall
+        (0.005  0.0001 0.0001)   // mid-gap
+        (0.0095 0.0001 0.0001)   // near anode
+    );
 
-Plus `tools/plot_history.py` producing the standard six-panel figure, and
-emitting the data it plots -- per rule 6, the plotting script is separate so
-the figure can be changed without re-running anything.
+`postProcessing/history/history.csv`, one row per written step:
 
-**A derived quantity goes NEXT TO its sources in the CSV, always.** That is
-the cheap structural trick that turns an invisible bug into an obvious one.
+* run-level: `time`, `deltaT`, **`deltaT_limiter`** (which limiter set it --
+  already computed, currently only printed), `outerIters`, `rejectedSteps`
+* per probe `k`: `n_<sp>_p<k>` for every species, `chargeDensity_p<k>`,
+  `Emag_p<k>`, `reducedE_p<k>` in **Td**, `meanE_p<k>` (LMEA) or `Te_p<k>`
+* domain reductions KEPT alongside, because they are what catch a field that
+  has gone uniform -- the exact signature of today's bug:
+  `Emag_min/max`, `n_<sp>_max`, `chargeDensity_min/max`,
+  `meanE_clampedCells`
+* currents and electrode potentials, which already exist:
+  `I_total`, `I_cond`, `I_disp`, `I_<sp>`, `V_electrode`
+
+**A DERIVED quantity sits NEXT TO its sources**, in the same file and adjacent
+columns. `chargeDensity_p1` beside `n_e_p1` and `n_Arp_p1` makes "flat while
+they grow three decades" visible at a glance. This adjacency is the cheapest
+debugging tool available and it is not an accident of column order.
+
+Plus `tools/plot_history.py`, separate per rule 6, so the figure can be
+changed without re-running anything.
+
+Note there IS an OpenFOAM `probes` functionObject, and it is not enough on its
+own: it scatters one file per field across time directories, cannot carry
+`deltaT_limiter` or the rejection count, and gives no control over adjacency.
+It is worth reusing for the interpolation, not for the output.
 
 ## Part C -- THE DEBUGGING ORDER (the actual rule)
 
@@ -122,23 +144,10 @@ investigation before it started.
 CLAUDE.md is the authority and its rule numbers are stable identifiers, so
 these are proposed rather than added:
 
-> **26) EVERY case writes a machine-readable time series** --
-> `postProcessing/history/history.csv` -- carrying at minimum: species
-> densities, `chargeDensity`, `Emag`, the electron energy, the currents, `dt`
-> and WHICH LIMITER SET IT, outer iterations and rejected steps. A derived
-> quantity sits NEXT TO the sources it is derived from. If a diagnosis needs
-> the log parsed, the monitoring is the defect. Measured 2026-09-06: a frozen
-> Poisson source ran for 364670 steps and needed a 1.15 GB log parsed with a
-> bespoke script to see.
-
-> **27) INVARIANTS BEFORE PHYSICS.** A derived field must be checked against
-> its own sources, and every per-step update against a call counter, BEFORE
-> any physical explanation is entertained. A field equal to its own trivial
-> solution (the vacuum field, a floor, a clamp) is a broken term, not a
-> result. Measured 2026-09-06: `E/N = 1104 Td` against `V/L = 1106 Td` -- the
-> vacuum field to 0.2% -- was read as physics, and a day went into wall
-> fluxes, mobility tables, energy clamps and circuit timescales while
-> `updateChargeDensity()` had run on 0.04% of steps.
+**ADDED to CLAUDE.md on 2026-09-06 as rules 26 and 27** -- 26 under "Records
+that outlive the conversation", 27 under "Evidence and claims". CLAUDE.md is
+the authority; read it there. Rule 26 as adopted requires PROBES, which is
+stronger than the draft this document first carried.
 
 ## Cost, honestly
 
