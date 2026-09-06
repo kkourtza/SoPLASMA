@@ -377,30 +377,37 @@ int main(int argc, char *argv[])
             {
                 ++nOuter;
 
-                // ALTERNATIVE CONVERGENCE MEASURE, when residualControl cannot
-                // work. Checked at the TOP of the corrector so the movement
-                // being tested is the one the previous corrector produced.
+                // NO CUSTOM CONVERGENCE CRITERION HERE, AND NO `break`.
                 //
-                // Why it exists: OpenFOAM's normalised equation residual
-                // divides by the field's deviation about its own mean, which
-                // collapses for a nearly uniform field, so the criterion is
-                // unreachable IN PRINCIPLE rather than merely tight. Measured
-                // 2026-09-06 on the Grubert ballast case -- gating on nEps_e,
-                // whose cells nearly all sit at the minNumberDensity floor
-                // before ignition, stalled the run with 527 rejected steps
-                // while the contraction rho showed 0.20. `relativeChange`
-                // measures ||dphi||/||phi||, which is what this loop claims to
-                // measure and is finite for a uniform field.
-                if
-                (
-                    nOuter > 1
-                 && timeControl.outerCriterion() == "relativeChange"
-                 && transport.outerRelativeChange()
-                      < timeControl.outerTolerance()
-                )
-                {
-                    break;
-                }
+                // A `relativeChange` criterion sat at this point and left the
+                // loop with a raw `break`. REMOVED 2026-09-06; it broke both
+                // rule 29 and rule 30.
+                //
+                // RULE 29. pimpleControl resets its iteration counter and its
+                // converged flag in the loop() call that returns false. The
+                // `break` skipped that call, so the state leaked into the next
+                // timestep. Measured on grubert2009_iset:
+                //
+                //     step 1: PIMPLE iteration 1,2,3,4,5     4 charge updates
+                //     step 2: PIMPLE iteration 6,7,8,9,10    4 charge updates
+                //     step 3: "converged in 10 iterations"   ZERO of either
+                //
+                // The counter is CUMULATIVE across steps. Across the two long
+                // Grubert runs, 45-50% OF ALL TIMESTEPS executed ZERO
+                // correctors -- the clock advanced with nothing solved, so
+                // reported time ran 1.96-2.00x ahead of the physics.
+                //
+                // RULE 30. It duplicated `residualControl`, which had ALREADY
+                // been measured to run with ZERO rejections when gated on
+                // `ePotential` -- which is what every case here ships. The
+                // stall that motivated it came from gating on `nEps_e`, whose
+                // cells sit at the minNumberDensity floor before ignition so
+                // its deviation-about-mean normalisation collapses. The right
+                // answer to that is the guard in plasmaTimeControl::read(),
+                // which now REFUSES such a gate, not a second criterion.
+                //
+                // If an early exit is ever genuinely needed here: set a flag
+                // and DRAIN the loop. Never `break`.
 
                 // Solve electromagnetics
                 em->solve
@@ -457,30 +464,37 @@ int main(int argc, char *argv[])
             {
                 ++nOuter;
 
-                // ALTERNATIVE CONVERGENCE MEASURE, when residualControl cannot
-                // work. Checked at the TOP of the corrector so the movement
-                // being tested is the one the previous corrector produced.
+                // NO CUSTOM CONVERGENCE CRITERION HERE, AND NO `break`.
                 //
-                // Why it exists: OpenFOAM's normalised equation residual
-                // divides by the field's deviation about its own mean, which
-                // collapses for a nearly uniform field, so the criterion is
-                // unreachable IN PRINCIPLE rather than merely tight. Measured
-                // 2026-09-06 on the Grubert ballast case -- gating on nEps_e,
-                // whose cells nearly all sit at the minNumberDensity floor
-                // before ignition, stalled the run with 527 rejected steps
-                // while the contraction rho showed 0.20. `relativeChange`
-                // measures ||dphi||/||phi||, which is what this loop claims to
-                // measure and is finite for a uniform field.
-                if
-                (
-                    nOuter > 1
-                 && timeControl.outerCriterion() == "relativeChange"
-                 && transport.outerRelativeChange()
-                      < timeControl.outerTolerance()
-                )
-                {
-                    break;
-                }
+                // A `relativeChange` criterion sat at this point and left the
+                // loop with a raw `break`. REMOVED 2026-09-06; it broke both
+                // rule 29 and rule 30.
+                //
+                // RULE 29. pimpleControl resets its iteration counter and its
+                // converged flag in the loop() call that returns false. The
+                // `break` skipped that call, so the state leaked into the next
+                // timestep. Measured on grubert2009_iset:
+                //
+                //     step 1: PIMPLE iteration 1,2,3,4,5     4 charge updates
+                //     step 2: PIMPLE iteration 6,7,8,9,10    4 charge updates
+                //     step 3: "converged in 10 iterations"   ZERO of either
+                //
+                // The counter is CUMULATIVE across steps. Across the two long
+                // Grubert runs, 45-50% OF ALL TIMESTEPS executed ZERO
+                // correctors -- the clock advanced with nothing solved, so
+                // reported time ran 1.96-2.00x ahead of the physics.
+                //
+                // RULE 30. It duplicated `residualControl`, which had ALREADY
+                // been measured to run with ZERO rejections when gated on
+                // `ePotential` -- which is what every case here ships. The
+                // stall that motivated it came from gating on `nEps_e`, whose
+                // cells sit at the minNumberDensity floor before ignition so
+                // its deviation-about-mean normalisation collapses. The right
+                // answer to that is the guard in plasmaTimeControl::read(),
+                // which now REFUSES such a gate, not a second criterion.
+                //
+                // If an early exit is ever genuinely needed here: set a flag
+                // and DRAIN the loop. Never `break`.
 
                 plasmaSimulationProfiler::start("Electromagnetics");
                 em->solve();

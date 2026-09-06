@@ -420,6 +420,48 @@ void plasmaTimeControl::read()
             outerCriterion_ =
                 oc.getOrDefault<word>("criterion", "residualControl");
 
+            // `relativeChange` IS GONE, AND SAYING SO IS THE POINT.
+            //
+            // It was a second convergence criterion competing with OpenFOAM's
+            // residualControl, and it exited the corrector loop with a raw
+            // `break`. That leaked pimpleControl's iteration counter into the
+            // next timestep and made 45-50% OF ALL TIMESTEPS run ZERO
+            // correctors -- the clock advancing with nothing solved, 1.96-2.00x
+            // ahead of the physics. Measured 2026-09-06; see CLAUDE.md rules
+            // 29 and 30.
+            //
+            // A case that still asks for it must be told, not silently given
+            // something else: the two criteria do not mean the same thing, and
+            // a run that quietly switched would be a different numerical
+            // experiment wearing the same case name.
+            if (outerCriterion_ == "relativeChange")
+            {
+                FatalIOErrorInFunction(oc)
+                    << "outerCoupling/criterion `relativeChange` was REMOVED"
+                    << " on 2026-09-06." << nl << nl
+                    << "    It duplicated OpenFOAM's residualControl and left"
+                    << " the corrector loop with a raw" << nl
+                    << "    `break`, which leaked pimpleControl's iteration"
+                    << " counter into the next timestep:" << nl
+                    << "    45-50% of all timesteps then ran ZERO correctors,"
+                    << " advancing the clock with" << nl
+                    << "    nothing solved." << nl << nl
+                    << "    USE `criterion residualControl` (the default) AND"
+                    << " GATE IT ON `ePotential`." << nl
+                    << "    That configuration was measured to run with ZERO"
+                    << " rejections on this very case." << nl
+                    << exit(FatalIOError);
+            }
+
+            if (outerCriterion_ != "residualControl")
+            {
+                FatalIOErrorInFunction(oc)
+                    << "outerCoupling/criterion is `" << outerCriterion_
+                    << "`, which is not implemented." << nl
+                    << "    Available: residualControl." << nl
+                    << exit(FatalIOError);
+            }
+
             outerTolerance_ =
                 oc.getOrDefault<scalar>("tolerance", 1e-8);
 

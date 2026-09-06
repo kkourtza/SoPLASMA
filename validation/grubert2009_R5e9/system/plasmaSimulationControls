@@ -76,7 +76,7 @@ outerCoupling
     // case stalled at t = 4.2e-8 s with 527 rejected steps while the
     // contraction rho showed 0.20, i.e. the loop was converging and the
     // measure could not say so.
-    criterion   relativeChange;
+    criterion   residualControl;   // relativeChange REMOVED 2026-09-06 (rules 29, 30)
 
     // The coupling residual to reach. MUST be comfortably above the
     // linear-solver tolerance (>= 10x); the solver refuses otherwise. An outer

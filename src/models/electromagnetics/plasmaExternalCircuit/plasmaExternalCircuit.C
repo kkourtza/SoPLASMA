@@ -327,7 +327,15 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     // ePotential already carries the value, having been read back from the
     // restart directory, so the state is recoverable without checkpointing
     // anything of our own.
-    V_ = source_->value(mesh_.time().value());
+    // A CURRENT SOURCE HAS NO `sourceVoltage`, so there is no open-circuit
+    // value to start from: it starts at ZERO and charges the electrode
+    // capacitance at I_set. Dereferencing `source_` here aborted on the
+    // model's FIRST EVER RUN, 2026-09-06 -- "unallocated autoPtr of type
+    // Function1<double>" from this constructor. The guard below is not
+    // cosmetic: three separate places assumed a voltage source exists.
+    V_ = (type_ == "currentSource")
+       ? 0.0
+       : source_->value(mesh_.time().value());
 
     if (mesh_.foundObject<volScalarField>("ePotential"))
     {
@@ -349,11 +357,17 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
                 started_ = true;
 
                 Info<< "plasmaExternalCircuit: RESUMED from the field,"
-                    << " V_electrode = " << V_ << " V" << nl
-                    << "    (the open-circuit source value here would be "
-                    << source_->value(mesh_.time().value())
-                    << " V -- resuming from that would step the electrode)."
-                    << endl;
+                    << " V_electrode = " << V_ << " V";
+
+                if (type_ != "currentSource")
+                {
+                    Info<< nl
+                        << "    (the open-circuit source value here would be "
+                        << source_->value(mesh_.time().value())
+                        << " V -- resuming from that would step the"
+                        << " electrode).";
+                }
+                Info<< endl;
             }
         }
     }

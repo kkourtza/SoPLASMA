@@ -1,0 +1,21 @@
+genMechTables
+  mechanism : argon_plasma v1 [a0f64e8de15d0691]
+  processes : 39 (38 with rate coefficients)
+  mixture   : Ar=1 
+  T_gas     : 300 K   T_exc: 300 K
+  density   : not set -- 3-body (density-scaled) processes EXCLUDED; tables are density-independent
+  growth    : temporal
+  E/N       : 1 .. 55000 Td, 261 points (log-spaced)
+
+  grid      : automatic per E/N, 200 points each
+
+sweep
+  all 261 points converged
+  mean energy is strictly increasing over the solved range: 2.4587 -> 2644.46 eV (usable as a key)
+
+wrote constant/plasmaTables/argon_plasma_tables.csv
+wrote 107 OpenFOAM interpolationTable files in constant/plasmaTables/
+wrote constant/plasmaTables/argon_plasma_eedf.csv  (261 x 200, log grid 0.000409163 .. 10198 eV)
+  rows renormalised on the export grid; largest correction applied = 6.05e-03
+
+done

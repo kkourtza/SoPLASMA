@@ -1,0 +1,17 @@
+ionmob: 3 mobility datasets, 2 charged species in argon_plasma.foam, background Ar
+  Ar2p   <- Ar2+ in Ar       5.0-  170.0 Td   muN 5.185e+21 -> 4.836e+21
+  Arp    <- Ar+  in Ar       8.0-100000.0 Td   muN 4.111e+21 -> 2.157e+20
+
+  NOTES -- each of these is a choice that affects results:
+    Ar2p: set stops at 170 Td but the case needs 20000 Td -- CLAMPED ABOVE THAT [FAIL]
+        a clamped table holds K0=1.800 flat where it should fall as ~(E/N)^-1/2, overstating the ion flux.
+    Ar2+: Blanc's law not checked, no data for Air, N2, O2 (download those sets to enable it)
+    Ar2p: no measured diffusion for Ar2+ in Ar; D derived from mu by Einstein (exact only as E/N -> 0)
+    Arp: 2 disjoint datasets STITCHED (8.0-100000.0 Td, 30 points)
+    Arp: stitch continuous to 1.03x
+    Ar+: Blanc's law not checked, no data for Air, N2, O2 (download those sets to enable it)
+    Arp: no measured diffusion for Ar+ in Ar; D derived from mu by Einstein (exact only as E/N -> 0)
+
+  PHYSICS CHECK FAILURES: Ar2p: highfield
+
+wrote 4 table(s) to constant/ionTables/
