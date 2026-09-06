@@ -365,6 +365,31 @@ int main(int argc, char *argv[])
             {
                 ++nOuter;
 
+                // ALTERNATIVE CONVERGENCE MEASURE, when residualControl cannot
+                // work. Checked at the TOP of the corrector so the movement
+                // being tested is the one the previous corrector produced.
+                //
+                // Why it exists: OpenFOAM's normalised equation residual
+                // divides by the field's deviation about its own mean, which
+                // collapses for a nearly uniform field, so the criterion is
+                // unreachable IN PRINCIPLE rather than merely tight. Measured
+                // 2026-09-06 on the Grubert ballast case -- gating on nEps_e,
+                // whose cells nearly all sit at the minNumberDensity floor
+                // before ignition, stalled the run with 527 rejected steps
+                // while the contraction rho showed 0.20. `relativeChange`
+                // measures ||dphi||/||phi||, which is what this loop claims to
+                // measure and is finite for a uniform field.
+                if
+                (
+                    nOuter > 1
+                 && timeControl.outerCriterion() == "relativeChange"
+                 && transport.outerRelativeChange()
+                      < timeControl.outerTolerance()
+                )
+                {
+                    break;
+                }
+
                 // Solve electromagnetics
                 em->solve
                 (
@@ -397,6 +422,31 @@ int main(int argc, char *argv[])
             while (pimple.loop())
             {
                 ++nOuter;
+
+                // ALTERNATIVE CONVERGENCE MEASURE, when residualControl cannot
+                // work. Checked at the TOP of the corrector so the movement
+                // being tested is the one the previous corrector produced.
+                //
+                // Why it exists: OpenFOAM's normalised equation residual
+                // divides by the field's deviation about its own mean, which
+                // collapses for a nearly uniform field, so the criterion is
+                // unreachable IN PRINCIPLE rather than merely tight. Measured
+                // 2026-09-06 on the Grubert ballast case -- gating on nEps_e,
+                // whose cells nearly all sit at the minNumberDensity floor
+                // before ignition, stalled the run with 527 rejected steps
+                // while the contraction rho showed 0.20. `relativeChange`
+                // measures ||dphi||/||phi||, which is what this loop claims to
+                // measure and is finite for a uniform field.
+                if
+                (
+                    nOuter > 1
+                 && timeControl.outerCriterion() == "relativeChange"
+                 && transport.outerRelativeChange()
+                      < timeControl.outerTolerance()
+                )
+                {
+                    break;
+                }
 
                 plasmaSimulationProfiler::start("Electromagnetics");
                 em->solve();

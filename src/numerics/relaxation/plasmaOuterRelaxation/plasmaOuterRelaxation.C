@@ -114,6 +114,7 @@ Foam::plasmaOuterRelaxation::plasmaOuterRelaxation
     omegaMaxStep_(0.0),
     nRelaxed_(0),
     rNormPrev_(0),
+    relChange_(GREAT),
     contractionMaxStep_(0),
     escalatedTimeIndex_(-1)
 {
@@ -416,11 +417,13 @@ void Foam::plasmaOuterRelaxation::applyJoint()
 
     scalarField rj(nTot);
     label off = 0;
+    scalar xSqr = 0;                  // ||phi||^2, for the relative change
     forAll(fields_, i)
     {
         const scalarField& p = pending_[i];
         const scalarField& q = prev_[i];
         forAll(p, c) { rj[off + c] = p[c] - q[c]; }
+        forAll(p, c) { xSqr += p[c]*p[c]; }
         off += p.size();
     }
 
@@ -444,6 +447,28 @@ void Foam::plasmaOuterRelaxation::applyJoint()
         // that recovered would hide it.
         contractionMaxStep_ = max(contractionMaxStep_, rNorm/rNormPrev_);
     }
+    // THE CONVERGENCE MEASURE THE OUTER LOOP SHOULD ACTUALLY USE.
+    //
+    // ||dphi|| / ||phi||: the fractional movement of the coupled solution per
+    // corrector. Dimensionless, and -- the whole point -- its denominator is
+    // the field's own MAGNITUDE, which cannot collapse.
+    //
+    // OpenFOAM's residualControl normalises by normFactor, built from the
+    // deviation of the field ABOUT ITS OWN AVERAGE. For a nearly uniform field
+    // that collapses and the normalised residual saturates near 1 however well
+    // converged the coupling is, so the criterion is unreachable IN PRINCIPLE.
+    // Measured 2026-09-06 on the Grubert ballast case: gating on nEps_e --
+    // whose cells nearly all sit at the minNumberDensity floor before ignition
+    // -- stalled the run at t = 4.2e-8 s with 527 rejected steps and dt
+    // collapsed, while rho showed the loop contracting at 0.20. Gating on
+    // ePotential alone, the same case ran to 9.1e-8 s with ZERO rejections.
+    // The loop was converging; the measure could not say so.
+    //
+    // ||phi|| for that same nEps_e is ~1e11*sqrt(N) -- small, but never zero,
+    // and never a function of how uniform the field happens to be.
+    reduce(xSqr, sumOp<scalar>());
+    relChange_ = rNorm/max(Foam::sqrt(xSqr), VSMALL);
+
     rNormPrev_ = rNorm;
 
     // MEASUREMENT DONE, ACTUATION STARTS HERE. Everything above observes the

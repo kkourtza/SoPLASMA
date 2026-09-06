@@ -58,6 +58,7 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     outerChaseConvergence_(true),
     outerMaxCorrectors_(20),
     outerTolerance_(1e-8),
+    outerCriterion_("residualControl"),
     outerOnNonConvergence_("retryStep"),
     outerHitCap_(false),
     outerItersUsed_(0),
@@ -416,6 +417,9 @@ void plasmaTimeControl::read()
                 (oc.getOrDefault<word>("target", "converged") == "converged");
             outerMaxCorrectors_ =
                 oc.getOrDefault<label>("maxCorrectors", 20);
+            outerCriterion_ =
+                oc.getOrDefault<word>("criterion", "residualControl");
+
             outerTolerance_ =
                 oc.getOrDefault<scalar>("tolerance", 1e-8);
 
@@ -2038,6 +2042,39 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
 
     const label maxCorr = oc.getOrDefault<label>("maxCorrectors", 20);
     const scalar tol = oc.getOrDefault<scalar>("tolerance", 1e-8);
+
+    // WHICH MEASURE DECIDES CONVERGENCE.
+    //
+    //   residualControl  OpenFOAM's normalised equation residual (the default,
+    //                    and what every validated result in this project was
+    //                    produced under).
+    //   relativeChange   ||dphi||/||phi|| from plasmaOuterRelaxation: the
+    //                    fractional movement of the coupled solution, which is
+    //                    what this loop claims to measure and, unlike
+    //                    residualControl, is well defined for a UNIFORM field.
+    //
+    // The default is NOT yet switched, deliberately. residualControl decides
+    // the accept/reject verdict of every existing case and the shipped order
+    // measurement (p = 1.936) was made under it, so the new measure has to
+    // reproduce that before it can become the default. Until then this is the
+    // escape from a criterion that is unreachable in principle -- which is
+    // strictly better than the previous escape, `gateFields`, because it does
+    // not require the user to know WHICH field is the unreachable one.
+    const word criterion =
+        oc.getOrDefault<word>("criterion", "residualControl");
+
+    if (criterion != "residualControl" && criterion != "relativeChange")
+    {
+        FatalIOErrorInFunction(oc)
+            << "Unknown outerCoupling/criterion `" << criterion << "`." << nl
+            << "    Valid: residualControl | relativeChange" << nl
+            << exit(FatalIOError);
+    }
+
+    // NOTE: this function is STATIC -- it runs before any plasmaTimeControl
+    // exists, because it has to rewrite PIMPLE's dictionary before
+    // pimpleControl is constructed. So it VALIDATES the key here and the
+    // instance re-reads it in read(); it cannot assign a member from here.
 
     if (maxCorr < 2)
     {

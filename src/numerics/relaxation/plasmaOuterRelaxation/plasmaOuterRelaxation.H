@@ -149,6 +149,11 @@ class plasmaOuterRelaxation
         //- Correctors relaxed since the last reset
         label nRelaxed_;
 
+        //- ||dphi||/||phi|| at the last corrector: the fractional movement of
+        //  the coupled solution. GREAT until a corrector has been measured, so
+        //  an unmeasured loop never reads as converged.
+        scalar relChange_;
+
         //- 2-norm of the joint residual at the previous corrector, and the
         //  WORST contraction ratio ||r_k||/||r_{k-1}|| seen this step.
         //
@@ -306,6 +311,20 @@ public:
         //  failure means Anderson could not converge it either, and then the
         //  retry ladder should shorten the step as usual.
         bool escalateForRetry();
+
+        //- ||dphi||/||phi||: the fractional movement of the coupled solution
+        //  at the last corrector.
+        //
+        //  THIS IS THE QUANTITY THE OUTER LOOP CLAIMS TO MEASURE -- "how much
+        //  the coupled solution still moves between correctors" -- and unlike
+        //  OpenFOAM's normalised equation residual it is well defined for a
+        //  UNIFORM field, because it is divided by the field's magnitude and
+        //  not by its deviation about its own mean. See applyJoint() for the
+        //  measurement that made this necessary.
+        scalar relativeChange() const
+        {
+            return relChange_;
+        }
 
         //- Worst joint-residual contraction ratio this step, ||r_k||/||r_k-1||.
         //  Below 1 the outer loop contracted; at or above 1 it did not.

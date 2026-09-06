@@ -340,6 +340,12 @@ private:
             //  silently runs to the cap on every step.
             scalar outerTolerance_;
 
+            //- Which measure decides outer convergence:
+            //  `residualControl` (OpenFOAM's normalised equation residual, the
+            //  default) or `relativeChange` (||dphi||/||phi||, well defined for
+            //  a uniform field where residualControl is unreachable).
+            word outerCriterion_;
+
             //- Has prevPatchVoltage_ been given a real value yet? Until it
             //  has, differencing against it would report the whole applied
             //  voltage as a one-step rise. See the first-step guard.
@@ -702,6 +708,12 @@ public:
         //  gated on it, so a hand-rolled loop that got it subtly wrong would
         //  advance the chemistry by the wrong multiple of dt.
         static void configureOuterCoupling(fvMesh& mesh);
+
+        //- Which measure decides outer convergence
+        inline const word& outerCriterion() const { return outerCriterion_; }
+
+        //- The outer convergence tolerance
+        inline scalar outerTolerance() const { return outerTolerance_; }
 
         //- Record what the outer loop did on this step.
         //  `used` is the number of correctors executed. Convergence is

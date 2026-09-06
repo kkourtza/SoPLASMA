@@ -877,6 +877,19 @@ public:
 
         //- Worst joint-residual contraction ratio over the last step. 0 when
         //  nothing was measured, which the reporter distinguishes from a real
+        //- Fractional movement of the coupled solution at the last corrector,
+        //  ||dphi||/||phi||, or GREAT if nothing has been measured.
+        //
+        //  The alternative outer-loop convergence measure, for cases where
+        //  OpenFOAM's normalised equation residual cannot work: its normFactor
+        //  is the field's deviation about its own mean, which collapses for a
+        //  nearly uniform field and makes the criterion unreachable in
+        //  principle. See plasmaOuterRelaxation::applyJoint().
+        scalar outerRelativeChange() const
+        {
+            return relax_ ? relax_->relativeChange() : GREAT;
+        }
+
         //  contraction of 0. See plasmaOuterRelaxation::contraction().
         scalar relaxationContraction() const
         {
