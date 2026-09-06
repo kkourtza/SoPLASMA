@@ -270,3 +270,83 @@ plasmaRegion_to_dielectricRegion
     value           uniform 0;     // Initial guess/placeholder
 }
 ---
+
+---
+
+# The flux scheme and the wall closure — why they are not independent
+
+Added 2026-09-06, from a measurement that changed which scheme is allowed here.
+
+## How the mixed condition actually imposes a flux
+
+The condition does **not** set a flux. It sets a face VALUE, and lets the
+discretisation's own face-flux formula turn that into a flux. With
+`refValue = 0` and `refGradient = 0`, OpenFOAM's `mixed` gives
+
+    n_p = (1 - f) n_c
+
+so `f` is the only lever, and it must be chosen so that the flux the
+discretisation extracts equals the closure's `n_p * W` — Hagelaar eq. (6.1).
+
+## The standard branch satisfies that EXACTLY
+
+    f = uEff / (D/delta + uEff)
+
+  =>  diffusive flux  D (n_c - n_p)/delta = n_p uEff
+  plus drift          n_p uDrift
+  total               n_p (uEff + uDrift) = n_p W          [since uEff = W - uDrift]
+
+This is an identity, not a fit. It is why `uEff` is defined as `W - uDrift` in
+the first place — see `calcEffectiveWallVelocity()`.
+
+## The ScharfetterGummel branch did NOT, and is now refused
+
+It kept the same `n_p = (1 - f) n_c` but used the denominator
+`D/delta*Bern(Pe) + uAbs`. Same face value, different `f`, therefore a
+different imposed flux. Measured ratio of imposed to intended:
+
+| Pe | r = 0 | r = 0.36 |
+|---|---|---|
+| 0.01 | 1.000 | 1.000 |
+| 1 | 1.225 | 0.978 |
+| 10 | **5.50** | 0.438 |
+| 100 | **50.5** | **−5.19** (sign reversed) |
+
+Up to 50x wrong, and with reflection the wall flux can *reverse*. The
+combination is now FATAL rather than silently wrong.
+
+**Why refused and not corrected.** The correct `f` for an SG face flux must be
+derived from the scheme's own two-point Bernoulli formula. The derivation
+attempted at the time produced a form that was sign-inconsistent as `Pe -> 0`
+(where it must reduce to the standard branch, and did not), so it was not
+adopted: a guessed formula reintroduces exactly the class of defect this check
+caught. **OPEN ITEM:** derive the SG boundary form properly, verify it reduces
+to the standard branch as `Pe -> 0`, and add it to `testWallFlux` before
+re-enabling.
+
+## Consequence for the singularity
+
+`ddWallFluxMixed` reports a singularity when `D/delta + uEff <= 0`, which
+happens when the drift into the wall exceeds what the thermal term and
+near-wall diffusion can carry. Switching to SG was reached for as an escape
+from that, and **it was not a remedy** — it replaced a condition that announces
+itself with a flux that is quietly wrong.
+
+The singularity's remedies are physical and are named in the error message:
+resolve the near-wall cell (`D/delta` grows as the cell shrinks), or accept
+what it represents — a reflecting wall genuinely piles density up, and past a
+point the mixed form cannot represent the wall value that implies. With
+reflection `r` the threshold is
+
+    uDrift > (1-r)/(2r) * A      (only 0.889*A at r = 0.36)
+
+so a reflecting wall reaches it far sooner than a non-reflecting one. See the
+error message in `ddWallFluxMixedFvPatchScalarField.C` for the full r-dependence.
+
+## What is verified, and what is not
+
+`testWallFlux` (26 checks) verifies the CLOSURE ALGEBRA — eqs. (6.1), (6.2),
+(6.8), (6.15), the `(1-r)` factors, the `Dd` floor, degenerate inputs — to
+1.7e-14 over 2430 points. It does **not** exercise the assembled boundary
+condition inside a discretisation; that gap is what let the SG inconsistency
+live. The `f`-identity above is the thing to add.

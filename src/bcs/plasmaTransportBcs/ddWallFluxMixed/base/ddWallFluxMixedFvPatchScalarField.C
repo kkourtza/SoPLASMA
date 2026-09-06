@@ -420,7 +420,66 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
     const scalarField D_delta(Df * delta);
     const word scheme = ddModel.fluxScheme();
 
+    // SCHARFETTER-GUMMEL IS REFUSED HERE, and refusing is the honest answer.
+    //
+    // The mixed condition works by setting the FACE VALUE: with refValue = 0
+    // and refGradient = 0 it gives n_p = (1 - f) n_c, and the flux the
+    // discretisation then extracts is whatever its own face-flux formula makes
+    // of that n_p. So f has to be chosen to make that flux equal the closure's
+    // n_p * W. For the standard branch it does, EXACTLY and by construction:
+    //
+    //     f = uEff/(D/delta + uEff)
+    //       => diffusive flux D(n_c - n_p)/delta = n_p uEff
+    //       => total = n_p (uEff + uDrift) = n_p W       [Hagelaar eq. (6.1)]
+    //
+    // The SG branch kept that same n_p = (1 - f) n_c but used a DIFFERENT
+    // denominator, D/delta*Bern(Pe) + uAbs, so the flux it imposes is not the
+    // closure's. MEASURED 2026-09-06, ratio of imposed to intended flux:
+    //
+    //     Pe:            0.01     1.0     10      100
+    //     r = 0:         1.000   1.225   5.50    50.5
+    //     r = 0.36:      1.000   0.978   0.438   -5.19   <-- SIGN FLIP
+    //
+    // Up to 50x wrong, and with reflection it can reverse the wall flux. That
+    // is worse than the singularity it was reached for: a singular condition
+    // announces itself, a wrong flux does not.
+    //
+    // WHY IT IS REFUSED RATHER THAN CORRECTED. The right f for an SG face flux
+    // has to be derived from the scheme's own two-point formula, and the
+    // derivation attempted here produced a form that is sign-inconsistent as
+    // Pe -> 0 (it must reduce to the standard branch there, and did not). A
+    // guessed formula would put back exactly the class of defect this check
+    // found. So the combination is rejected until the boundary form is derived
+    // properly -- tracked in the boundary-condition document.
+    //
+    // NOTE what this means for the singularity: switching to SG was NOT a
+    // remedy for it. The singularity is a real limitation of the mixed form at
+    // high drift and its remedies are physical -- resolve the near-wall cell,
+    // or accept the reflecting-wall density pile-up it represents.
     if (scheme == "ScharfetterGummel")
+    {
+        FatalErrorInFunction
+            << "fluxScheme `ScharfetterGummel` is not supported by the"
+            << " Hagelaar wall-flux conditions." << nl << nl
+            << "    The mixed condition sets the face VALUE, and f must be"
+            << " chosen so the flux the" << nl
+            << "    discretisation extracts equals the closure's n_p*W. The"
+            << " standard branch does that" << nl
+            << "    exactly; the SG branch used a different denominator and"
+            << " imposed up to 50x the" << nl
+            << "    intended flux (and reversed its sign at r = 0.36,"
+            << " Pe = 100). Measured 2026-09-06." << nl << nl
+            << "    Use `fluxScheme standard` on the species carrying a"
+            << " ddWallFlux condition. If that" << nl
+            << "    branch reports a singularity, the remedy is to resolve the"
+            << " near-wall cell -- not" << nl
+            << "    to change the flux scheme, which only replaces a"
+            << " detectable failure with a" << nl
+            << "    silent one." << nl
+            << exit(FatalError);
+    }
+
+    if (false)
     {
         const auto Bern = [](scalar x) -> scalar
         {

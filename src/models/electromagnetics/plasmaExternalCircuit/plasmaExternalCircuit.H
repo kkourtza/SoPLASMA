@@ -80,6 +80,16 @@ class plasmaExternalCircuit
         //- Ballast resistance [Ohm].
         scalar R_;
 
+        //- Shunt capacitance across the electrode [F], in PARALLEL with the
+        //  gap's own. Zero for `seriesResistor`.
+        //
+        //  This is what makes a real dc rig light gently: ~100 pF/m of coax
+        //  gives R*C in the millisecond range, so the voltage creeps up and
+        //  the gas breaks down at the lowest voltage that sustains it. With
+        //  the gap capacitance alone (1.8e-16 F here) R*C is 17.7 ns and the
+        //  electrode is slammed far past Paschen before any plasma exists.
+        scalar Cext_;
+
         //- OPTIONAL extra damping. The implicit update below does not need
         //  it -- it is unconditionally stable -- so this defaults to 1 (none)
         //  and exists only for a case that wants to slow the approach to the

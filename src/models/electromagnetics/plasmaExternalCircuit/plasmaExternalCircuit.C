@@ -17,6 +17,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     electrode_(word::null),
     patchi_(-1),
     R_(0.0),
+    Cext_(0.0),
     relax_(1.0),
     V_(0.0),
     started_(false),
@@ -110,18 +111,53 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     // ballast silently got a resistive one -- the class of failure where the
     // run completes and the answer is for a different circuit.
     type_ = cd.get<word>("type");
-    if (type_ != "seriesResistor")
+    if (type_ != "seriesResistor" && type_ != "seriesRC")
     {
         FatalIOErrorInFunction(cd)
             << "circuit/type is `" << type_
             << "`, which is not implemented." << nl
-            << "    Available: seriesResistor" << nl
-            << "    Planned (doc/external-circuit-plan.md): seriesRC,"
-            << " seriesRLC, currentSource, matchedRF." << nl
+            << "    Available: seriesResistor, seriesRC" << nl
+            << "    Planned (doc/external-circuit-plan.md): seriesRLC,"
+            << " currentSource, matchedRF." << nl
             << exit(FatalIOError);
     }
 
     R_ = cd.get<scalar>("resistance");
+
+    // THE SHUNT CAPACITANCE, and why a real rig needs one.
+    //
+    // With the GAP's own capacitance alone -- 1.77e-16 F for this geometry --
+    // R*C is 17.7 ns, so the electrode snaps to full voltage before any plasma
+    // exists. The gap then sits at hundreds of volts with alpha*d enormous,
+    // and the first avalanche overshoots by orders of magnitude before space
+    // charge can screen anything. Measured 2026-09-06: n_e reached 6.3e19
+    // m^-3, an ionisation degree of 2.6e-3, where the screening-arrest
+    // estimate and the reference both say ~2e15.
+    //
+    // A REAL dc glow rig has far more capacitance across the gap than the gap
+    // itself: ~100 pF/m of coax from the supply, which with R = 1e8 gives
+    // tau = 10 ms. That is why a laboratory dc discharge lights GENTLY -- the
+    // voltage creeps up and the gas breaks down at the lowest voltage that
+    // sustains it, rather than being slammed far past Paschen.
+    //
+    // 10 ms is 200x longer than we can afford to simulate, so a case picks C
+    // to make the rise slow against the IONISATION and SCREENING timescales
+    // (both ~1.5e-10 s) while staying affordable: C = 5e-14 F gives 5 us,
+    // gentle by 3e4 and comparable to the 4.5 us ion transit.
+    //
+    // It ADDS to the gap capacitance rather than replacing it: both are
+    // physically in parallel across the electrode.
+    Cext_ = (type_ == "seriesRC") ? cd.get<scalar>("capacitance") : 0.0;
+
+    if (type_ == "seriesRC" && Cext_ <= 0)
+    {
+        FatalIOErrorInFunction(cd)
+            << "circuit/capacitance must be positive for seriesRC; got "
+            << Cext_ << "." << nl
+            << "    A zero shunt capacitance IS `seriesResistor` -- use that"
+            << " rather than an RC that is not one." << nl
+            << exit(FatalIOError);
+    }
     relax_ = cd.getOrDefault<scalar>("relaxation", 1.0);
 
     if (R_ <= 0)
@@ -261,7 +297,8 @@ void Foam::plasmaExternalCircuit::update
     // C is the GAP capacitance the discharge-current diagnostic already
     // derives from its unit-potential solve, so it is a computed property of
     // this geometry rather than a number anybody types.
-    const scalar tau = R_*Cgap;          // [s]
+    // C_ext is in PARALLEL with the gap, so the capacitances add.
+    const scalar tau = R_*(Cgap + Cext_);   // [s]
     const scalar a   = tau/max(dt, SMALL);
 
     // THE PLASMA IS LINEARISED IMPLICITLY, via a secant estimate of its
