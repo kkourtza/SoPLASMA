@@ -1,0 +1,73 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2412                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    arch        "LSB;label=32;scalar=64";
+    class       volScalarField;
+    location    "0";
+    object      n_e;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 -3 0 0 0 0 0];
+
+internalField   uniform 1e+15;
+
+boundaryField
+{
+    side_lo
+    {
+        type            symmetryPlane;
+    }
+    anode
+    {
+        type            electronDDWallFluxMixed;
+        refValue        uniform 0;
+        refGradient     uniform 0;
+        valueFraction   uniform 0;
+        source          uniform 0;
+        value           uniform 0;
+        T               11604.5181216;
+        electronReflection 0.36;
+        enableSurfaceCharging false;
+        includeDriftFlux true;
+        enableSEE       false;
+        defaultSEEC     0.001;
+    }
+    side_hi
+    {
+        type            symmetryPlane;
+    }
+    cathode
+    {
+        type            electronDDWallFluxMixed;
+        refValue        uniform 0;
+        refGradient     uniform 0;
+        valueFraction   uniform 0;
+        source          uniform 0;
+        value           uniform 0;
+        T               11604.5181216;
+        enableSurfaceCharging false;
+        includeDriftFlux true;
+        enableSEE       true;
+        defaultSEEC     0.06;
+    }
+    front
+    {
+        type            empty;
+    }
+    back
+    {
+        type            empty;
+    }
+}
+
+
+// ************************************************************************* //

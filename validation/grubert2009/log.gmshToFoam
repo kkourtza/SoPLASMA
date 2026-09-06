@@ -1,0 +1,91 @@
+/*---------------------------------------------------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2412                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+Build  : _b8cf4d35-20260127 OPENFOAM=2412 patch=260127 version=2412
+Arch   : "LSB;label=32;scalar=64"
+Exec   : gmshToFoam gap1cm_3D.msh
+Date   : Sep 05 2026
+Time   : 18:54:45
+Host   : Kourtzanidis-PC
+PID    : 2345770
+I/O    : uncollated
+Case   : /home/kkourtza/soplasma-scratch/validation/grubert2009
+nProcs : 1
+trapFpe: Floating point exception trapping enabled (FOAM_SIGFPE).
+fileModificationChecking : Monitoring run-time modified files using timeStampMaster (fileModificationSkew 5, maxFileModificationPolls 20)
+allowSystemOperations : Allowing user-supplied system call operations
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+Create time
+
+--> FOAM Warning : 
+    From void* Foam::dlLibraryTable::openLibrary(const Foam::fileName&, bool)
+    in file db/dynamicLibrary/dlLibraryTable/dlLibraryTable.C at line 188
+    Could not load "libpetscFoam.so"
+libpetsc.so.3.24: cannot open shared object file: No such file or directory
+Starting to read mesh format at line 2
+Read format version 2.2  ascii 0
+
+Starting to read physical names at line 5
+Physical names:7
+    Surface 1	cathode
+    Surface 2	anode
+    Surface 3	side_lo
+    Surface 4	side_hi
+    Surface 5	front
+    Surface 6	back
+    Volume 7	gas
+
+Starting to read points at line 15
+Vertices to be read: 2412
+Vertices read:2412
+
+Starting to read cells at line 2430
+Cells to be read: 3410
+
+Mapping region 7 to Foam cellZone 0
+Mapping region 3 to Foam patch 0
+Mapping region 2 to Foam patch 1
+Mapping region 4 to Foam patch 2
+Mapping region 1 to Foam patch 3
+Mapping region 5 to Foam patch 4
+Mapping region 6 to Foam patch 5
+Cells:
+    total:1000
+    hex  :1000
+    prism:0
+    pyr  :0
+    tet  :0
+
+CellZones:
+Zone	Size
+    0	1000
+
+Patch 0 gets name side_lo
+Patch 1 gets name anode
+Patch 2 gets name side_hi
+Patch 3 gets name cathode
+Patch 4 gets name front
+Patch 5 gets name back
+
+--> FOAM Warning : 
+    From Foam::polyMesh::polyMesh(const Foam::IOobject&, Foam::pointField&&, const Foam::cellShapeList&, const Foam::faceListList&, const Foam::wordList&, const Foam::wordList&, const Foam::word&, const Foam::word&, const Foam::wordList&, bool)
+    in file meshes/polyMesh/polyMeshFromShapeMesh.C at line 640
+    Found 2410 undefined faces in mesh; adding to default patch defaultFaces
+Finding faces of patch 0
+Finding faces of patch 1
+Finding faces of patch 2
+Finding faces of patch 3
+Finding faces of patch 4
+Finding faces of patch 5
+
+FaceZones:
+Zone	Size
+
+Writing zone 0 to cellZone gas and cellSet
+End
+

@@ -1,0 +1,28 @@
+--> FOAM Warning : 
+    From void* Foam::dlLibraryTable::openLibrary(const Foam::fileName&, bool)
+    in file db/dynamicLibrary/dlLibraryTable/dlLibraryTable.C at line 188
+    Could not load "libpetscFoam.so"
+libpetsc.so.3.24: cannot open shared object file: No such file or directory
+No gas region found → using constant/ as path.
+Reading plasmaSpecies from: "constant/plasmaSpeciesProperties"
+plasmaSpecies: activeSpecies from "constant/argon_plasma.foam" (include chargedAndExcited): 3(e Ar2p Arp)
+Found 3 active species.
+  - e
+  - Ar2p
+  - Arp
+Wall electron temperature: TeV 1 eV (FIXED -- `LFA` transports no electron energy).
+    Set `wallTeV` in plasmaSpeciesProperties to override. Under LMEA the field T_e is followed instead.
+
+Boundary conditions DERIVED per patch (wall-flux family Mixed):
+    side_lo  ->  mechanical (kept as-is)
+    anode  ->  conductor: wall flux, NO local sigma
+    side_hi  ->  mechanical (kept as-is)
+    cathode  ->  conductor: wall flux, NO local sigma
+    front  ->  mechanical (kept as-is)
+    back  ->  mechanical (kept as-is)
+
+Creating field: n_e  (charge -1, electron)
+Creating field: n_Ar2p  (charge 1, ion)
+Creating field: n_Arp  (charge 1, ion)
+
+Fields created successfully.
