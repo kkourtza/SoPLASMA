@@ -269,6 +269,68 @@ that is the one convention a user cannot be expected to guess. Both a negative
 `setCurrent` and a `resistance` on a `currentSource` are fatal with a message
 saying why.
 
+### MEASURED DEFECT 2026-09-06: the regulator is an UNDAMPED INTEGRATOR
+
+First real use of `currentSource` (`validation/grubert2009_iset`, argon glow,
+`setCurrent` ramped 1e-8 -> 1.022e-6 A over 10 us, `capacitance 0`). It ignited
+correctly -- pre-ignition `dV/dt` matched `I_set/C_gap` to **1.33%** and
+ignition occurred at V = -116 V against a predicted -121 V (**4%**) -- and then
+went unstable in a way that is entirely the controller's doing.
+
+**THE OSCILLATION, measured:**
+
+| t | Ic/Is | V |
+|---|---|---|
+| 8.59e-7 | 178% | -175 |
+| 9.19e-7 | **229%** (peak) | -139 |
+| 9.42e-7 | 69% | -127 |
+| 9.44e-7 | **0%, sign reversal** | -127 |
+| 9.51e-7 | -1064% | -146 |
+| 9.54e-7 | **-21175%** | -214 |
+
+Overshoot to 229% -> the source correctly pulls V from -175 to -127 -> the
+conduction current COLLAPSES SMOOTHLY THROUGH ZERO (verified continuous:
+-1.19e-9, -8.9e-10, -5.9e-10, -2.9e-10, **+1.3e-11**, +3.2e-10, so not a
+diagnostic glitch) -> `|I_cond| < |I_set|` now, so the integrator correctly
+drives V back negative -> the second swing re-ignites into a runaway that
+never recovers, n_e -> 2e18.
+
+**THE CAUSE: the damping term never engages.** The update is
+
+    dV = dt (I_set - I_cond) / (C_gap + |g| dt)
+
+and `|g| dt` **never exceeded 12% of `C_gap` at any point in the oscillation** --
+typically `1e-20` against `C_gap = 1.77e-16`, i.e. four orders of magnitude
+short. So the controller is a PURE INTEGRATOR on the gap capacitance, with no
+damping at all, driving a plant whose gain is EXPONENTIAL in V. That is
+unstable by construction.
+
+**IT IS NOT A TIMESTEP PROBLEM.** Established with a control at two
+resolutions: `iset` (dt ~6e-12) and `En150` (dt ~1e-12) track each other to
+**0.66% at worst** through the entire overshoot, peak and turnover --
+`Ic/Is` 59/59, 124/123, 191/191, 216/216, 229/228 -- and BOTH diverge. Coarser
+arms at dt 1.2e-10 and 2.4e-10 diverge to the same 1e18. Six decades of dt, one
+trajectory.
+
+**TWO CANDIDATE FIXES, not yet chosen between:**
+
+1. **`g` is estimated too small.** It is a secant `dI/dV` from successive
+   accepted steps; at dt ~1e-12 the per-step `dV` is tiny, so the estimate may
+   be dominated by noise or suppressed by the relative-change guard on it, and
+   never reflect the true plant gain. If so, fix the estimator.
+2. **The controller FORM is wrong for this plant.** A pure integrator cannot
+   stabilise an exponentially-nonlinear plant however well `g` is estimated; it
+   needs proportional action, a slew limit on `dV/dt`, or both.
+
+These are distinguishable: instrument `g` against a directly measured
+`dI_cond/dV` over a finite perturbation. Do that before changing the form.
+
+**AND A SEPARATE CONTRIBUTOR:** the `setCurrent` ramp is too fast through
+ignition. `I_cond` overshot to 229% because the discharge's own growth outran
+the ramp, so the loop was never in the quasi-static regime the design assumed.
+A slower ramp through ignition reduces the excursion the controller has to
+handle, independently of the damping fix.
+
 ### WHAT IS NOT YET VERIFIED
 
 Syntax-checked and reasoned, **but not yet run**: the build guard correctly
