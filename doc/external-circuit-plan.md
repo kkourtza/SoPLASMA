@@ -77,7 +77,109 @@ computable, and the characteristic is what tells you whether a discharge is
 normal, abnormal or arcing — the very distinction that explains the Grubert
 runaway.
 
+## Stage 2a — `currentSource`, and why it comes FIRST
+
+### What a current source is, physically
+
+A ballast makes the operating point self-selecting but leaves it to be FOUND.
+A current source PINS it: the external circuit forces a prescribed current
+through the electrode and lets the voltage be whatever the discharge needs.
+Physically it is a supply with output impedance large compared with the
+discharge's own |dV/dj| -- the R -> infinity limit of a ballast, which is why a
+real lab "current-regulated" supply is just a very stiff ballast with feedback.
+
+The gap voltage is then a PREDICTION of the simulation rather than an input,
+and the discharge sits wherever its characteristic says it must for that
+current.
+
+### Why it is the better instrument for validating against a paper
+
+Published discharge studies almost always report the current density. Grubert
+report j = 0.511 mA/cm^2 at a gap voltage of -500 V. With a current source we
+impose the half we are most confident of and PREDICT the other half:
+
+    impose j = 0.511 mA/cm^2   ->   does V_gap come out at -500 V?
+
+That has NO free parameter. The ballast route does not have that property: R
+must be chosen, and choosing it so the gap lands at -500 V when j = 0.511
+ASSUMES the answer. Measured 2026-09-06, that is exactly what was done here,
+and it is circular in a way a validation must not be.
+
+### Why it is also far more ROBUST numerically
+
+This is the argument that decided the priority. A ballast closes a feedback
+loop: V sets I, I sets V. That loop is what destabilised the runs --
+post-breakdown the plasma current jumped to 8.5x what the circuit could supply
+at that instant, because the current the circuit sees is one step old, and the
+gap voltage was driven through zero to a positive cathode.
+
+A current source has NO SUCH LOOP. The current is imposed, so there is nothing
+to iterate: the instability being fought does not exist. It sidesteps stage 3
+rather than depending on it.
+
+### Steady versus non-steady behaviour, which differ and must be documented
+
+* **Steady / quasi-steady.** The natural mode. The discharge relaxes to the
+  point on its characteristic corresponding to the imposed j, and the gap
+  voltage settles. This is the mode that reproduces a published operating
+  point.
+* **Ramped current.** Sweeping j slowly traces the V-I CHARACTERISTIC directly
+  -- Townsend, subnormal, normal, abnormal -- which is the single most
+  informative diagnostic of a dc discharge and is not obtainable at fixed
+  voltage at all, because the flat normal-glow branch is not a function there.
+  This is worth having for its own sake.
+* **Before ignition, a current source is UNPHYSICAL and must be handled.**
+  A cold gap cannot carry an imposed current: the voltage required is unbounded
+  and the model will chase it to breakdown-and-beyond. Two admissible
+  treatments, and the case must state which:
+    - `softStart`: ramp the imposed current from ~0, so the gap voltage rises
+      with it and ignition happens on the way up. Physically this is a supply
+      in voltage-limited mode until the discharge lights.
+    - `compliance`: give the source a voltage limit V_max, exactly as a real
+      supply has. Below ignition it behaves as a fixed-voltage source at V_max;
+      once the discharge can carry the current, it switches to current
+      regulation. This is what a laboratory supply actually does and is the
+      recommended default.
+  A current source WITHOUT a compliance limit is a modelling error before
+  ignition, and the implementation must refuse it rather than produce a
+  spectacular transient.
+* **Fast transients (pulsed, RF).** A current source is the wrong instrument:
+  there the circuit's own dynamics ARE the physics. Use seriesRC/RLC.
+
+### Binding it in the generator, so the user writes one thing
+
+Same route as the ballast, on the electrode it feeds:
+
+    cathode
+    {
+        kind        ballastedElectrode;      // role name to be revisited:
+                                             // "drivenByCircuit" is truer once
+                                             // the source need not be a ballast
+        circuit
+        {
+            type        currentSource;
+            current     -1.022e-6;           // [A], or a Function1 to sweep
+            compliance  -1500;               // [V] supply limit, REQUIRED
+        }
+    }
+
+and nothing else: the electrode is the patch it is written on, `plasmaCreate-
+SpeciesFields` emits `fixedValue` for it as now, and the solver reads it
+through `boundaryRoleLibrary::caseDeclaration`. Current in AMPERES, not a
+density -- the electrode area is a property of the mesh and deriving j from it
+is the solver's job, not the user's.
+
 ## Stage 3 — IMPLICIT coupling, which is the real work
+
+**STATUS 2026-09-06: HALF DONE, and the half that is missing is the one that
+matters.** The circuit's own RC dynamics are now implicit, which removed a
+divergence of 885x per step and is verified to 0.3% against the analytic ramp
+response. But the PLASMA CURRENT is still explicit -- it is measured after the
+step that produced it -- and post-breakdown that is the coupling that fails:
+the discharge drew 8.5x the current the circuit could supply at that instant,
+the ballast demanded a gap voltage the source could not provide, and the
+cathode was driven to POSITIVE potential. Implicit in the circuit and explicit
+in the plasma is not implicit coupling.
 
 Stage 1 chases the operating point; it does not solve for it. The fix is to
 expose
