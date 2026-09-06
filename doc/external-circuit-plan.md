@@ -92,32 +92,26 @@ RLC that derivative is analytic and trivial.
 This is the stage that removes `relaxation` and makes a stiff ballast usable.
 It is also why the interface must expose the DERIVATIVE, not just the value.
 
-## Stage 4 — an ngspice bridge, OPTIONAL and on top
+## Stage 4 — ngspice bridge: CONSIDERED AND DECIDED AGAINST (2026-09-06)
 
-For users with a genuine netlist — a real supply, a pulser, a transmission
-line, a matching network with parasitics — reimplementing SPICE would be
-foolish. `libngspice` has a shared-library mode with a C API intended for
-co-simulation.
+Recorded so it is not proposed again. The framework OWNS its lumped models.
 
-But it must NOT be the foundation, for a reason that is technical rather than
-aesthetic: **the hard part of circuit coupling is implicitness, and a black box
-makes it harder.** Stage 3 needs `dV/dI`; through SPICE that must be probed
-numerically, which is slower and more fragile than the one-line analytic
-derivative of a lumped model. Adopting SPICE as the base layer would make the
-actual difficulty worse while solving the easy part.
+The technical reason, which is the one that decided it: the hard part of
+circuit coupling is IMPLICITNESS, not solving the circuit. Stage 3 needs
+`dV/dI`; for a lumped model that is one analytic line, but through a black box
+it has to be probed numerically -- slower, and fragile exactly where the
+coupling is stiffest. A SPICE back end would solve the easy half of the problem
+and make the hard half worse.
 
-Three further cautions, all real:
-* **Licensing.** ngspice is mostly New BSD but not uniformly. This has to be
-  checked before it goes anywhere near a commercial SaaS product.
-* **Deployment.** It adds a runtime dependency to a solver that today needs
-  only OpenFOAM, which matters for cloud packaging.
-* **Time-step negotiation.** ngspice manages its own internal steps; those have
-  to be reconciled with ours, and that is exactly the co-simulation problem
-  stages 1-3 avoid by owning the equations.
+Three further reasons, any one of which would have been enough on its own:
+licensing (ngspice is mostly New BSD but not uniformly, which matters for a
+commercial product), a runtime dependency added to a solver that today needs
+only OpenFOAM, and ngspice managing its own internal timestepping, which would
+have to be negotiated against ours.
 
-So: ship the lumped models, define the interface as `V(I)` AND `dV/dI`, and add
-the ngspice bridge as an optional back end implementing that same interface —
-explicitly coupled, and documented as such.
+The interface requirement from stage 3 stands regardless: a circuit exposes
+`V(I)` AND `dV/dI`. That is what makes implicit coupling possible, and it is
+worth stating as the contract even though there is now only one implementer.
 
 ## What must be true of every stage
 

@@ -292,9 +292,7 @@ openBoundary
 
 ballastedElectrode
 {
-    description "A conductor fed through an external circuit: the potential is
-                 an OUTPUT, set by V_source - R*I, not a waveform the user
-                 imposes.";
+    description "A conductor fed through an external circuit: its potential is an OUTPUT, set by V_source - R*I, not a waveform the user imposes.";
     // No `requires`: the circuit itself is declared once in
     // system/plasmaSimulationControls/externalCircuit, because a circuit can
     // connect SEVERAL electrodes and is therefore a property of the system

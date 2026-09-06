@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Grubert 2009 dc glow -- build and run, serial.  See COMPARE.md for the
+# question this case answers and the reference numbers it is judged against.
+cd "${0%/*}" || exit 1
+source /usr/lib/openfoam/openfoam2412/etc/bashrc >/dev/null 2>&1
+export SoPLASMA=$HOME/soplasma-scratch
+export SoPLASMA_ETC=$SoPLASMA/etc
+export SoPLASMA_SRC=$SoPLASMA/src
+BOLTZMANN_DIR=$HOME/Projects/SoEEDF
+die() { echo "FAILED: $1" >&2; exit 1; }
+mkdir -p logs
+
+# 1. mesh: 2-D Cartesian, extruded one cell.  NOT axisymmetric -- Grubert's
+#    model is plane-parallel and a wedge cannot represent it.
+gmsh -2 -format msh2 gap1cm.geo -o gap1cm.msh > logs/log.gmsh 2>&1 || die gmsh
+~/ct-env/bin/python "$SoPLASMA"/tools/msh2Dto3D.py gap1cm.msh -o gap1cm_3D.msh -t 2e-4 \
+    > logs/log.msh2Dto3D 2>&1 || die msh2Dto3D
+cp system/fvSolution-foam system/fvSolution
+gmshToFoam gap1cm_3D.msh > logs/log.gmshToFoam 2>&1 || die gmshToFoam
+~/ct-env/bin/python "$SoPLASMA"/tools/msh2Dto3D.py --fix-boundary constant/polyMesh/boundary \
+    >> logs/log.msh2Dto3D 2>&1 || die fix-boundary
+# 1-D emulation: close the lateral sides with symmetry so a 2-D mesh gives
+# exactly the 1-D solution the reference is.
+~/ct-env/bin/python - <<'PY'
+import re
+p="constant/polyMesh/boundary"; s=open(p).read()
+for n in ("side_lo","side_hi"):
+    s=re.sub(r"(\b%s\s*\n\s*\{\s*\n\s*type\s+)patch;" % n, r"\1symmetryPlane;", s)
+open(p,"w").write(s)
+PY
+checkMesh > logs/log.checkMesh 2>&1 || die checkMesh
+grep -q "Mesh OK" logs/log.checkMesh || die "checkMesh did not report Mesh OK"
+
+# 2. Boltzmann tables for argon, over the range the cathode fall reaches.
+"$BOLTZMANN_DIR"/build/genMechTables constant/argon_plasma.mech.json \
+    --EN 1:55000:261 --Tgas 300 -o constant/plasmaTables \
+    > logs/log.genMechTables 2>&1 || die genMechTables
+
+# 3. ion transport.  Ar+ needs BOTH sources: Phelps has no low-field plateau
+#    and Ellis stops at 2000 Td.  They overlap over 1000-2000 Td and disagree
+#    by ~10% there, so Ellis is trimmed BELOW the seam to make the two
+#    complementary -- then ionmob stitches them and reports the seam instead
+#    of silently picking one.
+mkdir -p constant/ionTables
+~/ct-env/bin/python - <<'PY'
+src=open("/home/kkourtza/Projects/SoEEDF/data/lxcat/ion-transport/Mobility_Ar+_Ar_Ellis1976.txt").read()
+out=[];indata=False
+for l in src.split("\n"):
+    if l.startswith("-----"): indata = not indata; out.append(l); continue
+    if indata:
+        p=l.split()
+        if len(p)==2:
+            try:
+                if float(p[0]) < 1000.0: out.append(l)
+                continue
+            except ValueError: pass
+    out.append(l)
+open("/tmp/ellis_below_seam.txt","w").write("\n".join(out))
+PY
+cat /tmp/ellis_below_seam.txt \
+    "$BOLTZMANN_DIR"/data/lxcat/ion-transport/Mobility_Ar+_Ar.txt \
+    "$BOLTZMANN_DIR"/data/lxcat/ion-transport/Mobility_Ar2+_Ar.txt > /tmp/argon_ion_all.txt
+~/ct-env/bin/python "$BOLTZMANN_DIR"/tools/ionmob.py /tmp/argon_ion_all.txt \
+    --mechanism constant/argon_plasma.foam --background Ar --needTd 20000 \
+    -o constant/ionTables > logs/log.ionmob 2>&1
+grep -E "STITCHED|stitch continuous|CLAMPED" logs/log.ionmob | sed 's/^/    /'
+
+# 4. EVERY field is generated from configuration/boundaries.  There is no
+#    0.orig and no changeDictionary: gammaSEE and electronReflection are
+#    declared in the semantic layer and derived onto both n_e and nEps_e.
+rm -rf 0 && mkdir -p 0
+plasmaSetupBoundaries     > logs/log.plasmaSetupBoundaries 2>&1 || die plasmaSetupBoundaries
+plasmaCreateSpeciesFields > logs/log.plasmaCreateSpeciesFields 2>&1 || die plasmaCreateSpeciesFields
+echo "    $(ls 0 | wc -l) fields generated in 0/"
+
+# 5. run
+soPlasmaFoam > logs/log.soPlasmaFoam 2>&1 || die soPlasmaFoam
+echo "DONE"
