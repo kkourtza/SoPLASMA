@@ -637,6 +637,14 @@ int main(int argc, char *argv[])
         }
 
 
+        // INVARIANT: Poisson's source must BE sum_i q_i n_i.
+        //
+        // Here rather than inside the corrector loop, where the source is
+        // legitimately one iteration behind the densities. The retry path
+        // `continue`s well before this point, so a discarded step never
+        // reaches it and the check cannot fire on one.
+        species.verifyChargeDensity();
+
         // CLOSE THE AUDIT before the write, so a step that skipped a
         // required update fails BEFORE its fields land on disk. A stale field
         // written to a time directory outlives the run that produced it.

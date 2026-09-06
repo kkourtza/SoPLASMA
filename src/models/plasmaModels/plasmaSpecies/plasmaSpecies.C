@@ -1123,6 +1123,77 @@ void Foam::plasmaSpecies::deriveElectronTransportKey()
 
 // * * * * * * * * * * * * * * Public Member Functions * * * * * * * * * * * //
 
+void Foam::plasmaSpecies::verifyChargeDensity(const label everyN) const
+{
+    if (everyN <= 0) return;
+    if (mesh_.time().timeIndex() % everyN != 0) return;
+
+    // Recompute the invariant's right-hand side from the CURRENT densities.
+    scalarField rhs(mesh_.nCells(), Zero);
+
+    forAll(chargedSpeciesIDs_, i)
+    {
+        const label id = chargedSpeciesIDs_[i];
+        rhs += numberDensities_[id].primitiveField()
+             * speciesCharges_[id].value();
+    }
+
+    const scalarField& rho = em_.chargeDensity().primitiveField();
+
+    // A RELATIVE test against the field's own scale, with an absolute floor.
+    //
+    // The floor matters: SI charge densities here are ~1e-8 C/m^3, which is
+    // far below any sensible absolute tolerance, so a purely absolute test
+    // passes on ANY input -- the trap that has caught a diagnostic here
+    // before. The scale is the max |rhs| over the domain, so the test means
+    // the same thing before and after breakdown.
+    const scalar scale = max(gMax(mag(rhs)), SMALL);
+    const scalar tol = 1e-8;
+
+    scalar worst = 0;
+    label worstCell = -1;
+
+    forAll(rho, celli)
+    {
+        const scalar err = mag(rho[celli] - rhs[celli])/scale;
+        if (err > worst) { worst = err; worstCell = celli; }
+    }
+
+    if (returnReduce(worst, maxOp<scalar>()) > tol)
+    {
+        const label nCharged = chargedSpeciesIDs_.size();
+
+        FatalErrorInFunction
+            << "CHARGE DENSITY IS NOT sum_i q_i n_i." << nl << nl
+            << "    Poisson's source disagrees with the species densities it"
+            << " is supposed to be built" << nl
+            << "    from, by " << worst << " of the domain scale ("
+            << scale << " C/m^3) at cell " << worstCell << ":" << nl << nl
+            << "        chargeDensity   = "
+            << (worstCell >= 0 ? rho[worstCell] : 0.0) << nl
+            << "        sum_i q_i n_i   = "
+            << (worstCell >= 0 ? rhs[worstCell] : 0.0) << nl
+            << "        charged species = " << nCharged << nl << nl
+            << "    A STALE OR WRONG SOURCE MAKES THE FIELD LOOK LIKE"
+            << " PHYSICS. Measured 2026-09-06:" << nl
+            << "    with the source frozen, E/N was 1104 Td against V/L ="
+            << " 1106 Td -- the VACUUM field" << nl
+            << "    to 0.2% -- while the ion density grew three decades, and"
+            << " nothing screened." << nl << nl
+            << "    Candidate causes, in the order worth checking:" << nl
+            << "      * updateChargeDensity() skipped this step -- see the"
+            << " plasmaStepAudit report" << nl
+            << "      * a density CLAMPED or floored after the charge update"
+            << nl
+            << "      * a charged species missing from chargedSpeciesIDs_"
+            << " (there are " << nCharged << ")" << nl
+            << "      * a sign or unit error in speciesCharges_" << nl << nl
+            << "    See CLAUDE.md rule 27 and doc/case-monitoring-plan.md."
+            << nl << exit(FatalError);
+    }
+}
+
+
 void Foam::plasmaSpecies::updateChargeDensity()
 {
     // Audited: this ran on 0.04% of steps on 2026-09-06 and froze Poisson's

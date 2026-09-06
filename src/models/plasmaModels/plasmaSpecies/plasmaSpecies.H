@@ -344,6 +344,21 @@ public:
         //- Update only the volume charge density (instantaneous)
         void updateChargeDensity();
 
+        //- INVARIANT: the chargeDensity field Poisson uses must equal
+        //  sum_i q_i n_i for the CURRENT densities.
+        //
+        //  This is not a duplicate of the step audit. The audit catches a
+        //  skipped CALL; this catches a wrong RESULT -- a missing charged
+        //  species, a sign error, a clamp applied to a density AFTER the
+        //  charge update, an aliased field. Either can freeze Poisson's
+        //  source, and on 2026-09-06 a skipped call did, for 364670 steps.
+        //
+        //  Call it ONCE PER ACCEPTED STEP, after the last corrector: within
+        //  the corrector loop the source is legitimately one iteration behind
+        //  the densities, so a strict check there would fire on correct runs.
+        //  A violation is FATAL and names the worst cell. CLAUDE.md rule 27.
+        void verifyChargeDensity(const label everyN = 1) const;
+
         //- Clamp all number density fields to their minimum values
         void clampNumberDensities();
 
