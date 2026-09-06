@@ -158,3 +158,65 @@ The transition point is where the digitised ratio `n_Ar+/n_e` falls below a few
 -- measured at x/L ~ 0.25 in this data.
 
 **And check the LOCAL field, not the integrated voltage, before running.**
+
+
+---
+
+# THE NO-RUN RESULT, and why the consistent-seed construction failed
+
+## THE RESULT WORTH KEEPING: 394 V against Grubert's 500 V
+
+Using Grubert's digitised densities, OUR transport tables, and CURRENT
+CONTINUITY -- exact in steady state -- with no seeding and no run at all:
+
+    j_tot = e(n_e mu_e + n_i mu_i) E = 5.11 A/m^2 everywhere
+      =>  E(x) = 5.11/(e(n_e mu_e(E) + n_i mu_i(E)))     [iterate, mu depends on E/N]
+
+| x/L | n_e | n_i | E [V/m] | E/N [Td] |
+|---|---|---|---|---|
+| 0.006 | 1e9 | 4.73e15 | **3.07e5** | 12473 |
+| 0.151 | 1.87e12 | 6.12e15 | 1.43e5 | 5903 |
+| 0.401 | 2.48e15 | 2.69e15 | **297** | **12.3** |
+| 0.741 | 1.11e15 | 1.15e15 | 718 | 29.7 |
+| 0.991 | 6.88e13 | 3.93e14 | 1.71e4 | 708 |
+
+    integrated gap voltage = 393.9 V   vs Grubert 500 V   -> 0.788 (21% low)
+
+**The field-free negative glow emerges by itself** (12-30 Td), which is what a
+glow requires and what the Poisson-on-a-difference seed could not produce.
+
+**WHY THIS WORKS AND THE OTHER DID NOT -- the general lesson.** Current
+continuity uses `n_e mu_e + n_i mu_i`, a **SUM**. Poisson uses `n_i - n_e`, a
+**DIFFERENCE**. Where the two densities agree to a few percent, a few percent of
+digitisation error stays a few percent in the sum and becomes ~100% in the
+difference. **Use the constraint that sums.**
+
+CAVEAT: drift-only. In the negative glow E is small (12 Td) and the density
+gradient steep, so diffusion is comparable to drift there and that region's field
+is uncertain. The cathode fall, which dominates the voltage integral, is
+drift-dominated and unaffected.
+
+## THE CONSISTENT-SEED CONSTRUCTION FAILED, and the reason is structural
+
+Attempted: impose current continuity AND Poisson simultaneously, solving
+
+    n_e = (P - D mu_i)/(mu_e + mu_i),  n_i = n_e + D,
+    P = J/(e E),   D = (eps0/e) dE/dx
+
+by iteration, so the SUM stays pinned to the digitised data while the DIFFERENCE
+is derived from the field rather than digitised. Measured outcome:
+
+    integrated gap voltage collapsed to 13.8 V (from 394 V)
+    |E| peak moved to x/L = 0.999 -- the ANODE
+    the cathode fall was destroyed; n_i at x/L=0.151 fell 6.1e15 -> 1.1e15
+
+**Two of the three steady constraints is UNDERDETERMINED.** The third is the
+PARTICLE BALANCE (ionisation = wall loss + recombination). Without it nothing
+sustains the cathode fall -- the fall exists because ion flux from the bulk plus
+secondary emission maintain it -- so the iteration lowered the field and drifted
+to a fall-free state.
+
+**And imposing all three IS the steady solve.** The seeding route is therefore
+circular: constructing a consistent state requires the solver it was meant to
+avoid. That is a real argument for building it, and it is the third independent
+one today, after the `C_gap/g` bound and the staircase falsification.
