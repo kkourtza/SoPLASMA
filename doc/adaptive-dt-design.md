@@ -135,6 +135,28 @@ That reframes the whole question. The Courant caps are not redundant with the
 governor. They are what keeps the outer loop resolved enough that the
 robustness and accuracy controllers can act in time.
 
+### PROVISIONAL -- THE PREMISE IS NOT YET ESTABLISHED (flagged 2026-09-06)
+
+**The paragraph above depends on the BASELINE RECOVERING from its overshoot,
+and that is not yet measured.** At the time of writing `iset` is at
+t = 8.4e-7 with `Ic/Is` = 158% and still rising, while the coarse arms diverged
+somewhere past t = 9.5e-7 -- a time the baseline has not reached. There is
+therefore NO CONTROL at the moment that matters (rule 15).
+
+Two readings remain open:
+
+* **if the baseline recovers** (Ic/Is turns back toward 100%, n_e settles near
+  1e15) -- then the coarse arms failed to resolve a recoverable overshoot, the
+  reasoning above holds, and the growth-rate proposal follows.
+* **if the baseline ALSO diverges** to ~1e18 -- then the coarse arms were
+  simply arriving at the same place sooner, the caps prevented nothing, and the
+  reasoning above is BACKWARDS. The instability would then be physical and the
+  question returns to the ramp rate and the circuit.
+
+**Do not build on this section until `iset` has passed t = 9.5e-7.** The
+0.35% agreement between the baseline and the energy-cap arms is measured at
+common times and stands independently; the divergence reasoning does not.
+
 **And the accuracy controller reacted TOO LATE.** At All1500 it eventually
 clamped dt by 400x and forced 11 discards -- after the solution had left.
 `||e|| = 2.35e-09` against a target of 1 reported "everything is fine" while
