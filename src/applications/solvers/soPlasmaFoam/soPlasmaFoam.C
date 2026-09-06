@@ -407,14 +407,36 @@ int main(int argc, char *argv[])
                 // A no-op for the LFA family, whose eEqn() returns nullptr.
                 if (energy) energy->solveSpeciesEnergy();
 
-                if (pimple.finalIter())
-                {
-                    // Update charge density
-                    species.updateChargeDensity();
-
-                    // Update surface charge
-                    transport.updateSurfaceCharge();
-                }
+                // UNCONDITIONAL, and it MUST stay that way.
+                //
+                // This was `if (pimple.finalIter())`, which was correct only
+                // because pimpleControl::loop() guarantees one last iteration
+                // with finalIter true when residualControl converges. The
+                // `relativeChange` break added above (82975f2) leaves the loop
+                // with a raw `break` at the TOP of an iteration, so finalIter
+                // was never reached and NEITHER UPDATE RAN.
+                //
+                // MEASURED 2026-09-06, and it is the worst regression of the
+                // day: on the Grubert R1e9 arm, 151 charge-density updates in
+                // 364670 timesteps -- 0.04%. Poisson's source was frozen for
+                // the whole run, so the field stayed at the VACUUM value
+                // (E/N = 1104 Td measured against V/L = 1106 Td, agreeing to
+                // 0.2%) while the ion density grew three decades. With no
+                // space-charge screening there is nothing to arrest
+                // ionisation, and the "runaway" chased all day was this bug.
+                // The 28x field "spike" in 0.5 ns -- which no transport
+                // timescale could explain -- was simply the first charge
+                // update after a long freeze.
+                //
+                // Both are IDEMPOTENT within a step, so running them every
+                // corrector is safe: updateChargeDensity() rebuilds sigma from
+                // zero, and updateSurfaceCharge() resets sigmaPatch from
+                // sigma.oldTime() before accumulating. The explicit branch
+                // below has always called them every iteration; making this
+                // branch identical also removes a sibling divergence, which is
+                // its own recurring defect class.
+                species.updateChargeDensity();
+                transport.updateSurfaceCharge();
             }
         }
         else //Explicit Poisson branch
