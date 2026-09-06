@@ -101,6 +101,73 @@ that has never fired. Before it can be trusted to bound dt, push the caps up
 until discards appear, and confirm the loop recovers and the answer is
 unchanged.
 
+## STEP 2 RESULT (2026-09-06): the caps are NOT merely masking the governor
+
+Ran `iset` (all caps 15) against four arms: energy cap alone at 150 and 1500,
+and ALL caps at 150 and 1500. Extended into the ignition transient at the
+user's suggestion -- "run the simulations even longer to get error estimates in
+more interesting plasma regimes" -- which is what produced the real answer.
+
+**In the quiescent phase everything looks free.** Errors of 0.05-0.27% in
+V_gap for 15-30x of dt. That measurement is a trap: nothing is happening.
+
+**In the ignition transient the arms separate sharply:**
+
+| arm | dt vs base | err in V_gap (transient) | outcome |
+|---|---|---|---|
+| energy cap 150 / 1500 | 1.5x | **0.35%** at 160% overshoot | tracks the baseline |
+| ALL caps 150 | 15x | -- | **n_e -> 2.7e17, diverged** |
+| ALL caps 1500 | 30x | -- | **n_e -> 1.2e18, diverged** |
+
+`En150` and the baseline agree to **0.35%** at EVERY common time right through
+ignition -- 162.9% vs 162.3% of I_set, V -179.52 vs -180.14. They are the same
+solution. So **the ENERGY cap is an efficiency knob even in the hard regime**,
+and it buys 1.5x because the SPECIES cap immediately takes over.
+
+**But raising ALL the caps diverged.** And the mechanism matters: the
+discharge has a REAL current overshoot at ignition -- the baseline reaches
+160-200% of I_set too -- which the current source then corrects by pulling
+V down. **The coarse arms did not diverge because the caps were preventing an
+artefact; they diverged because they could not RESOLVE a real overshoot well
+enough to recover from it.**
+
+That reframes the whole question. The Courant caps are not redundant with the
+governor. They are what keeps the outer loop resolved enough that the
+robustness and accuracy controllers can act in time.
+
+**And the accuracy controller reacted TOO LATE.** At All1500 it eventually
+clamped dt by 400x and forced 11 discards -- after the solution had left.
+`||e|| = 2.35e-09` against a target of 1 reported "everything is fine" while
+the trajectory was departing. **That is the defect to fix for a universal
+governor: the error measure is a LOCAL step error and is blind to a physical
+instability that is about to run away.**
+
+### What a regime-universal governor therefore needs
+
+The user's requirement is that it work for "low pressure glows, sheaths,
+cathode layers, streamers (high pressure), surface ionization waves". From this
+measurement, three signals are needed, and only two exist:
+
+1. **local truncation error** -- exists (temporal error PI), dimensionless
+   against its target. NECESSARY, NOT SUFFICIENT: blind to the instability.
+2. **outer-coupling margin** -- exists (`coupling margin`, keyed on the Aitken
+   omega, dimensionless). It backs dt off before a step fails, which is why
+   discards are near-nonexistent.
+3. **A GROWTH-RATE signal, which DOES NOT EXIST.** The instability that
+   defeated the coarse arms has a physical rate -- the ionisation e-folding
+   `gamma = nu_iz - nu_loss`, measured at 0.400 ns here. A dt that resolves the
+   local error to 1e-9 but is comparable to `1/gamma` cannot follow the
+   physics. `dt * gamma << 1` is DIMENSIONLESS and is the same requirement for
+   a glow, a streamer or a surface wave -- it is exactly the regime-independent
+   criterion the Courant caps are a crude proxy for.
+
+**That is the proposal: replace the hand-set Courant caps with `dt*gamma`**,
+where gamma is the fastest local growth rate the chemistry itself reports.
+`nu_iz` is already computed every step for the source terms, so the signal is
+available and costs nothing. Unlike a Courant number its threshold is
+physical -- "resolve the fastest growth" -- and therefore transfers between
+regimes without retuning.
+
 ## Staged plan
 
 1. **DONE -- step 1:** `rho` is not usable; the rejection path is untested.
