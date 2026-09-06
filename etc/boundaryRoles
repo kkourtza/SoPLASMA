@@ -324,6 +324,11 @@ ballastedElectrode
         type            fixedValue;
         value           uniform 0;
     }
+    // A metal surface, exactly as drivenElectrode: what the CIRCUIT does is
+    // invisible to the species, which see a conductor either way. Dropping
+    // this block is what broke both roles on 2026-09-06 -- the electrostatics
+    // half is not the whole role.
+    plasmaTransport { surface conductor; }
 }
 
 currentDrivenElectrode
@@ -361,6 +366,7 @@ currentDrivenElectrode
         type            fixedValue;
         value           uniform 0;
     }
+    plasmaTransport { surface conductor; }
 }
 
 insulatingWall
