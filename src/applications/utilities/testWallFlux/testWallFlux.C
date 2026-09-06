@@ -517,28 +517,59 @@ int main()
         // is used with the other branch's extraction formula. Without this,
         // the two checks above could both be passing on an identity that
         // holds for any f.
+        //
+        // SCAN FOR THE WORST POINT rather than picking one. First written with
+        // a single Pe = 100 sample, where BOTH forms are drift-dominated and
+        // differ by only 1% -- so the check FAILED its own 1% threshold and
+        // convicted nothing. The discrepancy peaks at moderate Pe, near 1,
+        // where diffusion and drift are comparable and the two denominators
+        // genuinely disagree: 18% at Pe = 1, r = 0, against 1% at Pe = 100.
+        // A liveness control aimed at the weakest point in its own domain is
+        // not a control.
         {
-            const scalar Pe = 100.0, r = 0.0, ud = Pe*g;
-            const scalar W = (1.0 - r)/(1.0 + r)*A + std::max(scalar(0), ud);
-            const scalar uEff = W - ud, nc = 1.0;
+            scalar worstA = 0, peA = 0, worstB = 0, peB = 0;
 
-            const scalar fStd = uEff/(g + uEff);
-            const scalar npStd = (1.0 - fStd)*nc;
-            const scalar GstdViaSG =
-                g*(Bern(-Pe)*nc - Bern(Pe)*npStd);
+            for (int ip = 0; ip < 9; ++ip)
+            {
+                for (int ir = 0; ir < 4; ++ir)
+                {
+                    const scalar Pe = peList[ip];
+                    const scalar r  = rList[ir];
+                    if (Pe == 0.0) continue;      // the forms coincide there
+                    const scalar ud = Pe*g;
+                    const scalar W =
+                        (1.0 - r)/(1.0 + r)*A + std::max(scalar(0), ud);
+                    const scalar uEff = W - ud, nc = 1.0;
+
+                    // standard f, pushed through SG extraction
+                    const scalar fStd = uEff/(g + uEff);
+                    const scalar npStd = (1.0 - fStd)*nc;
+                    const scalar rA =
+                        g*(Bern(-Pe)*nc - Bern(Pe)*npStd)/(npStd*W);
+                    if (std::fabs(rA - 1.0) > worstA)
+                    {
+                        worstA = std::fabs(rA - 1.0); peA = Pe;
+                    }
+
+                    // SG f, pushed through standard extraction
+                    const scalar fSG = uEff/(g*Bern(Pe) + W);
+                    const scalar npSG = (1.0 - fSG)*nc;
+                    const scalar rB =
+                        (g*(nc - npSG) + ud*npSG)/(npSG*W);
+                    if (std::fabs(rB - 1.0) > worstB)
+                    {
+                        worstB = std::fabs(rB - 1.0); peB = Pe;
+                    }
+                }
+            }
+
             check("...and it CONVICTS the standard f under SG extraction",
-                  std::fabs(GstdViaSG - npStd*W)
-                      > 0.01*std::fabs(npStd*W),
-                  fmt("ratio %.3f at Pe = 100", GstdViaSG/(npStd*W)));
+                  worstA > 0.10,
+                  fmt("worst %.1f%% off, at Pe = %g", 100.0*worstA, peA));
 
-            const scalar fSG = uEff/(g*Bern(Pe) + W);
-            const scalar npSG = (1.0 - fSG)*nc;
-            const scalar GsgViaStd = g*(nc - npSG) + ud*npSG;
             check("...and it CONVICTS the SG f under standard extraction",
-                  std::fabs(GsgViaStd - npSG*W)
-                      > 0.01*std::fabs(npSG*W),
-                  fmt("ratio %.3f at Pe = 100 -- THIS is the number I"
-                      " misreported as a defect", GsgViaStd/(npSG*W)));
+                  worstB > 0.10,
+                  fmt("worst %.1f%% off, at Pe = %g", 100.0*worstB, peB));
         }
 
         // And that the two f agree where they must: as Pe -> 0 the drift
