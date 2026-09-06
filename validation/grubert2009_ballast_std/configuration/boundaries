@@ -31,7 +31,7 @@ cathode
     // circuit declared in system/plasmaSimulationControls. See
     // doc/external-circuit-plan.md for why a fixed-voltage gap above
     // breakdown cannot select an operating point.
-    kind        ballastedElectrode;
+    kind        circuitDrivenElectrode;
 
     // THE CIRCUIT, declared on the electrode it feeds. One place: the patch
     // name is never written twice, so it cannot drift.

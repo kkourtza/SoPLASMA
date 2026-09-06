@@ -31,7 +31,7 @@ cathode
     // circuit declared in system/plasmaSimulationControls. See
     // doc/external-circuit-plan.md for why a fixed-voltage gap above
     // breakdown cannot select an operating point.
-    kind        ballastedElectrode;
+    kind        circuitDrivenElectrode;
 
     // THE CIRCUIT, declared on the electrode it feeds. One place: the patch
     // name is never written twice, so it cannot drift.
@@ -96,7 +96,7 @@ cathode
         // the IONISATION and SCREENING times (both ~1.5e-10 s) while staying
         // simulable: 5e-14 F gives 5 us, gentle by 3e4 and comparable to the
         // 4.5 us ion transit.
-        capacitance   5e-15;
+        capacitance   5e-14;
     }
 
     gammaSEE            0.06;

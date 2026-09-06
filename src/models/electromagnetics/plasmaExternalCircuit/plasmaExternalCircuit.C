@@ -16,6 +16,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     type_("none"),
     electrode_(word::null),
     patchi_(-1),
+    compliance_(0.0),
     R_(0.0),
     Cext_(0.0),
     relax_(1.0),
@@ -30,7 +31,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     //
     // It used to live in system/plasmaSimulationControls with an `electrode`
     // key naming the patch -- so the patch was named twice, once there and
-    // once as `kind ballastedElectrode` in configuration/boundaries. Two
+    // once as `kind circuitDrivenElectrode` in configuration/boundaries. Two
     // copies of one name is a defect even while they agree (CLAUDE.md G1),
     // and the failure mode is silent: rename the patch in one file and the
     // circuit quietly drives nothing.
@@ -39,7 +40,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     //
     //     cathode
     //     {
-    //         kind        ballastedElectrode;
+    //         kind        circuitDrivenElectrode;
     //         circuit
     //         {
     //             type          seriesResistor;
@@ -56,9 +57,33 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     {
         if (!iter().isDict()) continue;
         const dictionary& pd = iter().dict();
-        if (pd.getOrDefault<word>("kind", word::null) == "ballastedElectrode")
+        const word kind = pd.getOrDefault<word>("kind", word::null);
+
+        if (kind == "circuitDrivenElectrode")
         {
             ballasted.append(iter().keyword());
+        }
+        // THE OLD NAME IS FATAL, NOT SILENTLY IGNORED.
+        //
+        // Renamed 2026-09-06. Accepting `ballastedElectrode` quietly would be
+        // survivable; IGNORING it is not, and ignoring is what an unknown
+        // `kind` does here -- the patch would fall through to whatever the
+        // role library makes of it and the circuit would simply not exist,
+        // leaving a fixed-voltage electrode above breakdown. That is the
+        // failure this class was written to remove, so it must not be
+        // reachable by a stale spelling.
+        else if (kind == "ballastedElectrode")
+        {
+            FatalIOErrorInFunction(pd)
+                << "`kind ballastedElectrode` was renamed to"
+                << " `circuitDrivenElectrode` on 2026-09-06." << nl
+                << "    The role names WHAT the surface is, and `ballasted`"
+                << " named one particular circuit --" << nl
+                << "    it became wrong as soon as `type currentSource`, which"
+                << " has no ballast, could sit" << nl
+                << "    on it. The `circuit` sub-dictionary is unchanged;"
+                << " only the `kind` line changes." << nl
+                << exit(FatalIOError);
         }
     }
 
@@ -73,7 +98,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     if (ballasted.size() > 1)
     {
         FatalErrorInFunction
-            << "several patches are declared `ballastedElectrode`: "
+            << "several patches are declared `circuitDrivenElectrode`: "
             << ballasted << nl
             << "    Only ONE external circuit is supported today. Coupling"
             << " several electrodes through one network is a netlist -- stage"
@@ -88,7 +113,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     {
         FatalIOErrorInFunction(pd)
             << "patch `" << electrode_ << "` is declared"
-            << " `kind ballastedElectrode` but carries no `circuit`"
+            << " `kind circuitDrivenElectrode` but carries no `circuit`"
             << " sub-dictionary." << nl
             << "    A ballasted electrode's potential is an OUTPUT of its"
             << " circuit, so without one there is nothing to compute it from."
@@ -111,18 +136,45 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     // ballast silently got a resistive one -- the class of failure where the
     // run completes and the answer is for a different circuit.
     type_ = cd.get<word>("type");
-    if (type_ != "seriesResistor" && type_ != "seriesRC")
+    if (type_ != "seriesResistor" && type_ != "seriesRC"
+     && type_ != "currentSource")
     {
         FatalIOErrorInFunction(cd)
             << "circuit/type is `" << type_
             << "`, which is not implemented." << nl
-            << "    Available: seriesResistor, seriesRC" << nl
+            << "    Available: seriesResistor, seriesRC, currentSource" << nl
             << "    Planned (doc/external-circuit-plan.md): seriesRLC,"
-            << " currentSource, matchedRF." << nl
+            << " matchedRF." << nl
             << exit(FatalIOError);
     }
 
-    R_ = cd.get<scalar>("resistance");
+    const bool isSource = (type_ == "currentSource");
+
+    // A CURRENT SOURCE HAS NO BALLAST, so `resistance` is not merely optional
+    // here -- supplying it means the case is asking for something this type
+    // does not do, and silently ignoring it is how a case ends up believing it
+    // has a ballast it does not have.
+    if (isSource)
+    {
+        if (cd.found("resistance"))
+        {
+            FatalIOErrorInFunction(cd)
+                << "circuit/resistance is set on a `currentSource`, which has"
+                << " no ballast." << nl
+                << "    A current source IS the R -> infinity limit of a"
+                << " ballast: it regulates the" << nl
+                << "    current directly, so R has no meaning. Either remove"
+                << " `resistance`, or use" << nl
+                << "    `type seriesRC` with that R and"
+                << " `sourceVoltage = V_gap + R*I_set`." << nl
+                << exit(FatalIOError);
+        }
+        R_ = 0.0;
+    }
+    else
+    {
+        R_ = cd.get<scalar>("resistance");
+    }
 
     // THE SHUNT CAPACITANCE, and why a real rig needs one.
     //
@@ -147,7 +199,11 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     //
     // It ADDS to the gap capacitance rather than replacing it: both are
     // physically in parallel across the electrode.
-    Cext_ = (type_ == "seriesRC") ? cd.get<scalar>("capacitance") : 0.0;
+    // For a current source C is OPTIONAL but strongly recommended: it is what
+    // sets the pre-ignition ramp rate, dV/dt = I_set/C. See update().
+    Cext_ = (type_ == "seriesRC")
+          ? cd.get<scalar>("capacitance")
+          : (isSource ? cd.getOrDefault<scalar>("capacitance", 0.0) : 0.0);
 
     if (type_ == "seriesRC" && Cext_ <= 0)
     {
@@ -158,9 +214,15 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
             << " rather than an RC that is not one." << nl
             << exit(FatalIOError);
     }
+    if (isSource && Cext_ < 0)
+    {
+        FatalIOErrorInFunction(cd)
+            << "circuit/capacitance must not be negative; got " << Cext_
+            << "." << nl << exit(FatalIOError);
+    }
     relax_ = cd.getOrDefault<scalar>("relaxation", 1.0);
 
-    if (R_ <= 0)
+    if (!isSource && R_ <= 0)
     {
         FatalIOErrorInFunction(cd)
             << "circuit/resistance must be positive; got " << R_ << "." << nl
@@ -179,7 +241,51 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
             << nl << exit(FatalIOError);
     }
 
-    source_ = Function1<scalar>::New("sourceVoltage", cd);
+    if (isSource)
+    {
+        // THE COMPLIANCE VOLTAGE IS REQUIRED, and it is what fixes the sign.
+        //
+        // Every real current supply has a voltage rail it cannot exceed, and
+        // that rail is also what makes the pre-ignition phase well posed: with
+        // no plasma there is no voltage at which the demanded current flows,
+        // so an unbounded regulator would run away. The rail is SIGNED,
+        // because the user knows their supply's polarity, and `setCurrent` is
+        // then a MAGNITUDE -- which removes the one sign convention nobody can
+        // be expected to guess (I_cond is negative on a negative electrode,
+        // verified against postProcessing/externalCircuit/circuit.csv on
+        // 2026-09-06).
+        compliance_ = cd.get<scalar>("compliance");
+
+        if (compliance_ == 0)
+        {
+            FatalIOErrorInFunction(cd)
+                << "circuit/compliance is zero, so the source can never drive"
+                << " any current." << nl
+                << "    It is the supply's voltage rail, SIGNED: negative for"
+                << " a cathode." << nl
+                << exit(FatalIOError);
+        }
+
+        setCurrent_ = Function1<scalar>::New("setCurrent", cd);
+
+        // A magnitude, so a negative entry is a sign error the user made once
+        // and would otherwise chase for an afternoon.
+        const scalar I0 = setCurrent_->value(mesh_.time().value());
+        if (I0 < 0)
+        {
+            FatalIOErrorInFunction(cd)
+                << "circuit/setCurrent is negative (" << I0 << " A at t = "
+                << mesh_.time().value() << ")." << nl
+                << "    setCurrent is a MAGNITUDE in amperes; the POLARITY"
+                << " comes from the sign of" << nl
+                << "    `compliance` (" << compliance_ << " V here)." << nl
+                << exit(FatalIOError);
+        }
+    }
+    else
+    {
+        source_ = Function1<scalar>::New("sourceVoltage", cd);
+    }
 
     patchi_ = mesh_.boundaryMesh().findPatchID(electrode_);
     if (patchi_ < 0)
@@ -233,7 +339,40 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
         }
     }
 
-    Info<< "plasmaExternalCircuit: seriesResistor on patch `" << electrode_
+    if (type_ == "currentSource")
+    {
+        Info<< "plasmaExternalCircuit: currentSource on patch `" << electrode_
+            << "`" << nl
+            << "    I_set = "
+            << setCurrent_->value(mesh_.time().value()) << " A (magnitude),"
+            << " compliance " << compliance_ << " V, C_ext = " << Cext_
+            << " F" << nl
+            << "    THE ELECTRODE POTENTIAL IS AN OUTPUT, and so is the gap"
+            << " voltage: the current is what is imposed. This is the"
+            << " R -> infinity limit of a ballast, and it is the STRONGEST"
+            << " pin on the operating point available." << nl
+            << "    BEFORE IGNITION there is no voltage at which I_set flows,"
+            << " so the source does what a real one does: it charges the"
+            << " electrode capacitance at constant current, dV/dt = I_set/C"
+            << " = "
+            << (Cext_ > 0
+                 ? name(setCurrent_->value(mesh_.time().value())/Cext_)
+                 : word("(C_gap only -- set `capacitance` to control it)"))
+            << " V/s, until the gas breaks down." << nl
+            << "    AFTER IGNITION it regulates: the update is a damped Newton"
+            << " step on I(V) using the secant conductance, whose fixed point"
+            << " is I_cond = I_set exactly." << nl
+            << "    THE COMPLIANCE RAIL BOUNDS IT BOTH WAYS. If the discharge"
+            << " cannot pass I_set at any voltage up to the rail, the source"
+            << " sits at the rail -- which is a real supply's behaviour and"
+            << " NOT a solver failure. Watch for it in circuit.csv." << nl
+            << "    It uses the CONDUCTION current from the dischargeCurrent"
+            << " diagnostic, which must therefore be enabled." << nl
+            << "    Starting from V = " << V_ << " V." << endl;
+    }
+    else
+    {
+    Info<< "plasmaExternalCircuit: " << type_ << " on patch `" << electrode_
         << "`" << nl
         << "    V_electrode(t) = V_source(t) - R*I_circuit,  R = " << R_
         << " Ohm" << (relax_ < 1 ? ", relaxation " : "")
@@ -249,12 +388,33 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
         << " is carried by the RC term, not taken from I_total." << nl
         << "    Starting from the open-circuit value V = " << V_ << " V."
         << endl;
+    }
 
     if (Pstream::master())
     {
         const fileName dir(mesh_.time().globalPath()/"postProcessing"/"externalCircuit");
         mkDir(dir);
         file_.reset(new OFstream(dir/"circuit.csv"));
+        if (type_ == "currentSource")
+        {
+            *file_
+                << "# external circuit: currentSource, I_cond regulated to"
+                   " I_set" << nl
+                << "# I_set = "
+                << setCurrent_->value(mesh_.time().value())
+                << " A (magnitude), compliance = " << compliance_
+                << " V, C_ext = " << Cext_ << " F, electrode = "
+                << electrode_ << nl
+                << "# V_source is the SET CURRENT here, signed by the"
+                   " compliance rail, so the column" << nl
+                << "# reads as the target and I_cond as what was achieved."
+                   " V_electrode AT the rail means" << nl
+                << "# the source ran out of compliance -- real behaviour, not"
+                   " a failure." << nl
+                << "time,I_set,I_cond,V_electrode,g_dIdV" << endl;
+        }
+        else
+        {
         *file_ << "# external circuit: V_electrode = V_source - R*I_circuit" << nl
                << "# R = " << R_ << " Ohm, electrode = " << electrode_ << nl
                << "# I_cond is the CONDUCTION current. The capacitive part is"
@@ -264,6 +424,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
                << "# equation evaluated explicitly, which amplifies by R*C/dt"
                   " per step (885 measured)." << nl
                << "time,V_source,I_cond,V_electrode,g_dIdV" << endl;
+        }
     }
 }
 
@@ -284,6 +445,81 @@ void Foam::plasmaExternalCircuit::update
 
     const scalar t  = mesh_.time().value();
     const scalar dt = mesh_.time().deltaTValue();
+
+    // ------------------------------------------------------------------
+    // CURRENT SOURCE: the current is imposed, the voltage is the unknown.
+    // ------------------------------------------------------------------
+    //
+    // A current source regulates the TERMINAL current, and the terminal
+    // current is conduction plus the displacement drawn by the electrode
+    // capacitance:
+    //
+    //     I_set = I_cond + C dV/dt                                     (1)
+    //
+    // Backward Euler on (1), with the plasma linearised by the same secant
+    // conductance g = dI/dV the ballast uses, gives ONE update that is correct
+    // in both regimes without a switch between them:
+    //
+    //     dV = dt (I_set - I_cond) / (C + |g| dt)                       (2)
+    //
+    // BEFORE IGNITION g -> 0 and (2) becomes dV = dt I_set / C: the source
+    // charges the electrode capacitance at constant current, dV/dt = I_set/C.
+    // That is EXACTLY what a real current-limited supply does into a
+    // capacitor, and it means the pre-ignition voltage ramp is a consequence
+    // of the circuit rather than a ramp anybody has to write. The ramp rate is
+    // a design knob: it is set by C alone.
+    //
+    // AFTER IGNITION g is large, (2) becomes dV = (I_set - I_cond)/|g|, a
+    // damped Newton step on I(V). Its fixed point is I_cond = I_set exactly,
+    // for any g.
+    //
+    // |g| RATHER THAN g, for the reason documented at the secant estimate
+    // below: dI/dV is genuinely negative through a glow's negative
+    // differential resistance, and a signed g would inflate the step and
+    // invert its direction precisely where the discharge is stiffest.
+    //
+    // WHY THIS IS THE STRONGEST AVAILABLE PIN ON THE OPERATING POINT.
+    // A ballast's short-circuit current is I_sc/I_op = 1 + V_gap/(R I_op), so
+    // it only pins the current in the limit R -> infinity with
+    // V_src = V_gap + R I_op -- which IS this model. Measured 2026-09-06 on
+    // the Grubert case: 5.89x the operating point at R = 1e8, 1.10x at
+    // R = 5e9. A current source is the 1.00x end of that sweep.
+    if (type_ == "currentSource")
+    {
+        const scalar Iset = sign(compliance_)*setCurrent_->value(t);
+        const scalar C    = Cgap + Cext_;
+
+        updateSecantConductance(Icond);
+
+        Vprev_ = V_;
+        Iprev_ = Icond;
+        havePrev_ = true;
+
+        const scalar dV = dt*(Iset - Icond)/max(C + g_*dt, VSMALL);
+
+        V_ = started_ ? (V_ + relax_*dV) : (V_ + dV);
+        started_ = true;
+
+        // THE COMPLIANCE RAIL, clamped on BOTH sides.
+        //
+        // Above the rail the supply physically cannot go. Below zero it would
+        // have to reverse polarity, which a single-quadrant supply cannot do
+        // either -- and an unclamped regulator does try to, because
+        // overshooting the set current asks for a voltage of the other sign.
+        V_ = min(max(V_, min(compliance_, scalar(0))),
+                 max(compliance_, scalar(0)));
+
+        ePotential.boundaryFieldRef()[patchi_] == V_;
+
+        if (file_.valid() && Pstream::master())
+        {
+            *file_ << t << ',' << Iset << ',' << Icond << ',' << V_
+                   << ',' << g_ << endl;
+        }
+
+        return;
+    }
+
     const scalar Vsrc = source_->value(t);
 
     // THE ELECTRODE SEES AN RC CIRCUIT, NOT A RESISTOR.
@@ -309,6 +545,33 @@ void Foam::plasmaExternalCircuit::update
     // step old, the discharge outruns it, and the ballast demands a voltage
     // the source cannot supply. Including g makes the update contract exactly
     // where the discharge is stiff, because Rg then dominates the denominator.
+    updateSecantConductance(Icond);
+
+    Vprev_ = V_;
+    Iprev_ = Icond;
+    havePrev_ = true;
+
+    const scalar Rg = R_*g_;   // g_ is already a magnitude
+
+    const scalar Vtarget =
+        (Vsrc - R_*Icond + (Rg + a)*V_)/(1.0 + Rg + a);
+
+    // Optional extra damping. Not needed for stability; 1 by default.
+    V_ = started_ ? (V_ + relax_*(Vtarget - V_)) : Vtarget;
+    started_ = true;
+
+    ePotential.boundaryFieldRef()[patchi_] == V_;
+
+    if (file_.valid() && Pstream::master())
+    {
+        *file_ << t << ',' << Vsrc << ',' << Icond << ',' << V_
+               << ',' << g_ << endl;
+    }
+}
+
+
+void Foam::plasmaExternalCircuit::updateSecantConductance(const scalar Icond)
+{
     if (havePrev_)
     {
         const scalar dV = V_ - Vprev_;
@@ -348,27 +611,6 @@ void Foam::plasmaExternalCircuit::update
             // heuristic.
             g_ = mag(gNew);
         }
-    }
-
-    Vprev_ = V_;
-    Iprev_ = Icond;
-    havePrev_ = true;
-
-    const scalar Rg = R_*g_;   // g_ is already a magnitude
-
-    const scalar Vtarget =
-        (Vsrc - R_*Icond + (Rg + a)*V_)/(1.0 + Rg + a);
-
-    // Optional extra damping. Not needed for stability; 1 by default.
-    V_ = started_ ? (V_ + relax_*(Vtarget - V_)) : Vtarget;
-    started_ = true;
-
-    ePotential.boundaryFieldRef()[patchi_] == V_;
-
-    if (file_.valid() && Pstream::master())
-    {
-        *file_ << t << ',' << Vsrc << ',' << Icond << ',' << V_
-               << ',' << g_ << endl;
     }
 }
 

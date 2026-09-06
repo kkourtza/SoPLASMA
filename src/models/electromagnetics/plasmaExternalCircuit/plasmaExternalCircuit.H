@@ -65,7 +65,7 @@ class plasmaExternalCircuit
         //- Off unless an `externalCircuit` sub-dictionary asks for it.
         bool enabled_;
 
-        //- Circuit topology. Only `seriesResistor` today.
+        //- Circuit topology: seriesResistor, seriesRC or currentSource.
         word type_;
 
         //- The driven electrode patch this circuit feeds.
@@ -75,7 +75,19 @@ class plasmaExternalCircuit
         label patchi_;
 
         //- Open-circuit source voltage V_source(t) [V].
+        //  Unset for `currentSource`, which imposes a current instead.
         autoPtr<Function1<scalar>> source_;
+
+        //- Regulated current MAGNITUDE I_set(t) [A], for `currentSource`.
+        //  A magnitude: the polarity comes from the sign of compliance_, so
+        //  the user never has to know the internal sign of I_cond.
+        autoPtr<Function1<scalar>> setCurrent_;
+
+        //- Compliance (rail) voltage [V], SIGNED, for `currentSource`.
+        //  Every real supply has one, and it is also what makes the
+        //  pre-ignition phase well posed: with no plasma there is no voltage
+        //  at which I_set flows.
+        scalar compliance_;
 
         //- Ballast resistance [Ohm].
         scalar R_;
@@ -121,13 +133,18 @@ class plasmaExternalCircuit
         plasmaExternalCircuit(const plasmaExternalCircuit&) = delete;
         void operator=(const plasmaExternalCircuit&) = delete;
 
+        //- Secant estimate of the plasma's differential conductance
+        //  g = |dI/dV| [S] from the last two accepted steps. Shared by every
+        //  topology, deliberately: two copies of this would drift.
+        void updateSecantConductance(const scalar Icond);
+
 
 public:
 
     //- Construct from the mesh alone.
     //
     //  The circuit is read from configuration/boundaries, on the patch
-    //  declared `kind ballastedElectrode`. There is no separate circuit
+    //  declared `kind circuitDrivenElectrode`. There is no separate circuit
     //  dictionary and no `electrode` key: the electrode a circuit feeds is
     //  the patch it was written on, so the name cannot be stated twice and
     //  cannot drift.

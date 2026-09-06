@@ -53,13 +53,37 @@ Baselines, absolute paths:
 - `/home/kkourtza/soplasma-scratch/validation/grubert2009_ballast`
   R = 1e8, C = 5e-14, V_src = -602 V.  tau = R*C = 5.0 us.
 - `/home/kkourtza/soplasma-scratch/validation/grubert2009_R1e9`
-  R = 1e9, C = 5e-15, V_src = -1522 V. tau = 5.0 us.
+  R = 1e9, C = 5e-14, V_src = -1522 V. tau = 50 us.
 - `/home/kkourtza/soplasma-scratch/validation/grubert2009_R5e9`
-  R = 5e9, C = 1e-15, V_src = -5610 V. tau = 5.0 us.
+  R = 5e9, C = 5e-14, V_src = -5610 V. tau = 250 us.
 
 **What differs:** R, by 50x across the sweep.
-**What must match, and does:** tau = R*C is held at 5.0 us in every arm, so the
-voltage RISE RATE is the same and R is the only variable. V_src is not free
+**What must match, and does:** **C is held at 5e-14 F in every arm**, so R is
+the only circuit variable. `tau = R*C` therefore does NOT match across arms
+(5 us / 50 us / 250 us) -- and holding C rather than tau is a deliberate
+correction to an earlier version of this file.
+
+CORRECTED 2026-09-06, before the arms passed breakdown. The first version held
+tau = 5 us fixed and claimed that made the voltage rise rate equal. It does
+not. The rise rate at breakdown is `dV/dt ~ V_src/tau`, and V_src is pinned by
+the load line to `500 + R*I_op`, so at fixed tau it scales with R:
+
+    tau fixed at 5 us:   dV/dt = 1.2e8 -> 3.0e8 -> 1.1e9 V/s   (UP 9.3x)
+    C   fixed at 5e-14:  dV/dt = 1.2e8 -> 3.0e7 -> 2.2e7 V/s   (DOWN 5.4x)
+
+The first version therefore made the approach to breakdown 9x HARSHER as R
+grew, confounding the thing being tested against the one intervention already
+known to matter -- a gentle rise was the whole reason breakdown became well
+behaved. At fixed C the rise rate instead falls and converges to
+`I_op/C = 2.0e7 V/s`, its current-source limit, so larger R is a tighter
+current pin AND a gentler rise: the two effects agree instead of cancelling.
+
+Fixed C is also the physically honest sweep. C is stray capacitance, a property
+of the rig; R is the ballast, the knob an experimenter actually turns. Nobody
+retunes their coax to keep R*C constant.
+
+Consequence to expect: breakdown arrives LATER at larger R (1.8, 6.3, 8.1 us
+from the RC rise), and endTime 45 us covers all three. V_src is not free
 either -- it is fixed by the load line through the same operating point. Mesh,
 chemistry, `electronEnergyModel LMEA`, Courant settings, and now
 `driftDiffusionFluxScheme standard` are identical.

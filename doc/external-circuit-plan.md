@@ -1,7 +1,8 @@
 # External circuit coupling — staged plan
 
 Written 2026-09-06, after the Grubert dc glow showed why the capability is
-needed. Stage 1 is IMPLEMENTED; stages 2-4 are design.
+needed. Stages 1 and 2a are IMPLEMENTED, stage 3 is half done,
+stage 4 was decided against; the rest is design.
 
 ## Why the framework needs this at all
 
@@ -77,7 +78,7 @@ computable, and the characteristic is what tells you whether a discharge is
 normal, abnormal or arcing — the very distinction that explains the Grubert
 runaway.
 
-## Stage 2a — `currentSource`, and why it comes FIRST
+## Stage 2a — `currentSource` (IMPLEMENTED 2026-09-06)
 
 ### What a current source is, physically
 
@@ -143,8 +144,72 @@ rather than depending on it.
   A current source WITHOUT a compliance limit is a modelling error before
   ignition, and the implementation must refuse it rather than produce a
   spectacular transient.
+
+  **REFINED BY THE IMPLEMENTATION, 2026-09-06.** The two treatments above were
+  framed as alternatives the case must choose between. They are not: keeping
+  the `C dV/dt` term in the regulated equation makes the pre-ignition phase
+  physical *by itself*, with no mode switch and no `softStart` key. With no
+  plasma, `dV = dt I_set / C` -- the source charges the electrode capacitance
+  at constant current, which is what a real current-limited supply does into a
+  capacitor, and the gap voltage RAMPS to breakdown on its own at a rate the
+  user controls through C. `softStart` was therefore NOT implemented: it would
+  be a hand-written ramp standing in for one the circuit already produces,
+  which is precisely what G1 forbids.
+
+  What DID survive is `compliance`, and it is required as this section says --
+  but for a sharper reason than "below ignition it behaves as a fixed-voltage
+  source at V_max". It never behaves as a fixed-voltage source; it behaves as a
+  constant-current charger, and the rail is what stops the ramp if the gas
+  never breaks down at all.
 * **Fast transients (pulsed, RF).** A current source is the wrong instrument:
   there the circuit's own dynamics ARE the physics. Use seriesRC/RLC.
+
+### THE DISCRETISATION AS IMPLEMENTED
+
+A current source regulates the TERMINAL current, which is conduction plus the
+displacement drawn by the electrode capacitance:
+
+    I_set = I_cond + C dV/dt                                            (1)
+
+Backward Euler on (1), with the plasma linearised by the same secant
+conductance `g = dI/dV` the ballast uses, gives ONE update that is correct in
+both regimes with no switch between them:
+
+    dV = dt (I_set - I_cond) / (C + |g| dt)                             (2)
+
+**Before ignition** `g -> 0` and (2) becomes `dV = dt I_set / C`: the source
+charges the electrode capacitance at constant current, `dV/dt = I_set/C`. That
+is exactly what a real current-limited supply does into a capacitor, and it
+means **the pre-ignition voltage ramp is a consequence of the circuit rather
+than a ramp anybody writes**. Its rate is a design knob set by C alone -- which
+is the same lever that made the ballasted case break down gently.
+
+**After ignition** `g` is large and (2) becomes `dV = (I_set - I_cond)/|g|`, a
+damped Newton step on `I(V)` whose fixed point is `I_cond = I_set` exactly, for
+any `g`.
+
+`|g|` rather than `g`, for the reason documented on the ballast: `dI/dV` is
+genuinely negative through a glow's negative differential resistance, and a
+signed `g` would inflate the step and invert its direction precisely where the
+discharge is stiffest.
+
+The **compliance rail** is clamped on both sides. Above it the supply cannot
+go. Below zero it would have to reverse polarity, which a single-quadrant
+supply cannot do either -- and an unclamped regulator does try to, because
+overshooting the set current asks for a voltage of the other sign.
+
+### IT IS THE LIMIT OF THE BALLAST SWEEP, which is how it was validated first
+
+A ballast's short-circuit current, with the load line pinned through the
+operating point (`V_src = V_gap + R I_op`), is
+
+    I_sc/I_op = 1 + V_gap/(R I_op)
+
+so a ballast only pins the current as `R -> infinity` -- and that limit IS this
+model. Measured on the Grubert case, 2026-09-06: 5.89x the operating point at
+R = 1e8, 1.49x at 1e9, 1.10x at 5e9. A current source is the 1.00x end of the
+same sweep, which is why the R sweep in `validation/grubert2009_R*/COMPARE.md`
+tests this model's physics before the model is used.
 
 ### Binding it in the generator, so the user writes one thing
 
@@ -152,22 +217,52 @@ Same route as the ballast, on the electrode it feeds:
 
     cathode
     {
-        kind        ballastedElectrode;      // role name to be revisited:
-                                             // "drivenByCircuit" is truer once
-                                             // the source need not be a ballast
+        kind        circuitDrivenElectrode;
         circuit
         {
             type        currentSource;
-            current     -1.022e-6;           // [A], or a Function1 to sweep
-            compliance  -1500;               // [V] supply limit, REQUIRED
+            setCurrent  1.022e-6;   // [A] MAGNITUDE, or a Function1 to sweep
+            compliance  -1500;      // [V] supply rail, SIGNED, REQUIRED
+            capacitance 5e-14;      // [F] optional; sets dV/dt = I_set/C
         }
     }
 
-and nothing else: the electrode is the patch it is written on, `plasmaCreate-
-SpeciesFields` emits `fixedValue` for it as now, and the solver reads it
-through `boundaryRoleLibrary::caseDeclaration`. Current in AMPERES, not a
-density -- the electrode area is a property of the mesh and deriving j from it
-is the solver's job, not the user's.
+and nothing else: the electrode is the patch it is written on,
+`plasmaCreateSpeciesFields` emits `fixedValue` for it as now, and the solver
+reads it through `boundaryRoleLibrary::caseDeclaration`. Current in AMPERES,
+not a density -- the electrode area is a property of the mesh and deriving j
+from it is the solver's job, not the user's.
+
+**`kind ballastedElectrode` was RENAMED to `circuitDrivenElectrode`** on
+2026-09-06, resolving the open question this section used to carry. The role
+says WHAT the surface is, and `ballasted` named one particular circuit, so it
+became wrong the moment a topology with no ballast could sit on it. The old
+spelling is FATAL rather than ignored, because an unknown `kind` here falls
+through to a plain fixed-voltage electrode -- the exact failure this whole
+class exists to remove.
+
+**The sign convention, stated once.** `sourceVoltage` and `compliance` are
+SIGNED (negative for a cathode); `setCurrent` is a MAGNITUDE whose polarity
+comes from the sign of `compliance`. This is deliberate: `I_cond` is negative
+on a negative electrode -- verified against
+`postProcessing/externalCircuit/circuit.csv` on 2026-09-06, not assumed -- and
+that is the one convention a user cannot be expected to guess. Both a negative
+`setCurrent` and a `resistance` on a `currentSource` are fatal with a message
+saying why.
+
+### WHAT IS NOT YET VERIFIED
+
+Syntax-checked and reasoned, **but not yet run**: the build guard correctly
+refused to relink while the R sweep was running, so this has had no full
+`build-all.sh` and no case. Before it is used for a result it needs:
+
+1. a full `build-all.sh` reporting BUILD-COMPLETE;
+2. a case where the regulated current is reached and held, checked against
+   `I_cond` in `circuit.csv` -- the fixed point is exact, so agreement should
+   be to solver tolerance, not to a few percent;
+3. a case that HITS the compliance rail, to confirm the clamp behaves as a real
+   supply rather than as a failure. A guard whose silence has not been tested
+   is not a guard, and this one has two branches that only fire off-nominal.
 
 ## Stage 3 — IMPLICIT coupling, which is the real work
 

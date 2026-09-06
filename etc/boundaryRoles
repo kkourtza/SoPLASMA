@@ -290,17 +290,35 @@ openBoundary
     plasmaTransport { surface open; }
 }
 
-ballastedElectrode
+circuitDrivenElectrode
 {
-    description "A conductor fed through an external circuit: its potential is an OUTPUT, set by V_source - R*I, not a waveform the user imposes.";
-    // The circuit is declared HERE, on the electrode it feeds, so its name is
-    // never written twice and cannot drift:
+    description "A conductor fed through an external circuit: its potential is an OUTPUT, set by the circuit and the plasma together, not a waveform the user imposes.";
+    // RENAMED from `ballastedElectrode` on 2026-09-06. The role says WHAT the
+    // surface IS -- an electrode driven by a circuit -- and `ballasted` named
+    // one particular circuit, so it became wrong the moment a second topology
+    // (currentSource, which has no ballast at all) could sit here. Per G3 a
+    // concept has one name; the old name is now fatal with a pointer to this
+    // one, rather than silently accepted.
+    //
+    // The circuit is declared HERE, on the electrode it feeds, so the patch
+    // name is never written twice and cannot drift:
     //
     //     circuit { type seriesResistor; sourceVoltage <Function1>;
     //               resistance <Ohm>; }
+    //     circuit { type seriesRC;       sourceVoltage <Function1>;
+    //               resistance <Ohm>; capacitance <F>; }
+    //     circuit { type currentSource;  setCurrent <Function1>;
+    //               compliance <V>; capacitance <F>; }
     //
-    // `type` selects the topology; today only seriesResistor, and an
-    // unrecognised name is fatal rather than silently resistive.
+    // `type` selects the topology, and an unrecognised name is fatal rather
+    // than silently resistive. WHICH KEYS ARE REQUIRED IS DECIDED BY `type`:
+    // a `resistance` on a currentSource is fatal too, because it means the
+    // case believes it has a ballast it does not have.
+    //
+    // SIGNS. `sourceVoltage` and `compliance` are SIGNED -- negative for a
+    // cathode -- and `setCurrent` is a MAGNITUDE, whose polarity comes from
+    // the sign of `compliance`. That is deliberate: it is the one convention
+    // a user cannot be expected to guess.
     requires    ( circuit );
     optional    { material none; gammaSEE -1; electronReflection -1; }
     electrostatics
