@@ -121,3 +121,93 @@ slow drift. Stop early if the electrode is clearly slewing.
    the Hagelaar wall-flux conditions (`ac1bc6a`). The standard branch has a
    documented singularity mode at the anode; if this run dies there, that is the
    first suspect.
+
+---
+
+# RESULT 2026-09-07: DIVERGED in 6.5 ns. Two errors of mine, both findable before launch.
+
+## What happened
+
+| quantity | seeded | at t = 6.46 ns | reference |
+|---|---|---|---|
+| n_e max | 2.585e15 | **1.378e19** (5330x) | 2.478e15 |
+| meanE max | <= 100 eV | **2644 eV -- PINNED at the table top** | -- |
+| V_electrode | ~-500 V | **+7041 V** | -500 V |
+| I_cond | ~1e-6 A | **-2.69e-2 A** (26 mA) | 1.022e-6 A |
+| dt | 1e-12 | 3.65e-15, with retries | -- |
+
+Probes: near-cathode `n_e` 9.31e18, `meanE` 1937 eV, `chargeDensity`
+**-0.1177 C/m^3 -- NEGATIVE**, i.e. electron-dominated where a cathode fall must
+be ion-dominated. Mid-gap `meanE` 1471 eV. The clamp fired at cells with
+`n_e = 7.4e17`, 900x the domain minimum, so this is NOT the empty-cell
+pathology -- it is a genuinely hot, dense plasma. Same terminal mode as
+`../grubert2009_spike` (electrode driven positive, double layer, no recovery)
+reached ~1500x faster.
+
+## ERROR 1 -- the phase 0 gate tested the wrong region
+
+`seed_rho0.py` gates on the avalanche margin at the **BULK** field: 57.5 Td,
+`1/nu_i` 4.84e-6 s against a 6e-9 s transit, 806x, "PASS". It never tested the
+**FALL**, where the seeded field is **13,206 Td** -- 230x higher and about four
+decades faster in ionisation. The gate checked the region where the answer was
+reassuring. This is the recurring failure in [[never-read-a-number-without-its-control]]:
+a quantity chosen where the error is not.
+
+**The correct gate is the TOWNSEND CRITERION**, and it convicts the seed with no
+run. Self-sustaining needs `alpha*d = ln(1 + 1/gamma) = 2.872` at gamma = 0.06.
+Measured on the seeded profile with our own `alphaN_vs_reducedE`:
+
+    alpha*d = 3.146   =>  net multiplication gamma*(exp(alpha d) - 1) = 1.33
+
+33% over unity -- a net GROWTH condition. And the excess is in the FALL, not the
+adjustable part: of the 3.146, **3.020 is accumulated by x/L = 0.30**, against a
+2.872 requirement, so **the fall alone over-satisfies the criterion**.
+
+**No gap voltage fixes it.** `alpha*d` has a MINIMUM near -500 V and rises in
+BOTH directions (3.146 at -500, 3.319 at -480, 4.682 at -400), because lowering
+|V| drives the bulk residual field more positive and its |E| larger. There is no
+self-sustaining root for this profile.
+
+  RETRACTED IN THE SAME BREATH: a bisection here reported "self-sustaining at
+  Vgap = 520.0 V, 1.040x Grubert" -- that is a BRACKET ENDPOINT, not a root
+  (`alpha*d` there is 3.17, not 2.872), and its apparent agreement with the
+  519.4 V from the field-free-bulk construction is COINCIDENCE. Recorded so the
+  wrong number is recognisable if it surfaced anywhere. Rule 22.
+
+## ERROR 2 -- R = 3e8 HALVED the current headroom, and the formula was already known
+
+`I_sc/I_op = 1 + V_gap/(R*I_op)` is recorded in memory. Applied:
+
+| R | V_src | I_sc | headroom |
+|---|---|---|---|
+| 1e8 (the old arms) | -602 | 6.02e-6 | **5.89x** |
+| **3e8 (this case)** | -806.6 | 2.69e-6 | **2.63x** |
+| 5e8 | -1011 | 2.02e-6 | 1.98x |
+
+Raising R to 3e8 made the ballast stiffer in VOLTAGE and cut the CURRENT
+headroom from 5.89x to 2.63x. The electrode flips as soon as `I > I_sc`, so a
+33%-over-multiplying seed only needs to reach 2.69 uA -- nanoseconds -- and then
+it is the unrecoverable positive-electrode mode. **The trade-off is intrinsic to
+a two-terminal ballast: stiffness in voltage IS loss of headroom in current**,
+and `currentSource` (R -> inf, headroom 1.0x) is the extreme, not the cure.
+
+I chose R = 3e8 from the ballast-drop argument alone and did not compute
+`I_sc/I_op` before launching, though the formula was in memory.
+
+## What this does and does not settle
+
+SETTLED: this seed is not in the basin, and the reason is quantitative and
+pre-computable -- 1.33x multiplication concentrated in the fall.
+NOT SETTLED: whether Grubert's profile is a fixed point. The construction never
+got close enough to ask. A seed must satisfy `alpha*d = 2.872` to be a candidate
+at all, and that is now the gate.
+
+## Also flagged: `2450 Td` is an UNSOURCED number
+
+"cathode fall E/N ~ 2450 Td" appears in `../grubert2009_spike/COMPARE.md`,
+`../grubert2009_fix_fast/COMPARE.md` (scoring a run at "0.81x") and
+`../grubert2009_spike/plot_profiles.py`, always labelled "(normal fall)". It is
+in NONE of the digitised Grubert material or its READMEs. G2 forbids exactly
+this -- a number somebody remembered, used as a reference. The seeded fall here
+needs ~13,000 Td to carry 500 V over this geometry, 5.4x that figure, so the two
+cannot both describe this case.
