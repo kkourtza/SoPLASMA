@@ -564,7 +564,42 @@ wanted. `|I_cond|` then reached 8.25e-8 against a 5e-8 setpoint (**1.65x** --
 essentially regulated). Ten nanoseconds later it was 7.34e-5 A, 890x over, with
 the regulator having driven V from -112.5 to **-266 V**.
 
-### THE SUSPECT, and it sits exactly where all five runs died
+### THE SUSPECT -- RETRACTED 2026-09-07, checked and it does not hold
+
+**The regulator is Kirchhoff-correct and there is no sign defect.** Equation (1)
+in `plasmaExternalCircuit.C` is `I_set = I_cond + C dV/dt` -- the terminal
+current is conduction plus the displacement drawn by the electrode capacitance
+-- and (2) `dV = dt (I_set - I_cond)/(C + |g| dt)` is its backward-Euler
+discretisation. A sign flip in `I_cond` therefore produces a LARGE error term,
+and a large voltage excursion is the CORRECT response to it: the surplus current
+charges `C_gap`. Nothing is inverted.
+
+**And the step size is tiny, which kills the "amplifier" reading.** With the
+observed imbalance `I_set - I_cond = -1.3245e-07` A and the measured timesteps:
+
+| t [s] | dt [s] | dV per step |
+|---|---|---|
+| 9.24006e-07 | 4.275e-11 | **-0.032 V** |
+| 9.328e-07 | 8.43e-13 | -0.0006 V |
+| 9.339e-07 | 1.979e-13 | -0.00015 V |
+
+So the drift from -112.5 V to -266 V accumulated over THOUSANDS of steps at
+hundredths of a volt each. There is no per-step blow-up in the controller. My
+earlier reading came from an arithmetic slip -- I multiplied `dt*dI/C` wrong by
+six orders of magnitude and inferred a 740 V per-step jump that does not exist.
+
+WHAT SURVIVES from this section: the runs all died within 2% of the same
+physical time, the `I_cond` sign reversal is real and still unexplained
+PHYSICALLY (why does the conduction current reverse?), and the recorded
+`tau_loop = C_gap/g` bound stands as the explanation -- at ignition `g` is small,
+so changing `I_cond` needs a large `dV`, and charging `C_gap` to it takes
+`C/g` = 95 ns against a 0.4 ns growth time. The discharge outruns the regulator,
+and that is a property of the plant, not a bug in the controller.
+
+WHAT IS STILL OPEN: the continuation was never EXECUTED (the table above), so the
+quasi-static plateau hypothesis remains untested regardless of this retraction.
+
+### The original suspect, kept for the record
 
 At t = 9.24e-07 `I_cond` is **+8.25e-08** while `I_set` is **-5e-08** -- the
 right magnitude, the WRONG SIGN. (`I_cond` was correctly negative at
