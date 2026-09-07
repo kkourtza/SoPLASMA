@@ -146,7 +146,13 @@ Foam::dictionary Foam::boundaryRoleLibrary::caseDeclaration
     const Time& runTime
 )
 {
-    const fileName p(runTime.path()/"configuration"/"boundaries");
+    // globalPath(), NOT path(). In a PARALLEL run Time::path() returns
+    // <case>/processorN, so every rank looked for its own copy of layer 1 and
+    // all of them died. globalPath() is the case root in serial AND parallel.
+    // Measured 2026-09-07: this blocked parallel execution for every case that
+    // uses the boundary-role library, i.e. every case built on the G2 layer-1
+    // architecture.
+    const fileName p(runTime.globalPath()/"configuration"/"boundaries");
 
     IFstream is(p);
 

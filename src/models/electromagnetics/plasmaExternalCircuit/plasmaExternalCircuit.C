@@ -344,9 +344,25 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
 
         const fvPatchScalarField& pf = phi.boundaryField()[patchi_];
 
-        if (pf.size())
+        // gAverage IS COLLECTIVE, so EVERY rank must call it -- including the
+        // ranks that hold no faces of this patch.
+        //
+        // This used to sit inside `if (pf.size())`, and pf.size() is the LOCAL
+        // face count. Under a decomposition that puts the whole electrode on
+        // one rank -- `simple` along x does exactly that, cathode on rank 0 and
+        // anode on the last -- the owning rank entered the branch and waited in
+        // the reduction while every other rank skipped it and walked on. The run
+        // DEADLOCKED before the first timestep. Under `scotch` the patch splits
+        // differently and the mismatch tripped a later exchange instead,
+        // reporting MPI_ERR_TRUNCATE. One cause, two symptoms.
+        //
+        // gAverage over an empty local field is well defined: the rank
+        // contributes nothing to the sum and nothing to the count, so the
+        // result is the average over the GLOBAL face count, which is what is
+        // wanted. Measured 2026-09-07.
+        const scalar Vfield = gAverage(pf);
+
         {
-            const scalar Vfield = gAverage(pf);
 
             // A FRESH START has the generated `uniform 0`, which is not a
             // state to resume from; the open-circuit source value is right

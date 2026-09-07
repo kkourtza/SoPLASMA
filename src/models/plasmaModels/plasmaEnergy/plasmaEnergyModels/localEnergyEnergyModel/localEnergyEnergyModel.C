@@ -381,6 +381,7 @@ localEnergyEnergyModel::localEnergyEnergyModel
         }
     }
 
+
     // Top of the tabulated range, read from the mobility table this model
     // actually uses, so the extrapolation warning refers to the real limit
     // rather than a hardcoded guess.
@@ -456,6 +457,7 @@ localEnergyEnergyModel::localEnergyEnergyModel
                    " derived rather than guessed." << endl;
         }
     }
+
 
     Info<< "  energyModel localEnergy (LMEA) for `"
         << species.speciesNames()[specieIndex] << "`:" << nl
