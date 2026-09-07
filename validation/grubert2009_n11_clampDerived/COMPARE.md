@@ -69,3 +69,60 @@ above is wrong and must be reworked, not explained away.
 The two arms share `R = 1e8` and an unseeded floor start, so this is a control
 for the CLAMP only. It says nothing about whether Grubert's profile is a fixed
 point -- that is `../grubert2009_steady`.
+
+---
+
+# RESULT 2026-09-07: STOPPED EARLY, question answered. The clamp was LOAD-BEARING.
+
+Both arms stopped deliberately at t ~ 2.107e-06 of a 2.26e-06 endTime (~7% of
+the window) because they had already answered, and because `clampDerived` was
+evolving in a regime the LMEA closure cannot represent -- further wall time
+would not have been physics. ~880k steps would have been needed to finish.
+
+## Final state, same physical time, ONE variable apart
+
+| quantity | clamp100 | clampDerived | factor |
+|---|---|---|---|
+| meanE range [eV] | **[6.97, 100.0]** | **[816.7, 2644.5]** | min 117x |
+| n_e max [m^-3] | 1.303e18 | **2.878e19** | **22x** |
+| n_e min [m^-3] | 5.489e15 | 9.987e15 | 1.8x |
+| Joule/loss, domain | **4.45** | **721** (rising) | **162x** |
+| steps | 39372 | 47185 | |
+
+**The clampDerived arm put its ENTIRE DOMAIN above 816 eV.** A glow bulk must be
+a few eV, so that arm is unphysical everywhere, not merely at a hot spot.
+`clamp100` held a sane bulk at 6.97 eV throughout.
+
+## The verdict, and it inverts the change that prompted it
+
+`c131d8c` made `meanEnergyMax` DERIVE from the table range (2644 eV) instead of
+a hardcoded 100 eV, on the argument that the clamp exists to prevent
+extrapolation so its value should be the tabulated range. **That argument is
+sound and the outcome is still wrong**, because a table's EXTENT is not its
+VALIDITY: the tables are self-consistent to 2644 eV only for a FREELY GROWING
+swarm, where `nu_i*U` carries up to 99.4% of the power budget
+(`doc/electron-energy-balance.md`). The fluid energy equation is robustly
+dissipative only below ~1000-2450 Td, i.e. `U` ~ 15-35 eV.
+
+So the old 100 eV was an unsourced constant AND it was holding the solution
+inside the regime the closure can represent. **These arms are the measurement
+that proves it was load-bearing rather than cosmetic.**
+
+## What NOT to do
+
+Do not simply revert `meanEnergyMax` to 100 eV. That restores the old behaviour
+for a reason nobody understood and re-hides this. The three candidate fixes are
+in `doc/electron-energy-balance.md`; the evidence does not yet choose between
+them, and the one independently justified is tightening the `n_e`/`nEps`
+coupling, since the growth cancellation `dU/dt = (Joule - Loss) - U*nu_i` arises
+only from `n_e` in the DENOMINATOR and is a difference of two large terms at
+high `U`.
+
+## Superseded by this result
+
+My earlier statement that the clamp's damage was "bounded -- a few percent, not
+orders" was based on the single-ITERATE overshoot (105 vs 100 eV). On the
+TRAJECTORY it is 22x in peak `n_e` and 162x in the source balance. The
+protective DIRECTION still holds (clamping suppresses ionisation, so clamped
+runs under-predict growth rather than inventing it), which is what preserved the
+qualitative Grubert conclusions -- but "a few percent" was wrong.
