@@ -94,6 +94,12 @@ and a 300 V ballast drop needs R = 2.94e8 Ohm.  We used 1e8, i.e. 3x SMALLER
   **A two-terminal RC ballast that sets this operating point NECESSARILY has
   tau_RC >> tau_ion.  The overshoot is structural, not a bad parameter choice.**
 
+**SUPERSEDED 2026-09-07 AS TO CAUSAL ORDER, by this case's own snapshots (see
+"THE ORDERING RESULT" below). The electrode flip is a CONSEQUENCE, not the
+trigger: an interior potential MAXIMUM had already formed mid-gap while the
+electrode was still at -90 V, the correct polarity.** The mechanics described in
+this paragraph are accurate; the implied ordering is not.
+
 Once I_cond reaches 1.02e-4 A, dV/dt = I/C_g ~ 5.7e11 V/s slews the electrode
 straight through 0 V into positive: the phi panel shows the family marching
 +25 -> +56 -> +100 -> +158 -> +208 V monotonically.  The "cathode" is now an
@@ -112,3 +118,104 @@ SUPERSEDES the earlier reading that "j came within 3% of Grubert": that match
 occurred during the spike transit with a TOWNSEND structure (both density peaks
 on the anode side, x/L = 0.72-0.93, 1-2 decades BELOW Grubert), not a glow
 structure.  See the two earliest snapshots in `profiles/`.
+
+---
+
+# ANALYSIS 2026-09-07: the reversals, the mesh, and the ordering
+
+Prompted by the user asking whether the localised field reversals and the "dive"
+in the log E/N plot are a MESH problem.
+
+## The E/N dives ARE field reversals -- and their DEPTH is meaningless
+
+Both dives sit exactly at potential extrema, computed from the signed field
+`Ex = -dphi/dx` (the CSV carries `Emag`, a magnitude, so the sign has to come
+from the potential):
+
+| dive | x/L | extremum | phi |
+|---|---|---|---|
+| 1 | 0.0216 | potential **maximum** | **+247.6 V** |
+| 2 | 0.7210 | potential **minimum** | -8.4 V |
+
+`|E|` must pass through ZERO at an extremum, so on a log axis every reversal
+reads as a bottomless spike. The measured floors -- 23.8 Td and 1.8 Td against
+thousands of Td two cells away -- are simply **how close the nearest cell centre
+landed to the exact crossing**. Read the dive POSITIONS as physics and ignore
+their DEPTHS entirely.
+
+## NOT THE MESH. Measured, per local Debye length
+
+| reversal | dx | lambda_D | cells per lambda_D |
+|---|---|---|---|
+| x/L 0.0216 | 6.77 um | 34.6 um | **5.1** |
+| x/L 0.7210 | 54.3 um | 636 um | **11.7** |
+
+Both resolved. And across the eight snapshots the reversals move SMOOTHLY and
+MONOTONICALLY (0.816 -> 0.781 -> 0.752 -> 0.732 -> 0.721) rather than hopping
+between cells, which is the opposite of an under-resolved wiggle. The 400 CSV
+points ARE the cell centres (400 along x x 5 extruded), so there is no
+resampling artefact either.
+
+## On the densities: 1000x, but they are a SYMPTOM, not the fault
+
+`n_e` 2.482e18 against a 2.478e15 reference is 1002x. But `n_e ~ n_Arp` to ~1%
+(quasi-neutral) and `j` is 100x the reference, so **the density is the correct
+density for the current the circuit pushed**. It is a right answer to a wrong
+boundary condition, not a numerical blow-up.
+
+## THE ORDERING RESULT -- the double layer PRECEDES the electrode flip
+
+| t [ns] | electrode | phi_max | reversals x/L | n_e max |
+|---|---|---|---|---|
+| 9999.9 | -98.13 V | +0.03 @ 0.9732 | 0.9732 | 3.48e13 |
+| 10325.7 | **-90.12 V** | **+8.17 @ 0.5827** | 0.5827 | 4.62e14 |
+| 10426.6 | **+24.78 V** | +43.9 @ 0.0404 | 0.0416, 0.8158 | 1.11e17 |
+| 10429.1 | +208.79 V | +247.6 @ 0.0216 | 0.0216, 0.7210 | 2.48e18 |
+
+At 10325.7 ns the electrode is still at **-90 V, the correct polarity**, and an
+interior potential maximum of +8.17 V has ALREADY formed at mid-gap. The
+maximum then marches onto the electrode (0.58 -> 0.04 -> 0.022) while the second
+reversal migrates in from the anode. Growth rate accelerated **480x** over the
+sequence, 5.25e6 -> 2.52e9 1/s (tau 191 ns -> 0.40 ns), ending at 0.38x the
+absolute ionisation ceiling.
+
+## REFUTED, and it was MY hypothesis: the early state is NOT over-producing
+
+Proposed cause: the ionisation/loss balance is already tilted toward net
+production before anything visibly fails. **It is not.** Townsend integral over
+the gap with our own `alphaN_vs_reducedE`, self-sustaining at
+`alpha*d = ln(1+1/gamma) = 2.872`:
+
+| t [ns] | electrode | alpha*d | multiplication |
+|---|---|---|---|
+| 9999.9 | -98.13 V | 2.267 | **0.519** |
+| 10049.4 | -98.26 V | 2.286 | **0.530** |
+| 10325.7 | -90.12 V | 2.460 | **0.643** |
+| 10429.0 | +158.20 V | 2.872 | 0.9999 |
+| 10429.1 | +208.79 V | 3.099 | 1.27 |
+
+The healthy, normal-polarity snapshots are **SUB-CRITICAL (0.52-0.64)** -- the
+gap is not self-sustaining there and should be DECAYING by gas-phase ionisation
+alone. So the runaway is NOT caused by an inherently over-producing coefficient
+set, and that hypothesis is dead.
+
+CAVEAT on the late rows: once the electrode is positive the structure is no
+longer a cathode fall, so a 1-D `alpha*d` over the gap is not strictly
+interpretable there. The EARLY rows are the meaningful ones, and they are the
+ones that refute the hypothesis.
+
+## What the evidence now supports
+
+`n_e` GREW 13x (3.48e13 -> 4.62e14) over 10000 -> 10326 ns while multiplication
+was only 0.52-0.64. Sub-critical ionisation cannot do that, so the accumulation
+is not a local avalanche. The candidate left standing is **slow ION
+ACCUMULATION**: the ion transit is 3.7-6.7 us and the run had been going ~10 us,
+i.e. ~2 transits, so ions produced by even sub-critical ionisation build
+positive space charge faster than they drain. That distorts the field until it
+locally exceeds breakdown -- and the load line then has too little current
+headroom to hold the electrode.
+
+NOT YET TESTED. The discriminating measurement is the ion continuity balance
+per region: production `INT S_iz dx` against wall/drift removal, on the EARLY
+snapshots. If accumulation is the cause it shows there, at -98 V, with no
+runaway in sight.
