@@ -207,7 +207,14 @@ localEnergyEnergyModel::localEnergyEnergyModel
 
         meanEmin_ = c.getOrDefault<scalar>("meanEnergyMin", 1.5*kB_eV*Tgas);
     }
-    meanEmax_ = c.getOrDefault<scalar>("meanEnergyMax", 100.0);
+    // DEFERRED: the default is the TABLE RANGE, which is not known until the
+    // *_vs_meanE axis has been scanned below (tableMaxMeanE_). Resolved after
+    // that scan, so this reads only an explicit override. See the header.
+    meanEmaxUserSet_ = c.found("meanEnergyMax");
+    if (meanEmaxUserSet_)
+    {
+        meanEmax_ = c.get<scalar>("meanEnergyMax");
+    }
     sourceSensitivity_ =
         c.getOrDefault<Switch>("sourceSensitivity", true);
     transportEnergy_ = c.getOrDefault<Switch>("transportEnergy", true);
@@ -414,6 +421,42 @@ localEnergyEnergyModel::localEnergyEnergyModel
         }
     }
 
+    // RESOLVE THE CLAMP FROM THE TABLES -- the one owner of this number.
+    //
+    // The clamp exists so a lookup is never EXTRAPOLATED past the tabulated
+    // range; its correct value is therefore that range, and nothing else. A
+    // hardcoded 100 eV made it 26.4x tighter than its own justification on the
+    // Grubert argon mechanism (tables to 2644 eV), which silently discarded
+    // energy in dense cells. Rule 24: the default is what the resolver
+    // returns.
+    //
+    // The divergence guard the clamp also provides is UNAFFECTED: the failure
+    // it was written for reached raw eps 5.3e7 eV, which any table-sized
+    // ceiling still catches.
+    if (!meanEmaxUserSet_)
+    {
+        if (tableMaxMeanE_ > 0)
+        {
+            meanEmax_ = tableMaxMeanE_;
+        }
+        else
+        {
+            // The axis scan found nothing -- no *_vs_meanE table to read. Fall
+            // back to the historical value rather than to zero, and SAY SO,
+            // because a silent fallback here reintroduces exactly the defect
+            // this change removes.
+            meanEmax_ = 100.0;
+            WarningInFunction
+                << "could not read a `*_vs_meanE` table axis, so"
+                   " `meanEnergyMax` falls back to 100 eV." << nl
+                << "    That is a HISTORICAL CONSTANT, not the tabulated"
+                   " range. Set `meanEnergyMax` explicitly in"
+                   " energyModelCoeffs," << nl
+                << "    or supply the mean-energy tables, so the clamp is"
+                   " derived rather than guessed." << endl;
+        }
+    }
+
     Info<< "  energyModel localEnergy (LMEA) for `"
         << species.speciesNames()[specieIndex] << "`:" << nl
         << "    transported n_eps, mean energy published as `"
@@ -425,7 +468,13 @@ localEnergyEnergyModel::localEnergyEnergyModel
                 " energyMobility/energyDiffusivity to use the real ones)")
         << nl
         << "    n_e floor " << nEfloor_ << " 1/m^3, mean energy clamped to ["
-        << meanEmin_ << ", " << meanEmax_ << "] eV" << endl;
+        << meanEmin_ << ", " << meanEmax_ << "] eV"
+        << (meanEmaxUserSet_
+              ? " (max: SET BY CASE)"
+              : (tableMaxMeanE_ > 0
+                    ? " (max: DERIVED from the *_vs_meanE table range)"
+                    : " (max: FALLBACK 100 eV -- no table axis found)"))
+        << endl;
 
     updateDerived();
 }

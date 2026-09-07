@@ -151,6 +151,46 @@ writes only `elastic` still gets `inelastic`. Omitting a loss channel can only
 make the equation wrong in the runaway direction, and a case that genuinely
 wants none can say so explicitly with `inelastic { type constant; value 0; }`.
 
+### The mean-energy clamp is DERIVED, not a constant
+
+`meanEnergyMax` defaults to **the top of the `*_vs_meanE` table axis**, read
+from the mobility table this model actually uses. On the Grubert argon set that
+is **2644 eV**; on another mechanism it is whatever that mechanism's sweep
+covers. The start-up report says which:
+
+```
+mean energy clamped to [0.0388, 2644.46] eV (max: DERIVED from the *_vs_meanE table range)
+mean energy clamped to [0.0388, 500] eV (max: SET BY CASE)
+```
+
+The clamp exists so a lookup is never extrapolated past the tabulated range, so
+its correct value **is** that range. It is not a physical statement about how
+hot electrons may get.
+
+**It used to default to a hardcoded 100 eV, and that was a defect** (fixed
+2026-09-07). The comment justifying it said "the range the tables cover" while
+the tables covered 26.4x more, so the clamp discarded energy in cells well
+inside the tabulated range. Measured on the Grubert dc glow: it fired on 91,586
+outer iterations of `grubert2009_fix_n11`, at cells carrying `n_e = 7.2e18` --
+dense plasma, not floor cells -- with raw mean energy reaching 105 eV. For
+scale, Grubert's own published coefficient tables run to 22,070 eV, so 100 eV
+was never a ceiling this discharge should have met.
+
+Two things bound how much that mattered, both worth knowing before re-reading
+old results: the overshoots were small (101.6 eV in `fix_fast`, 105.0 eV in
+`fix_n11` -- a few percent, not orders), and the direction is **protective** --
+`k_ion` rises with mean energy across the whole table, so clamping SUPPRESSES
+ionisation. A clamped run cannot have manufactured a runaway; it under-predicts
+one. In `fix_fast` the clamped cell also sat at the density floor, so it was
+empty rather than hot, and in `fix_n11` the first clamp fired at
+t = 2.2418 us against a run that ended at 2.2432 us -- the last 1.4 ns, long
+after the conclusions were drawn at 1.86 us.
+
+A case may still override it, and then it is the case's number:
+`energyModelCoeffs { meanEnergyMax <eV>; }`. If no `*_vs_meanE` axis can be
+read the model falls back to 100 eV and **warns**, because a silent fallback
+would reintroduce exactly this defect.
+
 ## Two traps worth knowing
 
 Both were measured, and both are why the defaults are shaped as they are.

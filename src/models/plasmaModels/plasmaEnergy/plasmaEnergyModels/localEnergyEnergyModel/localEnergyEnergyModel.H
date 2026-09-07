@@ -207,8 +207,23 @@ private:
     //- Mean energy is clamped to the range the tables cover, so a transient
     //  excursion cannot be extrapolated into a negative rate coefficient --
     //  the failure the chemistry rate guard exists to catch.
+    //
+    //  `meanEmax_` IS DERIVED from tableMaxMeanE_, not defaulted to a
+    //  constant. It used to default to 100 eV while the tables reached
+    //  2644 eV -- so the comment above ("the range the tables cover") was
+    //  26.4x wrong about the value it justified, and the clamp discarded
+    //  energy in cells that were well inside the tabulated range. Measured
+    //  2026-09-07 on the Grubert dc glow: the clamp fired on 91,586 outer
+    //  iterations of `grubert2009_fix_n11`, at cells carrying n_e = 7.2e18
+    //  (dense plasma, not floor cells), with raw eps reaching 105 eV.
+    //  Grubert's own coefficient tables run to 22,070 eV, so 100 eV was never
+    //  a physical ceiling for this discharge.
     scalar meanEmin_;
     scalar meanEmax_;
+
+    //- True when the case stated `meanEnergyMax` explicitly. Only then does a
+    //  user value override the derived table range.
+    bool meanEmaxUserSet_ = false;
 
     //- Report the mean-energy RANGE every N steps. The single most useful
     //  diagnostic this model has: a monotone climb to meanEmax_ is a runaway,
