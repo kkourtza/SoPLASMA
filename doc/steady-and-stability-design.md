@@ -418,6 +418,57 @@ Note this is a GUESS, not a seed: per 2d it needs only to be in the basin.
   field-free negative glow emerged by itself from current continuity. A seed
   that misses them is wrong before it is ever launched.
 
+### PHASE 0 EXECUTED 2026-09-07: PASSES, but `x/L = 0.25` WAS WRONG
+
+The check was run before any case was built, and it caught the transition point.
+
+**`XT = 0.25`, the value in the 2026-09-06 note, FAILS.** It leaves a **662 Td**
+bulk field, because with `rho == 0` the bulk field is CONSTANT, so whatever
+voltage the fall cannot carry is forced into the bulk uniformly. At 662 Td,
+`1/nu_i = 5.81 ns` against a ~6 ns electron transit across the 6 mm bulk --
+**the bulk would avalanche**, which is exactly the failure the seed must avoid.
+
+**THE DATA SAYS THE TRANSITION IS AT `x/L ~ 0.40`, not 0.25.** Where the
+digitised curves actually meet: `n_e/n_Arp` = 0.306 at 0.30, 0.718 at 0.35,
+0.919 at **0.40**, 0.969 at 0.45, 0.986 at 0.50.
+
+**AND THE ANSWER IS ROBUST THERE.** The fall-charge field swing SATURATES --
+13,098 Td at XT 0.35, 13,277 at 0.40, 13,326 at 0.45 (a 0.4% spread) -- because
+beyond `x/L ~ 0.4` the digitised difference is negligible. A plateau is the
+signature of the quasi-neutral region beginning, so XT is no longer a free
+choice. Contrast XT 0.20 -> 0.25 -> 0.30, where the swing moves 8511 -> 10808
+-> 12416 Td and the implied voltage moves 221 -> 345 -> 451 V. **The earlier
+0.25 sat on the steep part, which is why it produced a number at all.**
+
+**THE CONSISTENCY RESULT, and it is better than either previous estimate.** In
+the robust range a field-free (20 Td) bulk requires
+
+    Vgap = 519.4 V (XT 0.40) .. 524.3 V (XT 0.45)   vs Grubert's 500 V
+
+i.e. **within 4-5%**, from Grubert's digitised densities + Gauss's law + his
+stated voltage, and NOT circular -- the physically-defensible XT range maps onto
+a narrow voltage band that contains his value. Compare the two independent
+earlier estimates, both LOW: 393.9 V from drift-only current continuity (0.79x)
+and 344.9 V from this construction at the wrong XT = 0.25 (0.69x).
+
+**THE IRREDUCIBLE LIMIT, stated so it is not rediscovered.** The bulk field is a
+20-60 Td residual of a 13,277 Td swing -- **0.15-0.45%** -- so it is the
+DIFFERENCING PROBLEM ONE LEVEL UP: not `n_Arp - n_e` pointwise, but
+`E0 - INT rho`. Imposing exactly 500 V at XT 0.40 gives ~60 Td REVERSED rather
+than 20 Td forward. The seed's bulk field therefore carries ~+-80 Td of
+irreducible uncertainty and CANNOT be controlled by this construction.
+
+**Tolerable, and that is the actual pass criterion.** Across the whole +-80 Td
+band `1/nu_i` runs 4.06 us (60 Td) to 0.301 s (12 Td), all >> the 6 ns transit,
+so nothing avalanches anywhere in the bulk. The guess is in the basin, which is
+all 2d requires of it. Verified against the ionisation table with the reader
+cross-checked on two recorded values (14.2 ns at 431 Td vs 14.19 recorded;
+0.731 ns at 2450 Td vs 0.73).
+
+RECORDED TRAP: `k_*_vs_reducedE` tables carry the axis in **SI, V m^2**, not Td.
+Read as Td every lookup silently returns the table MAXIMUM (2.728e-13 m^3/s),
+which looks like a plausible rate. Multiply Td by 1e-21.
+
 **Phase 1 -- existing transient solver, ballast `R = 3e8`, from that guess.**
 Zero new code. Question: does it SETTLE, and is what it settles to Grubert's?
 Discriminating observables: `n_e` peak magnitude and location, cathode-fall
