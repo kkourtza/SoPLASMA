@@ -4,6 +4,13 @@ Status: DESIGN for review, 2026-09-06. Nothing implemented.
 Written in response to two objections from the user, both of which change the
 design.
 
+**AMENDED 2026-09-07: sections 1, 2d and 3 are SUPERSEDED.** The route is now
+**steady + BALLAST**, not steady + current-imposed. The user asked why the
+ballast circuit we already have cannot be used with a steady solver; it can, it
+needs no new code, and the argument is in section 4. Sections 0, 2, 2a-2c
+(including the Routh-Hurwitz result, which is what PROVES the ballast adequate)
+stand unchanged.
+
 ## 0. Part A monitoring: VERIFIED (record, since it changed no code)
 
 Rule 23 needs both directions. Three stages, each with its own rebuild:
@@ -18,6 +25,18 @@ Stage B is worth noting: it caught `updateSurfaceCharge`, whose staleness has
 NO other diagnostic. The audit is not redundant with the invariant.
 
 ## 1. The user's objection to a steady solver, and why it is right
+
+> **SUPERSEDED 2026-09-07 BY SECTION 4, in its CONCLUSION only.**
+> What still holds: the user's objection itself (pseudo-marching cannot rescue
+> an unstable fixed point), and that a fixed-VOLTAGE gap on a `dV/dj < 0` branch
+> is unstable. What is WRONG: the inference that current-imposed control is
+> therefore REQUIRED. That treated "voltage-imposed" and "current-imposed" as
+> the only two options, and **a ballast is neither** -- it is the one-parameter
+> family between them, stable whenever `R > |dV/dI|`, which section 2c's own
+> table confirms for `R = 1e8` at `gamma = 0`. Also OVERSTATED here: that the
+> `floatingElectrode` superposition "already does the hard part". It does not --
+> its closed form depends on `Q(V_f)` being LINEAR, and `I(V_f)` is not. See
+> section 4.
 
 > "openfoam's steady state solvers use pseudo-timestepping so not sure if the
 > transient can indeed be avoided"
@@ -173,6 +192,26 @@ the search is inconclusive because `nu'` is not known well enough.* Tightening
 
 ## 2d. THE CONSEQUENCE: seed the transient AT the operating point
 
+> **SUPERSEDED 2026-09-06 (same day) by the attempt itself**, recorded in
+> `validation/grubert2009_seed/COMPARE.md`: the construction is CIRCULAR.
+> Current continuity plus Poisson is UNDERDETERMINED -- the third steady
+> constraint is PARTICLE BALANCE -- and imposing all three IS the steady solve
+> this was meant to avoid. Measured: the gap voltage collapsed 394 V -> 13.8 V
+> and the cathode fall was destroyed.
+>
+> **BUT REHABILITATED 2026-09-07 FOR A DIFFERENT USE.** The digitisation fails
+> as a TRANSIENT seed because `rho = e(n_Arp - n_e)` differences two curves that
+> agree to a few percent, so the field is ~100% wrong and the solver correctly
+> refuses to step through the relaxation. A STEADY solve needs no consistent
+> state -- only a guess in the BASIN OF ATTRACTION. The same digitisation is
+> therefore a perfectly good INITIAL GUESS for section 4, and the objection
+> that killed it here does not apply there.
+>
+> The no-run result in `grubert2009_seed/COMPARE.md` also stands and is worth
+> more than the seed was: Grubert's densities with OUR transport tables carry
+> his current at 394 V against his 500 V (0.79x), with the field-free negative
+> glow (12-30 Td) emerging by itself.
+
 Since the target state is stable with the existing circuit, the fix is not a
 new circuit or a new solver -- it is **not traversing the unstable path**.
 Start the transient near the operating point so `gamma ~ 0` from the first step.
@@ -205,6 +244,11 @@ either. Expect an initial transient of a few `tau_diel`; judge drift only after
 it settles, and judge it on the structural discriminators, not on peak values.
 
 ## 3. Recommended order
+
+> **SUPERSEDED 2026-09-07 BY SECTION 5.** Item 1 died the same day it was
+> written (see 2d). Item 2's premise was wrong (see 1 and 4). Item 3 is
+> unchanged and still correct. Kept here so stale copies of this order are
+> recognisable.
 
 **REVISED after 2c, which changed the answer.**
 
@@ -240,3 +284,160 @@ recognisable if they surface elsewhere:
   without the Nyquist analysis.
 * `tau_gap = 0.28 ns` supersedes any earlier suggestion that the gap itself is
   unstable. It is not; the external circuit is what prevents its self-quench.
+
+---
+
+## 4. WHY THE BALLAST WORKS WITH A STEADY SOLVER (2026-09-07)
+
+Raised by the user: *"why can't we use the ballast circuit with a steady solver
+instead? why do we need the current-imposed solve?"* It can, and we do not.
+This section supersedes the conclusion of section 1.
+
+### 4a. The ballast's fixed point IS the steady load line, already
+
+`plasmaExternalCircuit::seriesResistor` updates
+
+    V_target = (V_src - R*I_cond + (Rg + a)*V) / (1 + Rg + a),
+    Rg = R*|g|,   a = tau/dt,   tau = R*(C_gap + C_ext)
+
+Setting `V_target = V` cancels `Rg` and `a` identically:
+
+    V*(1 + Rg + a) = V_src - R*I_cond + (Rg + a)*V   =>   V_gap = V_src - R*I_cond
+
+**`Rg` and `a` are DAMPING ONLY** -- they set the rate of approach, never the
+location of the fixed point. And `a -> 0` as `dt -> inf`. So under
+pseudo-transient marching the ballast we already have, UNCHANGED, is a damped
+Newton iteration onto the correct steady load line, with contraction factor
+`1/(1 + Rg)` in `(0, 1]`.
+
+Consequence: **steady + ballast needs no new circuit code and no new electrode
+constraint.** The only new thing is the steady solve of the plasma equations.
+
+### 4b. The section-1 dichotomy was false
+
+Fixed voltage and imposed current are the two ENDS of a one-parameter family,
+and the ballast is the interior:
+
+| R | load line | on a `dV/dI < 0` branch |
+|---|---|---|
+| 0 | horizontal | UNSTABLE -- this is section 1's objection, and it is right |
+| finite | slope `-1/R` | **STABLE iff `R > |dV/dI|`** -- the classical criterion |
+| inf | vertical | stable; and this limit IS `currentSource` |
+
+Measured 2026-09-06: `|dV/dI| = 1/|g| = 1.7e6 Ohm` against `R = 1e8`, a **59x
+margin**, and section 2c's Routh-Hurwitz table independently reports `R = 1e8`
+**STABLE at `gamma = 0`** for both `C = 5e-14` and `C = 0`. That table's
+instabilities are all at `gamma = 1.47e9`, the RUNAWAY linearisation point,
+which a steady solver never visits. Consistent with the recorded unification
+`I_sc/I_op = 1 + V_gap/(R*I_op)`.
+
+**Use `R ~ 3e8`, not `1e8`.** A 300 V ballast drop at `I_op = 1.022 uA` needs
+`R = 2.94e8`; `1e8` is 3x faster than the operating point demands
+(`validation/grubert2009_spike/COMPARE.md`, 2026-09-07).
+
+### 4c. What `floatingElectrode` does and does NOT transfer
+
+Section 1 claimed its superposition "already does the hard part". Checked
+against `floatingElectrode.H` on 2026-09-07 -- it does not.
+
+Its closed form exists because Poisson is LINEAR in `V`, so `Q(V_f)` is exactly
+linear, `C_self = dQ/dV_f` is exact from one homogeneous solve, and ONE
+correction lands on target. Swap the constraint to `INT j.n dA` and that is
+gone: `j` depends on the densities, `mu(E/N)` is a table lookup and `alpha(E/N)`
+is exponential, so `I(V_f)` is strongly nonlinear -- which is not incidental, it
+IS the negative differential resistance. `C_self` is also the WRONG sensitivity
+for this: it is `dQ/dV_f` (displacement), not `dI_cond/dV_f` (conduction).
+
+TRANSFERS: (i) the architectural split -- the BC only CARRIES the equipotential
+value while a separate class DETERMINES it, which is exactly the shape a
+current-imposed electrode needs; (ii) the actuator `V += dV_f*psi`, valid for
+ANY `dV_f` because `L(psi) = 0`, so only the CHOICE rule changes; (iii) `psi` /
+`C_self` as the exact DISPLACEMENT part of the sensitivity; (iv) the
+self-convicting invariant that reports closure in VOLTS and catches `psi` being
+built from a different operator than the solve.
+
+The closer relative for the nonlinear part is `currentSource`, whose secant
+`g = dI/dV` from the last two accepted steps is the piece `floatingElectrode`
+cannot supply.
+
+### 4d. Why `g` being poorly known stops mattering
+
+`g` is the known weak spot: `093ffcb` found the regulator was an undamped
+integrator, and section 2c's search was inconclusive because `nu'` was known
+only to ~1.95x. **In a steady solve `g` sets the convergence RATE, not the
+answer** -- shown by the algebra in 4a, where the fixed point is independent of
+`Rg`. In a transient, by contrast, `g` enters the trajectory itself. This
+inverts the earlier concern and is the strongest argument for this route.
+
+### 4e. What current-imposed still buys, and why it can wait
+
+Both are one scalar unknown plus one scalar constraint, so it costs the SAME to
+build; it is a second constraint row, not a second machine.
+
+1. **Branch uniqueness.** A vertical load line cuts a non-monotonic
+   characteristic exactly once; a sloped one can cut the Townsend, subnormal and
+   glow branches, so the initial guess selects the solution.
+2. **Setting the validation target directly**, and V-I sweeps. Grubert's
+   `j = 0.511 mA/cm^2` becomes an input rather than something `(V_src, R)` is
+   tuned to hit; and sweeping `I` is far better conditioned than sweeping
+   `V_src` at large `R`, where `dV_gap/dV_src` is small.
+
+### 4f. What is NOT made easier
+
+The steady residual must include **PARTICLE BALANCE** -- species and energy
+converged simultaneously with Poisson and the circuit relation. That is the
+third constraint whose absence made the 2d seeding circular, and it is the
+actual work. Choosing the ballast removes the CIRCUIT question from the scope;
+it does not shrink the steady-solve question.
+
+## 5. RECOMMENDED ORDER (2026-09-07), superseding section 3
+
+Escalating, cheapest first, each phase with the observable that decides whether
+the next is needed. Phases 1-2 need NO new solver code.
+
+**Phase 0 -- fix the initial guess (no run).** Build the `rho ~ 0` variant:
+digitised `n_Arp` everywhere, digitised `n_e` only inside the cathode fall,
+`n_e = n_Arp` in the bulk, transition at `x/L ~ 0.25`. Judge it on the LOCAL
+field, never the integrated voltage -- that is the trap that hid the last one.
+Note this is a GUESS, not a seed: per 2d it needs only to be in the basin.
+
+  NEEDS A NEW SCRIPT. Checked 2026-09-07: `grubert2009_seed/build_consistent_seed.py`
+  implements the OTHER, FAILED construction (current continuity + Poisson, the
+  one that collapsed to 13.8 V), not this one. The `rho ~ 0` variant is far
+  simpler -- no iteration at all, just a piecewise assignment.
+
+  WHY IT IS SOUND: in the bulk, quasi-neutrality holds to `(lambda_D/L)^2`, so
+  `n_e = n_Arp` there is MORE right than differencing two digitised curves. In
+  the fall the densities differ by DECADES, so their difference is well
+  conditioned and the digitisation is usable. Each region uses the constraint
+  that is accurate there.
+
+  PASS/FAIL, available with no run: the bulk field must come out at
+  **12-30 Td** and the fall must carry most of the ~400-500 V. Those are the
+  independent no-run numbers from `grubert2009_seed/COMPARE.md`, where the
+  field-free negative glow emerged by itself from current continuity. A seed
+  that misses them is wrong before it is ever launched.
+
+**Phase 1 -- existing transient solver, ballast `R = 3e8`, from that guess.**
+Zero new code. Question: does it SETTLE, and is what it settles to Grubert's?
+Discriminating observables: `n_e` peak magnitude and location, cathode-fall
+`E/N`, and `j` against `0.511 mA/cm^2`. FAILURE SIGNATURE, already measured
+once: `dt` collapses (the accuracy controller refusing a violent relaxation) ->
+the guess is still inconsistent, go to phase 2.
+
+**Phase 2 -- pseudo-transient, only if phase 1 will not settle.** The path is
+not wanted, so stop paying for its accuracy: error control off, large fixed
+`dt`. A CONFIG change, not code. `a = tau/dt -> 0` makes the ballast update
+pure damped Newton (4a).
+
+**Phase 3 -- a real steady solver, only if 1-2 both fail.** Drop the `d/dt`
+terms and solve the coupled residual, with the ballast relation as one scalar
+row. This is where the work is (4f), and the outer-coupling conditioning item
+in memory becomes a blocker rather than an optimisation.
+
+**Phase 4 -- current-imposed as a second constraint row** (4e), for V-I
+characteristics and branch uniqueness. Independent of 1-3.
+
+Every phase: a `COMPARE.md` written when the case is created (rule 12), probes
+and a machine-readable time series (rule 26), and validation on the structural
+discriminators in `validation/grubert2009_fix_n11/COMPARE.md`.
