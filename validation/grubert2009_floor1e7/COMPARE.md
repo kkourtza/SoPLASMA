@@ -82,3 +82,32 @@ The mesh. No convergence study on the graded mesh has ever been completed --
 `../RESOLUTION_TEST.md` designed one and its arms died at t = 1.8e-7 / 6.3e-7 s,
 pre-breakdown, so it produced no evidence. That question stays open and is
 independent of this one.
+
+## THE PARENT'S OWN TRAJECTORY -- the numbers this must be judged against
+
+Extracted 2026-09-07. **The parent looks just as mild as the low-floor arms up
+to ~3 us, so early mildness is NOT evidence of anything.**
+
+| t [us] | n_e min | n_e max | max/min |
+|---|---|---|---|
+| 0.50 | 1e11 | 1.047e11 | 1.047 |
+| 1.00 | 1e11 | 1.229e11 | 1.229 |
+| 2.00 | 1e11 | 1.228e11 | 1.228 |
+| **2.95** | 1e11 | 1.302e11 | **1.302** |
+| 5.00 | 1e11 | 1.954e11 | 1.954 |
+| 8.00 | 1e11 | 7.507e11 | 7.507 |
+| **9.70** | 1e11 | 7.481e12 | **74.81** |
+| 10.40 | 2.918e13 | 5.281e15 | 181 |
+
+At t = 2.95 us the low-floor arms read max/min = 1.30078 (1e7) and 1.30075
+(1e9), against the parent's **1.3018** -- identical to 0.08%. All three are in
+the LINEAR regime there, where the solution simply scales with the floor. That
+agreement is a consistency check, not a result.
+
+**THE DISCRIMINATING WINDOW IS t = 5 to 10.4 us**, where the parent departs from
+linearity (1.95 -> 7.5 -> 74.8 -> 181). An arm that is still linear at 9.7 us
+has falsified the parent's behaviour; an arm that turns over there has not.
+
+Note also that by t = 10.4 us the parent's n_e MINIMUM has risen to 2.918e13 --
+**292x its own floor** -- so the whole domain, not just a peak, had left the
+floor. That is the signature to watch.
