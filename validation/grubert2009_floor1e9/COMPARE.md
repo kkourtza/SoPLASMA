@@ -111,3 +111,73 @@ has falsified the parent's behaviour; an arm that turns over there has not.
 Note also that by t = 10.4 us the parent's n_e MINIMUM has risen to 2.918e13 --
 **292x its own floor** -- so the whole domain, not just a peak, had left the
 floor. That is the signature to watch.
+
+---
+
+# RESULT 2026-09-07: RUNAWAY at t = 20.77 us. The floor bought MARGIN, not IMMUNITY.
+
+Left running at the user's instruction rather than stopped.
+
+## What fired
+
+Both pre-registered runaway signatures, 0.77 us after reaching the -200 V plateau:
+
+| signature | at plateau entry (t = 20.0 us) | at t = 20.77 us |
+|---|---|---|
+| `V_el` | -199.1 V | **+21.6 V -- SIGN FLIPPED** |
+| `\|I_cond\|/I_sc` | 4.4e-3 | **1.92** -- beyond what the ballast can supply |
+| `n_e,max` | 1.601e12 m^-3 | **1.474e17 m^-3** |
+| log-rate `d(ln n_e)/dt` | 1.64e6 1/s | 1.19e7 1/s |
+
+Same failure mode as `../grubert2009_ballast_low` (floor 1e11), which flipped to
++204 V and reached 95.6x `I_sc`. **So lowering the floor from 1e11 to 1e9 did
+NOT remove the instability -- it delayed it**, from -104 V to the -200 V
+plateau. That is the outcome pre-registered in the floor study as the one that
+would say the floor is not the whole story.
+
+## THE THRESHOLD IS A DENSITY, NOT A VOLTAGE -- and the other arms prove it
+
+At the SAME -200 V, with the SAME floor, mesh and circuit:
+
+| arm | ramp | n_e,max at plateau entry | state at -200 V |
+|---|---|---|---|
+| `grubert2009_ramp2us` | -100 V/us | 2.035e11 | STABLE, log-rate ~2.5e5 1/s |
+| `grubert2009_ramp5us` | -40 V/us | 2.378e11 | STABLE, log-rate ~2.8e5 1/s |
+| **`grubert2009_floor1e9`** | **-10 V/us** | **1.601e12** | **RUNAWAY** |
+
+The slow-ramp arm arrived at -200 V with **9.2x more density** than the fast
+arms, because the discharge grows exponentially throughout the ramp and a slower
+ramp integrates more of that growth. It crossed the threshold; they have not.
+
+**COROLLARY, and it inverts an earlier reading.** I reported at -74 V that the
+ramp rate "barely matters" (spread 17%). That was measured too early: the spread
+GROWS with voltage, reaching 9.2x at -200 V, and it is decisive for stability.
+A fast ramp is cheaper per VOLT and reaches a given voltage with LESS density;
+a slow ramp is the faster route to a given DENSITY. The two questions have
+opposite answers and must not be conflated.
+
+Also visible in the same table: the slow arm reached -200 V with `Te,max` 15.3 eV
+against 27.6-29.3 eV in the fast arms. Denser AND cooler -- the signature of
+screening beginning, which only the slow arm had enough density to show.
+
+## What this does NOT overturn
+
+The floor result stands as measured: at the 1e11 floor the gap ran away at
+**-104 V, below its own 120.8 V breakdown**, driven by space charge the floor
+itself bootstrapped (691 ions per clamped electron). At 1e9 it survives to
+-200 V and 1.6e12 m^-3. That is a real and large improvement, and the mechanism
+is unchanged. What is now clear is that it postpones the instability rather than
+removing it, so the floor is a necessary fix and not a sufficient one.
+
+## Still open, and now sharper
+
+The question is no longer "why does it run away" but **"what sets the density
+threshold, and can the circuit hold the discharge through it?"** `I/Isc` went
+from 4.4e-3 to 1.92 in 0.77 us -- the ballast had three decades of headroom and
+lost it in under a microsecond, which is the `tau_loop = C_gap/g` bound doing
+exactly what it was measured to do.
+
+`../grubert2009_step250` is the arm to watch: at -250 V it has reached
+`n_e,max` = 5.46e15 (past Grubert's 2.478e15) with `V_el` pulled back to
+-204.6 V and `I/Isc` = 0.275 -- the ballast genuinely loading for the first time,
+and not yet flipped.
