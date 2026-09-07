@@ -1,0 +1,72 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Grubert 2009 dc glow, STEADY route phase 1 -- the SEMANTIC description.     |
+|                                                                              |
+|  G2: this says WHAT each surface IS. Every dictionary in 0/ is DERIVED from   |
+|  it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.                   |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+cathode
+{
+    kind        ballastedElectrode;
+
+    // THE BALLAST, and the point of phase 1 is that it needs NO new code.
+    //
+    // Setting V_target = V in seriesResistor's update cancels R*g and
+    // a = tau/dt identically, leaving V_gap = V_src - R*I_cond -- the
+    // algebraic steady load line. So R*g and a are DAMPING ONLY: they set the
+    // rate of approach, never the fixed point, and a -> 0 as dt grows. The
+    // ballast we already have IS a damped Newton iteration onto the steady
+    // state. See doc/steady-and-stability-design.md section 4a.
+    //
+    // STABLE AT THE TARGET, measured not assumed. The classical criterion is
+    // R > |dV/dI|, and |dV/dI| = 1/|g| = 1.7e6 Ohm was measured 2026-09-06 --
+    // so R = 3e8 carries a 176x margin, and tools/glow_stability.py reports
+    // this circuit STABLE at gamma = 0 independently. Every instability in
+    // that analysis sits at gamma = 1.47e9, the RUNAWAY point, which a run
+    // SEEDED at the operating point never visits.
+    circuit
+    {
+        // seriesResistor, NOT seriesRC with capacitance 0 -- the model refuses
+        // that spelling and names this one.
+        type          seriesResistor;
+
+        // R = 3e8, NOT the 1e8 of the earlier arms. A 300 V ballast drop at
+        // I_op = 1.022e-6 A needs 2.94e8; 1e8 is 3x FASTER than the operating
+        // point demands, which is what let the electrode slew through 0 V into
+        // +208 V (validation/grubert2009_spike/COMPARE.md, 2026-09-07).
+        resistance    3e8;
+
+        // NOT RAMPED, and that is deliberate for a SEEDED start.
+        //
+        // sourceVoltage = V_gap + R*I_set = -500 + 3e8*(-1.022e-6) = -806.6 V,
+        // so the load line passes through Grubert's operating point EXACTLY.
+        // A ramp is right when striking a cold gap; here the seeded plasma
+        // conducts ~1 uA from step one, so the R*I drop of 306.6 V appears
+        // immediately and the gap sits near -500 V. Ramping from 0 would
+        // instead hold the gap near 0 V and let the seeded profile decay --
+        // destroying the initial condition this case exists to test.
+        sourceVoltage constant -806.6;
+    }
+
+    gammaSEE            0.06;
+}
+
+anode
+{
+    kind        groundedElectrode;
+
+    // Grubert's anode electron reflection.
+    electronReflection  0.36;
+}
+
+// NOT DECLARED: their ion reflection of 5e-4. The ion wall condition takes no
+// reflection coefficient, and at 5e-4 it changes the ion wall flux by 0.05% --
+// far below the ~5% spread between our Boltzmann coefficients and theirs.

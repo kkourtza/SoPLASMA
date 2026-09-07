@@ -1,0 +1,104 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+libs
+(
+    "libpetscFoam.so"
+    "libROUNDSchemes.so"
+);
+
+application     soPlasmaFoam;
+
+startFrom       latestTime;
+
+startTime       0;
+
+stopAt          endTime;
+
+endTime         $endTime;
+
+deltaT          $deltaT;
+
+writeControl    $writeControl;
+
+writeInterval   $writeInterval;
+
+purgeWrite      0;
+
+writeFormat     ascii;
+
+writePrecision  12;
+
+writeCompression off;
+
+timeFormat      general;
+
+timePrecision   6;
+
+runTimeModifiable true;
+
+// ************************************************************************* //
+
+// ---------------------------------------------------------------------------
+// RULE 26 TIME SERIES, at PROBES.
+//
+// STOPGAP, and it must be labelled one. The framework's own probe mechanism
+// (`plasmaProbes` writing a per-case `history.csv`, doc/case-monitoring-plan.md
+// Part B) is DESIGN ONLY -- no case in the tree configures it, checked
+// 2026-09-07. This uses OpenFOAM's built-in `probes` functionObject instead,
+// which covers the per-probe field series but NOT the run-level quantities
+// rule 26 also asks for (dt AND WHICH LIMITER SET IT, outer iterations,
+// rejected steps). Those remain only in the log until Part B is built.
+//
+// Three points, derived from the geometry as the rule prescribes for a
+// plane-parallel gap: near-cathode, mid-gap, near-anode. y = 5e-4 is mid-span
+// (mesh spans 1e-4..9e-4) and z = 1e-4 is the single extruded cell, so every
+// point is inside the mesh -- verified against Cx/Cy/Cz before writing.
+//
+// reducedE is deliberately NOT probed: it is written as `uniform 0`, a
+// PLACEHOLDER the solver uses internally and never populates, so a probe on it
+// records zeros. Probe the E VECTOR and reduce by N = 2.4144e22 offline.
+// ---------------------------------------------------------------------------
+functions
+{
+    plasmaProbesStopgap
+    {
+        type            probes;
+        libs            ("libsampling.so");
+        writeControl    timeStep;
+        writeInterval   20;
+
+        probeLocations
+        (
+            (1e-5   5e-4 1e-4)   // near-cathode, inside the fall
+            (5e-3   5e-4 1e-4)   // mid-gap
+            (9.99e-3 5e-4 1e-4)  // near-anode
+        );
+
+        fields
+        (
+            n_e
+            n_Arp
+            n_Ar2p
+            nEps_e
+            meanE
+            chargeDensity
+            ePotential
+            E
+        );
+    }
+}
