@@ -490,3 +490,108 @@ worth stating as the contract even though there is now only one implementer.
   its own would eventually disagree with the diagnostic.
 * An unrecognised `type` is FATAL. A case asking for an RC ballast must never
   silently receive a resistive one.
+
+---
+
+## 2026-09-07: "NO TWO-TERMINAL CIRCUIT SURVIVES IGNITION" IS NOT ESTABLISHED
+
+The user asked whether a lower applied voltage should give a stable glow, and
+whether voltage/current continuation from that state had been done PROPERLY.
+Checking that reopened the conclusion above.
+
+### The breakdown voltage, computed independently
+
+Uniform-field Townsend criterion on our own `alphaN_vs_reducedE`, d = 1 cm,
+gamma = 0.06, needing `alpha*d = ln(1+1/gamma) = 2.872`:
+
+    V_b = 120.8 V     at E/N = 500 Td
+
+| V [V] | alpha*d | multiplication |
+|---|---|---|
+| 98 | 2.189 | 0.476 (sub-critical) |
+| **120.8** | **2.872** | **1.000** |
+| 200 | 5.061 | 9.4 |
+| **500 (Grubert)** | **9.939** | **1243** |
+
+**Grubert's 500 V is 4.14x breakdown.** Applied to an UNSCREENED gap it gives
+1243x multiplication -- the whole-gap avalanche, as arithmetic rather than
+mystery. It is only self-consistent once a cathode fall exists to absorb it.
+
+**AND THIS VALIDATES THE MODEL'S BREAKDOWN:** the `iset` runs ignited at
+**-113 to -116 V** against this independently computed 120.8 V (3-6%). The
+ignition physics is right.
+
+### The continuation was DESIGNED correctly -- in CURRENT, which is the right parameter
+
+`validation/grubert2009_iset_stair`: five plateaus, j = 0.025 -> 0.100 -> 0.250
+-> **0.511 (Grubert)** -> 1.000 mA/cm^2, **12 us holds = 2-3 ion transits**,
+risers RAMPED over 4 us. Rationale recorded there: "hold each current level long
+enough for `gamma` to relax, and each plateau becomes a genuine steady state."
+Current, not voltage, is correct: the glow branch has `dV/dI < 0`, so V is not a
+function of I there and voltage continuation cannot traverse it.
+
+### BUT IT WAS NEVER EXECUTED. Not one run reached its first plateau.
+
+| case | reached | endTime | fraction |
+|---|---|---|---|
+| `grubert2009_iset` | 9.536e-07 | 20e-6 | **4.8%** |
+| `grubert2009_iset_stair` | 9.340e-07 | 90e-6 | **1.0%** |
+| `grubert2009_stair_V` | 1.383e-07 | 90e-6 | **0.2%** |
+| `grubert2009_iset_All1500` | 9.531e-07 | 20e-6 | 4.8% |
+| `grubert2009_iset_En1500` | 9.538e-07 | 20e-6 | 4.8% |
+
+`iset_stair`'s plateau 1 window was **2-14 us**. It died at **0.93 us** -- before
+the first plateau began. **The quasi-static plateau hypothesis was never tested**,
+and the conclusion drawn from these runs is therefore about the first ignition
+only, not about continuation.
+
+Four of the five stalled within 2% of the SAME physical time (0.93-0.95 us),
+i.e. they all died at one event.
+
+### AND IT WAS MOMENTARILY WORKING. The trace, at I_set = 5e-8 A:
+
+| t [s] | I_cond [A] | V_el [V] | g [S] |
+|---|---|---|---|
+| 2e-12 | 6.2e-15 | -0.0006 | 0 |
+| 4.12e-07 | **-4.66e-09** | **-113.1** | 1.49e-10 |
+| 9.24e-07 | **+8.25e-08** | -112.5 | 8.92e-07 |
+| 9.328e-07 | 5.27e-06 | -154 | 2.80e-05 |
+| 9.339e-07 | **7.34e-05** | **-266.1** | 1.03e-04 |
+
+V ramped to -113 V at `I_set/C_gap` and then **SAT at breakdown for ~500 ns**
+while the avalanche built -- which IS the marginal `gamma ~ 0` state the design
+wanted. `|I_cond|` then reached 8.25e-8 against a 5e-8 setpoint (**1.65x** --
+essentially regulated). Ten nanoseconds later it was 7.34e-5 A, 890x over, with
+the regulator having driven V from -112.5 to **-266 V**.
+
+### THE SUSPECT, and it sits exactly where all five runs died
+
+At t = 9.24e-07 `I_cond` is **+8.25e-08** while `I_set` is **-5e-08** -- the
+right magnitude, the WRONG SIGN. (`I_cond` was correctly negative at
+t = 4.12e-07, so it reversed.) The regulator's error term is
+
+    dV = dt*(Iset - Icond)/(C + g*dt)
+
+so with opposite signs the error is `|Iset| + |Icond|` = **2.65x the setpoint**,
+pointing to drive `|V|` UP at exactly the moment it should have backed off. The
+`|g|` rather than `g` choice is documented as protecting against an inverted
+step, but it assumes the plant-gain SIGN is consistent.
+
+**This is at the handover from "ramp V at I_set/C_gap" to "regulate on the error"
+-- which is precisely where every one of these runs died.**
+
+NOT ESTABLISHED, and the distinction matters: I cannot yet separate (i) a
+regulator that mishandles a sign reversal in `I_cond` from (ii) a genuine
+physical loss of control. The first is a bug with a one-line test; the second is
+the recorded `C_gap/g` bound. **The `I_cond` SIGN CONVENTION must be checked
+against its definition first** -- see [[verify-before-claiming]] -- because if
+the reversal is a diagnostic artefact the whole reading changes.
+
+### What this means for the standing conclusion
+
+`tau_loop = C_gap/g` being 238x too slow at ignition is still a real measurement.
+But it was measured on runs that lost control at the regulator handover, so it
+may be describing the consequence rather than the cause. **The staircase design
+remains untested and is the cheapest way to find out**: if a plateau at
+j = 0.025 mA/cm^2 can be held, continuation is viable and the standing
+conclusion is wrong.
