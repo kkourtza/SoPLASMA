@@ -531,8 +531,30 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
             f[faceI] = uEff[faceI] / (den + SMALL);
         }
 
-        reduce(minDenFrac, minOp<scalar>());
-
+        // NO reduce() HERE, DELIBERATELY -- and this is a parallel-correctness
+        // fix, not an optimisation.
+        //
+        // updateCoeffs() RETURNS EARLY at the top when `p.size() == 0`, i.e. on
+        // every rank that holds no faces of this patch. A `reduce` here was
+        // therefore called by a SUBSET of the ranks, which is not a collective
+        // at all: the reduction paired mismatched data and returned garbage.
+        // Measured 2026-09-07 in parallel -- it reported
+        // `(D/delta + uEff)/(D/delta) = -1e+300` and killed the run after one
+        // timestep on every decomposition tried (simple, scotch, hierarchical;
+        // 2 and 4 ranks). There was nothing wrong with D/delta; the number was
+        // an artefact of the broken reduction.
+        //
+        // Checking LOCALLY is both correct and better. Each rank convicts on
+        // its own faces, the union of those checks is exactly the global check,
+        // and FatalErrorInFunction aborts the whole job in parallel anyway --
+        // so nothing is missed. It also names the rank that actually holds the
+        // bad face, which a global minimum did not. In serial the behaviour is
+        // unchanged, a reduction over one rank being a no-op.
+        //
+        // The general rule this cost us twice today: a collective must never
+        // sit downstream of a guard or an early return that depends on a LOCAL
+        // patch size. See plasmaExternalCircuit for the same defect with a
+        // gAverage.
         if (minDenFrac <= 0)
         {
             FatalErrorInFunction
