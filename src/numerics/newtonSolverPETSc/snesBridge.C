@@ -156,23 +156,66 @@ int solveWithSNES
     // is the fix: one native linear solve of the problem's own linearized
     // operator per GMRES preconditioner application.
     //
-    // The second argument (mf_operator) tells SNES to ALSO derive its own
-    // (dense, finite-differenced) preconditioning matrix -- wasteful and
-    // beside the point when we supply a real PC via PCSHELL below, so it's
-    // only enabled when no PC callback is given (falling back to whatever
-    // PETSc's own default construction provides).
-    SNESSetUseMatrixFree(snes, PETSC_TRUE, pcCallback ? PETSC_FALSE : PETSC_TRUE);
+    // COMPLETELY matrix-free: ONE MATMFFD operator used as BOTH Amat and Pmat,
+    // with MatMFFDComputeJacobian registered as the Jacobian function. This is
+    // the idiom PETSc's own documentation prescribes for this exact case --
+    // "when using a completely matrix-free solver, that is the B matrix is
+    // also the same matrix operator".
+    //
+    // Do NOT go back to SNESSetUseMatrixFree() here. Both of its spellings were
+    // measured wrong for this solver on 2026-09-09:
+    //
+    // * mf_operator = TRUE cost a factor of ~1500. One Newton timestep took
+    //   97 s, of which 92 s was 30,020 residual evaluations -- against the ~20
+    //   that 3 Newton iterations x 3-7 GMRES iterations justify. That count is
+    //   ~10,000 per Newton iteration, exactly the number of unknowns (5 fields
+    //   x 2000 cells): the signature of finite-differencing a whole Jacobian
+    //   COLUMN BY COLUMN. SNESSetUpMatrices() only takes its
+    //   matrix-free-for-both branch when `snes->mf && !snes->mf_operator`;
+    //   with mf_operator = TRUE it instead does DMCreateMatrix() for a real
+    //   Pmat and fills it with SNESComputeJacobianDefault. PETSc's doc says it
+    //   plainly -- mf_operator means "the user provided Pmat will continue to
+    //   be used" -- and we never provide one, while the PCSHELL below ignores
+    //   Pmat entirely. Pure waste. (Note `snes->mf = mf_operator ? TRUE : mf`,
+    //   so passing mf = TRUE as well cannot rescue it.)
+    //
+    // * (mf_operator = FALSE, mf = TRUE) removed the waste -- 30,020 residual
+    //   calls fell to ~20 -- but then GMRES hit DIVERGED_BREAKDOWN at 30
+    //   iterations, IDENTICALLY with our PCSHELL and with PCNONE, which proves
+    //   the operator itself was degenerate rather than the preconditioner. The
+    //   cause is that nothing was refreshing the MFFD differencing BASE vector,
+    //   so J*v was being differenced about a stale/zero state. Assembling the
+    //   MATMFFD matrix is what pulls the current x from the SNES object, and
+    //   MatMFFDComputeJacobian exists precisely to do that -- all it does is
+    //   call MatAssemblyBegin/End on the operator.
+    {
+        Mat Jmf;
+        MatCreateSNESMF(snes, &Jmf);
+        MatSetFromOptions(Jmf); // so -mat_mffd_type is honoured
+        SNESSetJacobian(snes, Jmf, Jmf, MatMFFDComputeJacobian, nullptr);
+        MatDestroy(&Jmf);
+    }
 
-    if (pcCallback)
     {
         KSP ksp;
         SNESGetKSP(snes, &ksp);
         PC pc;
         KSPGetPC(ksp, &pc);
-        PCSetType(pc, PCSHELL);
-        PCShellSetContext(pc, &pcCtx);
-        PCShellSetApply(pc, PCApplyShell);
-        PCShellSetName(pc, "physicsBasedPicard");
+
+        if (pcCallback)
+        {
+            PCSetType(pc, PCSHELL);
+            PCShellSetContext(pc, &pcCtx);
+            PCShellSetApply(pc, PCApplyShell);
+            PCShellSetName(pc, "physicsBasedPicard");
+        }
+        else
+        {
+            // Amat and Pmat are now BOTH the matrix-free operator, which no
+            // factorisation-based default PC can touch. Unpreconditioned is
+            // the only coherent choice here, and it must be explicit.
+            PCSetType(pc, PCNONE);
+        }
     }
 
     SNESSetFromOptions(snes);

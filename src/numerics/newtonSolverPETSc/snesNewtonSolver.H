@@ -73,6 +73,22 @@ class snesNewtonSolver
     scalar rtol_;
     label maxIt_;
 
+    //- Relative error to which F(u) can actually be EVALUATED, which sets the
+    //  matrix-free differencing step (PETSc `-mat_mffd_err`). NOT machine
+    //  epsilon: F here runs a per-cell ADAPTIVE stiff chemistry ODE, whose
+    //  internal step sequence changes discontinuously with its input, so F
+    //  carries noise far above sqrt(eps_mach). Knoll & Keyes section 2.3.1
+    //  states the rule -- when F is only evaluable to eps_rel, the
+    //  differencing parameter must be built from eps_rel, not eps_mach.
+    //
+    //  Measured 2026-09-09 on grubert2009, one Newton step from a Picard
+    //  restart: PETSc's default (~1.5e-8) and 1e-6 both gave
+    //  DIVERGED_BREAKDOWN with the true residual exploding to 2.4e9 while the
+    //  PRECONDITIONED residual fell cleanly -- the signature of a
+    //  Jacobian-vector product that does not represent the true operator.
+    //  1e-4 and 1e-2 both converged in 3 Newton iterations. Default 1e-4.
+    scalar mffdErr_;
+
 public:
 
     TypeName("SNES");

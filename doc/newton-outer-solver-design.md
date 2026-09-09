@@ -946,3 +946,145 @@ answer. That distinction should decide the fix.
   bit-identical for the existing Picard path.
 * Phase D -- the run past Picard's ~step 23,000 failure point -- has NOT
   been attempted. The per-step cost above must come down first.
+
+## The per-step cost RESOLVED: 97.88 s -> 0.195 s/step, and Newton now matches Picard's trajectory -- 2026-09-09
+
+The "residual is too expensive" conclusion recorded above was WRONG about its
+cause, and profiling said so immediately. SUPERSEDED BY the two findings here.
+
+### The residual was never the problem: 3 ms, called 1500x too often
+
+Per-phase timers inside residualCallback, one Newton timestep:
+
+    calls=30020  total=92.09 s  | unpack=0.17 derived=2.27 transport=4.62
+                                  CHEM=41.11 energy=23.59 residual=20.34
+                                  (per call: 0.00307 s)
+
+So a residual evaluation costs 3.07 ms -- cheap. The 92 s came from THIRTY
+THOUSAND AND TWENTY of them in ONE timestep, against the ~20 that the actual
+iteration counts justify (SNES took 3 Newton iterations; its KSP solves
+converged in 3, 4 and 7 GMRES iterations). Chemistry is only ~45% of a call,
+so lagging it -- the fix the section above proposed -- would have bought under
+2x while the real defect was a factor of 1500.
+
+30020/3 ~ 10,000 per Newton iteration is exactly the number of unknowns
+(5 fields x 2000 cells): the signature of finite-differencing a whole Jacobian
+COLUMN BY COLUMN.
+
+### DEFECT 1: `mf_operator` made PETSc assemble a Jacobian it never used
+
+`snesBridge.C` had
+
+    SNESSetUseMatrixFree(snes, PETSC_TRUE, pcCallback ? PETSC_FALSE : PETSC_TRUE);
+
+with a comment asserting the second argument controlled whether PETSc derives
+its own preconditioning matrix. The argument SEMANTICS were backwards. From
+PETSc's own source (`src/snes/interface/snes.c`):
+
+    snes->mf = mf_operator ? PETSC_TRUE : mf;   // mf_operator forces mf on
+    snes->mf_operator = mf_operator;
+
+and its doc string: `mf_operator` = matrix-free "only for the Amat ... this
+means the user provided Pmat WILL CONTINUE TO BE USED"; `mf` = matrix-free for
+both, "both the Amat and Pmat set in SNESSetJacobian() will be ignored".
+`SNESSetUpMatrices()` takes its matrix-free-for-both branch ONLY when
+`snes->mf && !snes->mf_operator`; with `mf_operator = TRUE` it takes the other
+branch, which calls `DMCreateMatrix()` for a real Pmat and fills it with
+`SNESComputeJacobianDefault` -- one residual call per column. We never provide
+a Pmat and the PCSHELL ignores it, so the entire assembly was waste. Note both
+spellings of the old ternary set `mf_operator = TRUE`, so bare JFNK was doing
+this too.
+
+Replaced with the idiom PETSc's documentation prescribes for a completely
+matrix-free solver where Pmat IS the operator:
+
+    Mat Jmf;
+    MatCreateSNESMF(snes, &Jmf);
+    MatSetFromOptions(Jmf);
+    SNESSetJacobian(snes, Jmf, Jmf, MatMFFDComputeJacobian, nullptr);
+    MatDestroy(&Jmf);
+
+### DEFECT 2: the differencing step assumed F was evaluable to machine epsilon
+
+Removing defect 1 dropped 30,020 residual calls to ~20 -- and then GMRES hit
+`DIVERGED_BREAKDOWN` at 30 iterations. `-ksp_monitor_true_residual` separated
+the causes in one run:
+
+    iter   preconditioned resid    true resid      ||r||/||b||
+       0   2.332e+01               5.287e+02       1.00
+       1   5.074e-01               1.055e+03       2.00
+       3   2.235e-02               2.427e+09       4.59e+06
+      29   4.305e-03               2.431e+09       4.60e+06
+
+The PRECONDITIONED residual falls cleanly (23 -> 0.004), so the physics-based
+PC works; the TRUE residual explodes 4.6 million-fold and flatlines, so the
+Jacobian-vector product does not represent the true operator. Confirmed not to
+be the preconditioner: the breakdown is IDENTICAL under PCNONE (verified via
+`-pc_type none`, with zero pcApplyCallback invocations).
+
+Cause: PETSc's default differencing parameter is built from sqrt(eps_mach),
+which assumes F can be evaluated to machine precision. F here integrates a
+PER-CELL ADAPTIVE STIFF CHEMISTRY ODE, whose internal step sequence changes
+discontinuously with its input, so F carries noise many orders above eps_mach
+and differencing it yields garbage. Knoll & Keyes state the rule in section
+2.3.1: when F is only evaluable to eps_rel, the differencing parameter must be
+built from eps_rel, not eps_mach.
+
+Measured sweep of `-mat_mffd_err`, one Newton step from the 2e-9 restart:
+
+    ~1.5e-8 (default)   DIVERGED_BREAKDOWN, true resid 2.4e9
+    1e-6                DIVERGED_BREAKDOWN
+    1e-4                CONVERGED: 528 -> 63.6 -> 8.76e-3 -> 3.33e-9 (3 its)
+    1e-2                CONVERGED: 528 -> 73.9 -> 3.79e-4 -> 2.53e-10 (3 its)
+
+So F is good to roughly 1e-4. Exposed as `newtonSolver/mffdErr`, DEFAULT 1e-4,
+so no case has to know this (G1). The reasoning is recorded on the member's own
+declaration in `snesNewtonSolver.H`.
+
+### Result
+
+    per timestep      residual calls   residual time   wall clock
+    before                    30,020         92.09 s      97.88 s
+    after                         16          0.05 s       0.195 s
+
+20 consecutive steps from the 2e-9 restart: 320 residual calls (16/step),
+2 Newton iterations per step, every step `reason 3`
+(CONVERGED_FNORM_RELATIVE). Newton 7.07 s against Picard 1.92 s for the same
+20 steps including start-up (Newton's start-up carries PetscInitialize), i.e.
+~3.7x -- an ordinary price for a fully coupled solve, against 4000x before.
+
+### THE PHYSICS GATE: Newton reproduces Picard's trajectory
+
+Paired 20-step runs from the SAME 2e-9 restart, identical in every parameter
+except `outerSolver` (rule 15: the control is stated). Relative difference of
+the written fields at t = 2.02e-9:
+
+    field           max|rel diff|   rms rel diff
+    ePotential         1.075e-05      6.267e-06
+    n_e                4.755e-06      1.134e-06
+    n_Arp              7.459e-07      5.164e-08
+    n_Ar2p             5.499e-07      3.852e-08
+    nEps_e             8.339e-08      2.046e-08
+    chargeDensity      8.197e-05      1.974e-05
+    meanE / T_e        4.869e-06      1.161e-06
+
+Agreement at the level of the two solvers' own tolerances (Picard outer 1e-6,
+SNES rtol 1e-8). `chargeDensity` is the loosest, as expected: it is a small
+difference of near-equal large numbers in a quasineutral plasma. This is the
+"does the real-physics translation actually work" gate from the phase plan, and
+it PASSES.
+
+### Still open
+
+* Phase D -- the run through and past Picard's ~step 23,000 failure point --
+  is now UNBLOCKED and not yet attempted.
+* `species.updateChargeDensity()` is still not called in the residual, so the
+  Poisson block's coupling to the species is missing from the Jacobian. Newton
+  converges regardless (2 iterations/step) because the PC supplies that
+  coupling, but the Jacobian is not the true one. Fix before Phase D.
+* The energy block's residual scale still uses `ddt` where the laplacian
+  dominates; `|F_scaled|` ~ 527 for energy against ~1e-3 for species.
+* Chemistry accuracy under Newton remains UNVERIFIED (the `adaptiveError`
+  `nOuterCorrectors > 1` guard is bypassed for newton mode only).
+* Temporary per-phase timers and per-block residual diagnostics are still in
+  `residualCallback`; remove once Phase D is under way.

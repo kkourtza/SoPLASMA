@@ -119,6 +119,23 @@ void residualCallback
         Pout<< "[diag] residualCallback call #" << callCount << endl;
     }
 
+    // TEMPORARY per-phase TIMERS (2026-09-09, REMOVE AFTER). One Newton
+    // timestep costs ~97 s against Picard's 44 steps/s, and JFNK needs one
+    // residual per GMRES iteration. Each call does FOUR full matrix
+    // discretisations plus a per-cell stiff chemistry ODE -- the chemistry is
+    // the SUSPECT, not the conclusion, so this measures instead of assuming.
+    static double tUnpack = 0, tDerived = 0, tTransport = 0,
+                  tChem = 0, tEnergy = 0, tResid = 0;
+    const auto clockNow = []{ return std::chrono::steady_clock::now(); };
+    const auto secSince = [](const std::chrono::steady_clock::time_point t0)
+    {
+        return std::chrono::duration<double>
+        (
+            std::chrono::steady_clock::now() - t0
+        ).count();
+    };
+    auto tPhase = clockNow();
+
     ResidualContext& ctx = *static_cast<ResidualContext*>(userDataVoid);
     const label nc = ctx.nCellsLocal;
     electromagneticsModel& em = *ctx.em;
@@ -160,10 +177,14 @@ void residualCallback
         nEps.correctBoundaryConditions();
     }
 
+    tUnpack += secSince(tPhase); tPhase = clockNow();
+
     // ---- 2. Refresh E, Emag, phiE, reducedE from the new ePotential --
     // exactly what singleRegionPoisson::solve() does internally before
     // building its own matrix.
     srp.updateDerivedFields();
+
+    tDerived += secSince(tPhase); tPhase = clockNow();
 
     // ---- 3. Refresh each species' transport coefficients (mu, D -- looked
     // up against the just-refreshed reducedE/meanE) from the new densities.
@@ -171,6 +192,8 @@ void residualCallback
     {
         transport.transportModel(s).correct();
     }
+
+    tTransport += secSince(tPhase); tPhase = clockNow();
 
     // ---- 4. Refresh chemP_/chemL_ for the new species densities. Needs
     // real fvScalarMatrix objects to hand to refreshChemistrySources() (the
@@ -190,6 +213,8 @@ void residualCallback
         transport.refreshChemistrySources(eqns, ne, em.Emag());
     }
 
+    tChem += secSince(tPhase); tPhase = clockNow();
+
     // ---- 5. Refresh the energy model's coefficients (muEpsEff_, DEpsEff_,
     // dSdEps_, meanE_) and its Psrc_/Lsrc_ (via eEqn()'s updateSources()
     // call -- the returned matrix is discarded, only the side effect on
@@ -200,6 +225,8 @@ void residualCallback
         lmea.correct();
         tmp<fvScalarMatrix> tDiscard = lmea.eEqn();
     }
+
+    tEnergy += secSince(tPhase); tPhase = clockNow();
 
     // ---- 6. THE RESIDUAL. Explicit fvc:: evaluation throughout -- never
     // fvm::+.residual(), confirmed broken in parallel for that usage
@@ -395,6 +422,23 @@ void residualCallback
                 << " sX=" << sX[1 + ctx.nSpecies] << " sF=" << sfE
                 << " |F_scaled|=" << blockNorm(fBlock, nc) << endl;
         }
+    }
+
+    tResid += secSince(tPhase);
+
+    if (callCount % 2000 == 0 || callCount <= 3)
+    {
+        const double tot = tUnpack + tDerived + tTransport + tChem
+                         + tEnergy + tResid;
+        Pout<< "[timing] calls=" << callCount
+            << "  total=" << tot << " s"
+            << "  | unpack=" << tUnpack
+            << " derived=" << tDerived
+            << " transport=" << tTransport
+            << " CHEM=" << tChem
+            << " energy=" << tEnergy
+            << " residual=" << tResid
+            << "  (per call: " << tot/callCount << " s)" << endl;
     }
 }
 
@@ -750,7 +794,8 @@ Foam::snesNewtonSolver::snesNewtonSolver
 :
     mesh_(mesh),
     rtol_(dict.getOrDefault<scalar>("rtol", 1e-8)),
-    maxIt_(dict.getOrDefault<label>("maxIt", 50))
+    maxIt_(dict.getOrDefault<label>("maxIt", 50)),
+    mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-4))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -965,10 +1010,19 @@ void Foam::snesNewtonSolver::solveOuterStep
     }
 
     // Physics-based (Knoll & Keyes) preconditioned matrix-free JFNK -- see
-    // pcApplyCallback above. Bare/unpreconditioned JFNK was tried first and
-    // found to reliably hit SNES_DIVERGED_LINEAR_SOLVE on the real coupled
-    // system's first genuine (non-trivial) Newton iteration, 2026-09-09 --
-    // expected, matching the design doc's own diagnosis.
+    // pcApplyCallback above.
+    //
+    // SUPERSEDED BY the -mat_mffd_err finding below (2026-09-09): the earlier
+    // note here said bare/unpreconditioned JFNK "reliably hits
+    // SNES_DIVERGED_LINEAR_SOLVE on the real system's first genuine Newton
+    // iteration -- expected, matching the design doc's diagnosis". That
+    // attribution was WRONG. The breakdown was the differencing step being
+    // built from machine epsilon while F is only evaluable to ~1e-4, and it
+    // occurred IDENTICALLY with the physics-based PC and with PCNONE -- which
+    // is what proved the operator, not the preconditioner, was at fault. What
+    // still holds: the PC is worth having (it converges the Krylov system in
+    // 3-7 iterations). What does not: that bare JFNK's failure demonstrated
+    // the system's stiffness.
     // setEnv("PETSC_OPTIONS",...) does NOT work here: PetscInitialize()
     // already ran once, in this object's CONSTRUCTOR (see there), which
     // consumed whatever PETSC_OPTIONS existed at PROGRAM START -- setting
@@ -983,12 +1037,12 @@ void Foam::snesNewtonSolver::solveOuterStep
       // -ksp_monitor deliberately NOT set: it prints per GMRES iteration and
       // floods a long run. -ksp_max_it caps the Krylov work per Newton step.
       + " -ksp_converged_reason -ksp_max_it 100"
-      // Default "ds" MFFD epsilon uses ONE global-norm-derived perturbation
-      // for the whole concatenated state (volts ~O(10), densities ~O(1e17),
-      // energy density ~O(1e-2)) -- wildly mis-scaled for at least some
-      // blocks. "wp" (Walker-Pernice) is less sensitive to this; testing as
-      // a first, cheap diagnostic before a real per-block nondimensionalisation.
-      + " -mat_mffd_type wp";
+      + " -mat_mffd_type wp"
+      // THE differencing step. See mffdErr_'s declaration for the measurement:
+      // at PETSc's default (~1.5e-8) the Jacobian-vector product is pure ODE
+      // noise and GMRES hits DIVERGED_BREAKDOWN with the true residual at
+      // 2.4e9; at 1e-4 Newton converges in 3 iterations.
+      + " -mat_mffd_err " + Foam::name(mffdErr_);
     setPetscOptions(petscOptions.c_str());
 
     int its = 0;
