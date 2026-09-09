@@ -126,6 +126,7 @@ int solveWithSNES
     PCApplyCallback pcCallback,
     void* pcUserData,
     const double* lowerBounds,
+    const SnesPmatCOO* pmat,
     int* itsOut
 )
 {
@@ -239,11 +240,61 @@ int solveWithSNES
     //   MATMFFD matrix is what pulls the current x from the SNES object, and
     //   MatMFFDComputeJacobian exists precisely to do that -- all it does is
     //   call MatAssemblyBegin/End on the operator.
+    Mat Pmat = nullptr;
     {
         Mat Jmf;
         MatCreateSNESMF(snes, &Jmf);
         MatSetFromOptions(Jmf); // so -mat_mffd_type is honoured
-        SNESSetJacobian(snes, Jmf, Jmf, MatMFFDComputeJacobian, nullptr);
+
+        if (pmat && pmat->n > 0)
+        {
+            // A REAL assembled Pmat alongside the matrix-free Amat. PETSc's
+            // manual is explicit that fieldsplit takes its blocks from Pmat,
+            // not Amat, and a MATSHELL cannot supply them.
+            MatCreate(petscComm, &Pmat);
+            MatSetSizes(Pmat, nLocal, nLocal, PETSC_DETERMINE, PETSC_DETERMINE);
+            MatSetType(Pmat, MATAIJ);
+            MatSetFromOptions(Pmat);
+
+            // Preallocation: count entries per row from the triplets. Without
+            // this, assembly is quadratic in the worst case.
+            {
+                PetscInt* nnz = nullptr;
+                PetscMalloc1(nLocal, &nnz);
+                for (int i = 0; i < nLocal; ++i) { nnz[i] = 0; }
+                for (int k = 0; k < pmat->n; ++k)
+                {
+                    const int r = pmat->rows[k];
+                    if (r >= 0 && r < nLocal) { ++nnz[r]; }
+                }
+                MatSeqAIJSetPreallocation(Pmat, 0, nnz);
+                MatMPIAIJSetPreallocation(Pmat, 0, nnz, 0, nullptr);
+                PetscFree(nnz);
+            }
+
+            // ADD_VALUES so duplicate coordinates sum -- that is what lets the
+            // diagonal blocks and the cross-coupling be appended separately.
+            MatSetOption(Pmat, MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE);
+            for (int k = 0; k < pmat->n; ++k)
+            {
+                const PetscInt r = pmat->rows[k];
+                const PetscInt c = pmat->cols[k];
+                const PetscScalar v = pmat->vals[k];
+                MatSetValues(Pmat, 1, &r, 1, &c, &v, ADD_VALUES);
+            }
+            MatAssemblyBegin(Pmat, MAT_FINAL_ASSEMBLY);
+            MatAssemblyEnd(Pmat, MAT_FINAL_ASSEMBLY);
+
+            // MatMFFDComputeJacobian assembles only the MFFD operator it is
+            // given, leaving Pmat untouched -- exactly the lagged-Pmat
+            // behaviour we want for one outer step.
+            SNESSetJacobian(snes, Jmf, Pmat, MatMFFDComputeJacobian, nullptr);
+        }
+        else
+        {
+            SNESSetJacobian(snes, Jmf, Jmf, MatMFFDComputeJacobian, nullptr);
+        }
+
         MatDestroy(&Jmf);
     }
 
@@ -298,6 +349,7 @@ int solveWithSNES
     // Measured 2026-09-09, and only on the bounded path -- with `bounded
     // false` the same run is clean.
     SNESDestroy(&snes);
+    if (Pmat) MatDestroy(&Pmat);
     VecDestroy(&x);
     VecDestroy(&F);
     if (xl) VecDestroy(&xl);

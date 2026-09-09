@@ -13,6 +13,7 @@ License
 
 #include "snesNewtonSolver.H"
 #include "snesBridge.H"
+#include "blockMatrixCOO.H"
 #include "addToRunTimeSelectionTable.H"
 #include <chrono>
 #include <sstream>
@@ -1274,6 +1275,164 @@ void Foam::snesNewtonSolver::solveOuterStep
         }
     }
 
+    // ---- ASSEMBLED PRECONDITIONING MATRIX (Pmat), in COO form.
+    //
+    // The diagonal blocks are the SAME fvm:: linearisations pcApplyCallback
+    // solves, so the physics exists once, in OpenFOAM's language (rule 40).
+    // What is NEW here is the CROSS-COUPLING, which the block Gauss-Seidel
+    // shell could not represent at all and which PCFIELDSPLIT's Schur
+    // complement needs.
+    //
+    // Assembled ONCE per outer step and held fixed for the solve -- a lagged
+    // preconditioner. The matrix-free Amat still tracks the current iterate,
+    // so this costs nothing in the converged answer (K&K 3.1/5.1).
+    // PRIME THE MODELS FIRST. Everything the blocks below read -- mu, D,
+    // chemP/chemL, Psrc/Lsrc, phiE, meanE -- is refreshed (and in the
+    // chemistry's case SIZED) inside residualCallback. Assembling before any
+    // residual evaluation read fields that did not exist yet and segfaulted
+    // in the species block (localised with gdb + markers, 2026-09-09).
+    //
+    // One extra residual evaluation costs ~3 ms and buys a guarantee worth
+    // more than that: Pmat and F then describe the SAME state.
+    {
+        List<double> primeF(nLocalTotal, Zero);
+        residualCallback(int(nLocalTotal), xBuf.data(), primeF.data(), &ctx);
+    }
+
+    blockMatrixCOO coo(nCellsLocal, nFields);
+    {
+        // fvm:: matrices are VOLUME-INTEGRATED; the residual is per unit
+        // volume. Convert with 1/V so Pmat approximates dF/dx and not
+        // V*dF/dx, which would be wrong by a per-row factor on a graded mesh.
+        scalarField rV(nCellsLocal);
+        {
+            const scalarField& Vc = mesh_.V().field();
+            forAll(rV, c) { rV[c] = 1.0/Vc[c]; }
+        }
+
+        // --- Poisson diagonal block (field 0)
+        {
+            const dimensionedScalar& epsilon = em.epsilon();
+            const scalar sc = sX[0]/sF[0];
+
+            if (em.PoissonScheme() == "semiImplicit")
+            {
+                const dimensionedScalar dt = mesh_.time().deltaT();
+                const volScalarField effEps
+                (
+                    epsilon + dt*transport.electricalConductivity()
+                );
+                fvScalarMatrix pEqn
+                (
+                    fvm::laplacian
+                    (
+                        effEps, dePotential,
+                        "laplacian((epsilon+(deltaT*electricalConductivity)),ePotential)"
+                    )
+                );
+                coo.addFvMatrix(0, pEqn, sc, rV);
+            }
+            else
+            {
+                fvScalarMatrix pEqn
+                (
+                    fvm::laplacian
+                    (
+                        epsilon, dePotential, "laplacian(epsilon,ePotential)"
+                    )
+                );
+                coo.addFvMatrix(0, pEqn, sc, rV);
+            }
+        }
+
+            // --- THE COUPLING d(Poisson residual)/d(n_i), which is why any of
+        // this exists. SIGN DERIVED FROM OUR OWN RESIDUAL, not copied: the
+        // Poisson residual is F_0 = lap + chargeDensity + ... and
+        // chargeDensity = sum_i n_i * speciesCharges_[i]
+        // (plasmaSpecies::updateChargeDensity), so dF_0/dn_i = +speciesCharge(i).
+        // It is DIAGONAL because chargeDensity is a pointwise sum, and only
+        // CHARGED species contribute.
+        for (const label id : species.chargedSpeciesIDs())
+        {
+            const scalar q = species.speciesCharge(id).value();
+            const scalarField coeff(nCellsLocal, q);
+            coo.addDiagonalBlock(0, 1 + id, coeff, sX[1 + id]/sF[0]);
+        }
+
+            // --- Species diagonal blocks, mirroring pcApplyCallback's operators
+        for (label s = 0; s < nSpecies; ++s)
+        {
+            const plasmaTransportModel& model = transport.transportModel(s);
+            const scalar Z = species.speciesChargeNumber(s);
+            const word sName = species.speciesNames()[s];
+            volScalarField& dn = dSpecies[s];
+
+            tmp<surfaceScalarField> tPhi
+            (
+                Z*fvc::interpolate(model.mu())*em.phiE()
+            );
+            volScalarField chemLField
+            (
+                IOobject("chemLcoo_" + sName, mesh_.time().timeName(), mesh_,
+                         IOobject::NO_READ, IOobject::NO_WRITE),
+                mesh_, dimensionedScalar(dimless/dimTime, Zero)
+            );
+            // chemP_/chemL_ are SIZED by the chemistry timestep preamble,
+            // which runs inside residualCallback -- i.e. AFTER this point on
+            // the first outer step of a run. Reading them unsized overran a
+            // List and segfaulted (found with gdb, 2026-09-09). Omitting the
+            // loss term from the PRECONDITIONER until it exists is safe: a
+            // preconditioner need only approximate, and it is refreshed on
+            // every subsequent step.
+            if (transport.chemL(s).size() == nCellsLocal)
+            {
+                chemLField.primitiveFieldRef() = transport.chemL(s);
+            }
+
+            fvScalarMatrix sEqn
+            (
+                fvm::ddt(dn)
+              + fvm::div(tPhi(), dn, "div(phi_" + sName + ",n_" + sName + ")")
+              - fvm::laplacian
+                (
+                    model.D(), dn,
+                    "laplacian(D_" + sName + ",n_" + sName + ")"
+                )
+              + fvm::Sp(chemLField, dn)
+            );
+            coo.addFvMatrix(1 + s, sEqn, sX[1 + s]/sF[1 + s], rV);
+        }
+
+            // --- Energy diagonal block
+        if (lmea)
+        {
+            const scalar Ze =
+                species.speciesChargeNumber(species.electronSpeciesID());
+            volScalarField& dE = *dEnergy;
+
+            tmp<surfaceScalarField> tPhiEps
+            (
+                Ze*fvc::interpolate(lmea->muEpsEff(), "interpolate(mu_e)")
+               *em.phiE()
+            );
+            fvScalarMatrix eEqnP
+            (
+                fvm::ddt(dE)
+              + fvm::div(tPhiEps(), dE, "div(phi_e,n_e)")
+              - fvm::laplacian(lmea->DEpsEff(), dE, "laplacian(D_e,n_e)")
+              + fvm::Sp(lmea->Lsrc(), dE)
+            );
+            const label fE = 1 + nSpecies;
+            coo.addFvMatrix(fE, eEqnP, sX[fE]/sF[fE], rV);
+        }
+    }
+
+    SnesPmatCOO pmatCOO;
+    pmatCOO.n = int(coo.nEntries());
+    pmatCOO.rows = coo.rows();
+    pmatCOO.cols = coo.cols();
+    pmatCOO.vals = coo.vals();
+
     int its = 0;
     const int reason = solveWithSNES
     (
@@ -1284,6 +1443,7 @@ void Foam::snesNewtonSolver::solveOuterStep
         &pcApplyCallback,
         &pcCtx,
         bounded_ ? lowerBounds.cdata() : nullptr,
+        &pmatCOO,
         &its
     );
 

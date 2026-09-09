@@ -86,6 +86,30 @@ extern const double snesNoBound;
 // floor as a CONSTRAINT inside the solve is the principled version, and it is
 // what makes a cold start possible at all (see doc/newton-outer-solver-design.md,
 // defect A).
+// ASSEMBLED PRECONDITIONING MATRIX, in coordinate (COO) form.
+//
+// When cooN > 0 a real MATAIJ Pmat is built from these triplets and handed to
+// SNESSetJacobian as the SECOND matrix, with the matrix-free operator staying
+// as Amat. That combination is the ONLY one that lets PCFIELDSPLIT work here:
+// PETSc extracts field sub-blocks from Pmat, and it CANNOT extract them from a
+// matrix-free (MATSHELL) operator -- it silently degrades every split to
+// `PC type: none` instead of failing, which is why this exists.
+//
+// Duplicate (row, col) pairs are SUMMED, which is what lets separate physics
+// blocks and the cross-coupling be appended independently.
+//
+// The matrix is assembled ONCE per outer step and held fixed for the whole
+// SNES solve -- a deliberately lagged preconditioner (Knoll & Keyes 3.1/5.1).
+// The matrix-free Amat still tracks the current iterate exactly, so this costs
+// nothing in the converged answer.
+struct SnesPmatCOO
+{
+    int n = 0;                      // number of triplets
+    const int* rows = nullptr;
+    const int* cols = nullptr;
+    const double* vals = nullptr;
+};
+
 int solveWithSNES
 (
     int nLocal,
@@ -95,6 +119,7 @@ int solveWithSNES
     PCApplyCallback pcCallback,
     void* pcUserData,
     const double* lowerBounds,
+    const SnesPmatCOO* pmat,
     int* itsOut
 );
 

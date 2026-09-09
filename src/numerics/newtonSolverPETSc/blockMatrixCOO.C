@@ -80,7 +80,8 @@ void Foam::blockMatrixCOO::addFvMatrix
 (
     const label field,
     const fvScalarMatrix& m,
-    const scalar scaling
+    const scalar scaling,
+    const scalarField& rowFactor
 )
 {
     if (Pstream::parRun())
@@ -135,7 +136,7 @@ void Foam::blockMatrixCOO::addFvMatrix
 
     forAll(d, c)
     {
-        add(off + c, off + c, d[c]*scaling);
+        add(off + c, off + c, d[c]*scaling*rowFactor[c]);
     }
 
     // OFF-DIAGONAL, both triangles. An asymmetric matrix carries a separate
@@ -147,10 +148,10 @@ void Foam::blockMatrixCOO::addFvMatrix
     forAll(upp, f)
     {
         // row = owner (lower-numbered cell), col = neighbour
-        add(off + low[f], off + upp[f], uppVal[f]*scaling);
+        add(off + low[f], off + upp[f], uppVal[f]*scaling*rowFactor[low[f]]);
 
         // and the transpose position
-        add(off + upp[f], off + low[f], lowVal[f]*scaling);
+        add(off + upp[f], off + low[f], lowVal[f]*scaling*rowFactor[upp[f]]);
     }
 }
 

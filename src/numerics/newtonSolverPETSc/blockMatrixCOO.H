@@ -119,11 +119,18 @@ public:
     //  Processor interfaces are NOT yet contributed -- see the FatalError in
     //  the implementation; this is refused in parallel rather than silently
     //  assembling a matrix that ignores the coupling between ranks.
+    //  rowFactor multiplies every entry of row c. Pass 1/V to convert an
+    //  fvm:: matrix (which is VOLUME-INTEGRATED -- e.g. EulerDdtScheme sets
+    //  diag = rDeltaT*mesh().V()) into the per-unit-volume convention the
+    //  fvc::-built residual uses. Mixing the two silently yields a
+    //  preconditioner wrong by a per-row factor of V, which is invisible on a
+    //  uniform mesh and wrong on a graded one.
     void addFvMatrix
     (
         const label field,
         const fvScalarMatrix& m,
-        const scalar scaling
+        const scalar scaling,
+        const scalarField& rowFactor
     );
 };
 
