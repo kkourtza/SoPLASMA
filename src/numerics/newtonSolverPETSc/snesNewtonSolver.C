@@ -177,6 +177,17 @@ void residualCallback
         nEps.correctBoundaryConditions();
     }
 
+    // ---- 1b. chargeDensity is DERIVED from the species densities, so it must
+    // be rebuilt from the trial state before the Poisson residual reads it.
+    // Without this the Poisson block sees a chargeDensity left over from
+    // whenever the Picard path last updated it, which does not merely corrupt
+    // the JACOBIAN's Poisson<->species coupling -- it corrupts F itself, so
+    // Newton converges to the root of a Poisson-with-LAGGED-source system.
+    // That is precisely the segregated coupling this solver exists to remove,
+    // and it is why agreeing with Picard was NOT evidence of correctness.
+    // Found 2026-09-09.
+    species.updateChargeDensity();
+
     tUnpack += secSince(tPhase); tPhase = clockNow();
 
     // ---- 2. Refresh E, Emag, phiE, reducedE from the new ePotential --
@@ -186,7 +197,28 @@ void residualCallback
 
     tDerived += secSince(tPhase); tPhase = clockNow();
 
-    // ---- 3. Refresh each species' transport coefficients (mu, D -- looked
+    // ---- 3. Refresh meanE (and T_, and the energy coefficients) FIRST, so
+    // that the transport and rate lookups below key on THIS trial state.
+    //
+    // ORDER IS LOAD-BEARING, and it was wrong until 2026-09-09. meanE_ is
+    // recomputed only by updateDerived(), reachable only from
+    // localEnergyEnergyModel::correct(). That call used to sit AFTER the
+    // transport and chemistry refreshes, so mu/D and every reaction rate --
+    // all keyed on the "meanE" field -- were evaluated against the PREVIOUS
+    // residual call's mean energy. F was therefore a function of (u_k,
+    // u_{k-1}), not of u, which silently corrupts every matrix-free
+    // difference quotient: the Jacobian-vector product differences a
+    // quantity that depends on evaluation HISTORY.
+    //
+    // eEqn()/updateSources() still runs AFTER the chemistry refresh (step 5),
+    // because Psrc_/Lsrc_ depend on the chemistry sources under
+    // `energySource chemistry`. Only correct() moved up here.
+    if (ctx.hasEnergy)
+    {
+        ctx.lmea->correct();
+    }
+
+    // ---- 4. Refresh each species' transport coefficients (mu, D -- looked
     // up against the just-refreshed reducedE/meanE) from the new densities.
     for (label s = 0; s < ctx.nSpecies; ++s)
     {
@@ -215,14 +247,16 @@ void residualCallback
 
     tChem += secSince(tPhase); tPhase = clockNow();
 
-    // ---- 5. Refresh the energy model's coefficients (muEpsEff_, DEpsEff_,
-    // dSdEps_, meanE_) and its Psrc_/Lsrc_ (via eEqn()'s updateSources()
-    // call -- the returned matrix is discarded, only the side effect on
-    // Psrc_/Lsrc_ is used, exactly as step 4 discards its matrices).
+    // ---- 5. Refresh the energy model's Psrc_/Lsrc_, which depend on the
+    // chemistry sources just refreshed above. eEqn()'s updateSources() call
+    // does it; the returned matrix is discarded, only that side effect is
+    // used, exactly as the chemistry step discards its matrices.
+    //
+    // correct() is NOT called here any more -- it moved to step 3, because
+    // it owns the meanE refresh that steps 3-4 must key on. See there.
     if (ctx.hasEnergy)
     {
         localEnergyEnergyModel& lmea = *ctx.lmea;
-        lmea.correct();
         tmp<fvScalarMatrix> tDiscard = lmea.eEqn();
     }
 
@@ -795,7 +829,7 @@ Foam::snesNewtonSolver::snesNewtonSolver
     mesh_(mesh),
     rtol_(dict.getOrDefault<scalar>("rtol", 1e-8)),
     maxIt_(dict.getOrDefault<label>("maxIt", 50)),
-    mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-4))
+    mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -1038,11 +1072,11 @@ void Foam::snesNewtonSolver::solveOuterStep
       // floods a long run. -ksp_max_it caps the Krylov work per Newton step.
       + " -ksp_converged_reason -ksp_max_it 100"
       + " -mat_mffd_type wp"
-      // THE differencing step. See mffdErr_'s declaration for the measurement:
-      // at PETSc's default (~1.5e-8) the Jacobian-vector product is pure ODE
-      // noise and GMRES hits DIVERGED_BREAKDOWN with the true residual at
-      // 2.4e9; at 1e-4 Newton converges in 3 iterations.
-      + " -mat_mffd_err " + Foam::name(mffdErr_);
+      // Differencing step: PETSc's own default unless a case overrides it.
+      // It is deliberately NOT set to a large value by default -- see
+      // mffdErr_'s declaration for why that would have papered over a real
+      // ordering bug rather than accommodating genuine noise in F.
+      + (mffdErr_ > 0 ? " -mat_mffd_err " + Foam::name(mffdErr_) : word(""));
     setPetscOptions(petscOptions.c_str());
 
     int its = 0;

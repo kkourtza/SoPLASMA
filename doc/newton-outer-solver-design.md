@@ -1088,3 +1088,112 @@ it PASSES.
   `nOuterCorrectors > 1` guard is bypassed for newton mode only).
 * Temporary per-phase timers and per-block residual diagnostics are still in
   `residualCallback`; remove once Phase D is under way.
+
+## Two CORRECTNESS defects in the residual, and a retracted measurement -- 2026-09-09
+
+Found by a four-agent code study run against the working tree. Both defects are
+fixed; one of my own measurements from the section above is RETRACTED.
+
+### 0a. The residual never refreshed chargeDensity
+
+`residualCallback` read `em.chargeDensity()` for the Poisson block but never
+called `species.updateChargeDensity()` -- whose only call sites were
+`soPlasmaFoam.C` (the Picard branches) and `plasmaTransport.C:550`. Verified by
+grep, not inferred.
+
+This is worse than a Jacobian defect. It corrupts F ITSELF, so Newton converged
+to the root of a Poisson-with-LAGGED-source system -- exactly the segregated
+coupling this solver exists to remove at NDR, with the enclosing
+`pimple.loop()` supplying the outer lag. **It also means the "physics gate
+passed" result above was not evidence of correctness**: agreeing with Picard is
+precisely what a Newton solver that is secretly solving Picard's system does.
+Fixed: `updateChargeDensity()` now runs right after the species are unpacked.
+
+### 0b. meanE was refreshed AFTER the lookups that key on it
+
+`meanE_` is recomputed only in `localEnergyEnergyModel::updateDerived()`,
+reachable only from `correct()`. That call sat AFTER
+`transportModel(s).correct()` and `refreshChemistrySources()` -- both of which
+look up coefficients and reaction rates keyed on the `"meanE"` field. So F was
+evaluated with the PREVIOUS residual call's mean energy: F = F(u_k, u_{k-1}),
+not a function of u at all, which corrupts every matrix-free difference
+quotient. Fixed by moving `correct()` ahead of the transport and chemistry
+refreshes, while leaving `eEqn()`/`updateSources()` after them (Psrc_/Lsrc_
+depend on the chemistry sources under `energySource chemistry`).
+
+### RETRACTED: the claim that the ordering fix made F smooth
+
+The section above recorded a sweep showing 1e-8, 1e-6 and 1e-4 all converging
+"to the IDENTICAL final norm 2.247181640213e-10", read as insensitivity to the
+differencing step and therefore as proof the operator was now correct.
+
+THAT MEASUREMENT WAS INVALID. `mffdErr_` still defaulted to 1e-4 at the time, so
+`setPetscOptions()` inserted `-mat_mffd_err 1e-4` AFTER the swept
+`PETSC_OPTIONS` value and overrode it. All three runs were the same
+configuration -- which is exactly why they agreed to the last digit. Rule 22:
+the diagnostic was the first suspect and was not checked.
+
+The valid measurement, with the default unset so the environment variable takes
+effect, 20 steps from the 2e-9 restart:
+
+    1e-8, 1e-7, 1e-6   fail at step 1, DIVERGED_BREAKDOWN
+    1e-5               20/20 steps converged, <= 3 Newton iterations
+    (PETSc default PETSC_SQRT_MACHINE_EPSILON ~ 1.49e-8 also fails)
+
+So the ordering fix moved the usable threshold from ~1e-4 to ~1e-5 -- real, but
+NOT a qualitative cure. **F is still not smooth at the 1e-6 level.** Two
+identified, still-unfixed causes:
+
+* `updateDerived()` writes a CLAMP back into `nEps_`, so the state F is
+  evaluated at is not the state PETSc perturbed. A clamp inside the residual is
+  the same class of defect as defect A above, one level down.
+* species/`nEps` `correctBoundaryConditions()` run before `updateDerivedFields`
+  and the mobility refresh, so `ddWallFluxMixed` (which reads live `phiE` and
+  patch mobility) is one call stale.
+
+`newtonSolver/mffdErr` therefore ships as a documented WORKAROUND, default
+1e-5, with the reasoning on its declaration. A case that diverges should raise
+it first.
+
+### What the 20-step window can and cannot show
+
+After both fixes, 20/20 steps converge (19 at 2 Newton iterations, 1 at 3;
+8.13 s against Picard's 1.92 s). Three-way field comparison at t = 2.02e-9:
+
+    field           fixed-vs-picard   fixed-vs-unfixed-newton
+    ePotential            1.08e-05                  1.73e-06
+    n_e                   4.76e-06                  3.05e-09
+    nEps_e                7.85e-08                  4.89e-09
+    chargeDensity         8.20e-05                  5.36e-08
+
+The correctness fix moved the answer by ~1e-6 at most. **This window therefore
+does NOT exercise what was fixed** (rule 23): over 1 ps in a near-quasi-static
+region, a lagged Poisson source and a coupled one barely differ. The lag matters
+at the negative-differential-resistance point, which is Phase D. Do not cite
+these numbers as validation of the coupling.
+
+### Remaining, in priority order
+
+1. Phase D: run through Picard's ~step 23,000 divergence. This is the only test
+   that exercises the coupling the fixes restored.
+2. Remove the two remaining non-smoothness sources above, then check whether
+   `mffdErr` can drop toward PETSc's default. That is the objective measure of
+   whether F is finally a clean function of u.
+3. VERIFY, not yet done: `plasmaTransport.C:4306-4327` mutates `chemSrcPrev_`
+   and `chemOuterCount_` DURING residual evaluation. If anything consumes
+   `chemPicardChange_` in Newton mode, the residual is history-dependent and
+   that is a Tier-0 defect, not a performance note.
+4. Correctness-free speedups, all identified and none applied: drop the three
+   discarded `nEqn()` builds (every `eqns` access in `mechanismSourceTerms` is
+   already guarded, so an empty list is legal today); drop the `eEqn()` build by
+   exposing `updateSources()`; cache the preconditioner's coefficient fields per
+   Newton step (~6 s of the 8 s run is PC+KSP, now the largest target); and get
+   the MPI collectives and `Info<<` out of the matvec
+   (`plasmaReactionRates.C:478-490`, `plasmaTransport.C:4075`,
+   `driftDiffusion.C:387`).
+5. `snesNewtonSolver` should FatalError, not silently solve a different system,
+   on configurations the residual ignores: surface charging, photoionisation,
+   and the legacy Townsend `!rates_` source. Verified absent for grubert2009
+   ONLY -- re-check before offering Newton for needleDBD or the streamer cases.
+6. Chemistry accuracy under Newton is still UNVERIFIED.
+7. Remove the temporary per-phase timers and per-block residual diagnostics.

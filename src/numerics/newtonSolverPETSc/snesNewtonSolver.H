@@ -73,20 +73,45 @@ class snesNewtonSolver
     scalar rtol_;
     label maxIt_;
 
-    //- Relative error to which F(u) can actually be EVALUATED, which sets the
-    //  matrix-free differencing step (PETSc `-mat_mffd_err`). NOT machine
-    //  epsilon: F here runs a per-cell ADAPTIVE stiff chemistry ODE, whose
-    //  internal step sequence changes discontinuously with its input, so F
-    //  carries noise far above sqrt(eps_mach). Knoll & Keyes section 2.3.1
-    //  states the rule -- when F is only evaluable to eps_rel, the
-    //  differencing parameter must be built from eps_rel, not eps_mach.
+    //- Relative error to which F(u) can be EVALUATED, setting the matrix-free
+    //  differencing step (PETSc `-mat_mffd_err`). NEGATIVE (the default) means
+    //  do not set it at all and leave PETSc's own choice in place.
     //
-    //  Measured 2026-09-09 on grubert2009, one Newton step from a Picard
-    //  restart: PETSc's default (~1.5e-8) and 1e-6 both gave
-    //  DIVERGED_BREAKDOWN with the true residual exploding to 2.4e9 while the
-    //  PRECONDITIONED residual fell cleanly -- the signature of a
-    //  Jacobian-vector product that does not represent the true operator.
-    //  1e-4 and 1e-2 both converged in 3 Newton iterations. Default 1e-4.
+    //  Knoll & Keyes section 2.3.1 gives the rule this exists for: when F can
+    //  only be evaluated to eps_rel, the differencing parameter must be built
+    //  from eps_rel rather than eps_mach. It is retained as an escape hatch
+    //  for a genuinely noisy F -- for instance a case whose stiff chemistry
+    //  ODE actually fires, which grubert2009's does not (its own report says
+    //  "0 of 2000 cells integrated").
+    //
+    //  DEFAULT 1e-5, and it is a WORKAROUND, not a physical constant. PETSc's
+    //  own default (PETSC_SQRT_MACHINE_EPSILON ~ 1.49e-8) does NOT work here.
+    //  Measured 2026-09-09 over 20 steps from the 2e-9 Picard restart:
+    //  1e-8, 1e-7 and 1e-6 all fail at step 1 with DIVERGED_BREAKDOWN;
+    //  1e-5 converges on 20/20 steps in at most 3 Newton iterations.
+    //
+    //  What that means: F is still not a smooth function of u at the 1e-6
+    //  level. Two identified, UNFIXED causes -- localEnergyEnergyModel's
+    //  updateDerived() writes a CLAMP back into nEps_, so the state F is
+    //  evaluated at is not the state PETSc perturbed; and the species/nEps
+    //  boundary conditions are corrected before the derived fields and
+    //  mobilities they depend on. Removing those should let this drop toward
+    //  PETSc's default; until then a case that diverges here should try
+    //  RAISING mffdErr before anything else.
+    //
+    //  SUPERSEDED, recorded because both earlier versions of this comment
+    //  were wrong and one was committed:
+    //  (1) It first defaulted to 1e-4, attributing the breakdown to noise
+    //      from the adaptive chemistry ODE. Wrong -- that ODE never fires on
+    //      this case ("0 of 2000 cells integrated", 3 reactions).
+    //  (2) It then claimed the meanE ordering fix made 1e-8/1e-6/1e-4 all
+    //      converge identically. That measurement was INVALID: mffdErr_ still
+    //      defaulted to 1e-4 at the time, so setPetscOptions() inserted
+    //      -mat_mffd_err 1e-4 AFTER the swept environment variable and
+    //      overrode it. All three runs were the same configuration, which is
+    //      why they agreed to the last digit. The ordering fix is still
+    //      correct and still worth having -- it moved the usable threshold
+    //      from ~1e-4 to ~1e-5 -- but it did not make F smooth.
     scalar mffdErr_;
 
 public:
