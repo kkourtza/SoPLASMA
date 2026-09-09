@@ -392,10 +392,46 @@ localEnergyEnergyModel::localEnergyEnergyModel
     // win means starting from a uniform guess inconsistent with the field
     // that already exists at t=0, which is what produced the first-step
     // excursion to 1499 eV. A RESTART is different: there the stored field is
-    // a real solution and must not be touched. The two are told apart by the
-    // time index -- at startTime nothing has been solved yet.
-    const bool freshStart =
-        mesh.time().timeIndex() == mesh.time().startTimeIndex();
+    // a real solution and must not be touched.
+    //
+    // FIXED 2026-09-09, and it was a REAL PRODUCTION BUG on the Picard path,
+    // not only the Newton one. This test used to read
+    //
+    //     mesh.time().timeIndex() == mesh.time().startTimeIndex()
+    //
+    // which is evaluated in THIS CONSTRUCTOR -- before the time loop runs --
+    // so the two are trivially equal and it was ALWAYS true, restart or not.
+    // Every LMEA restart carrying `initialMeanEnergy` therefore DISCARDED its
+    // stored energy state at the first correct() and re-seeded from the LFA
+    // equilibrium. The comment above stated an intent the test could not
+    // implement. Found by review while chasing a JFNK residual defect: the
+    // same one-shot seed was firing inside the Newton residual, which is how
+    // it came to light (see doc/newton-outer-solver-design.md).
+    //
+    // The test now asks the question directly: is the time we are starting
+    // from the EARLIEST one this case has on disk? If we came from a LATER
+    // time directory then something has been solved and its energy state
+    // stands. `constant` is skipped -- it is not a time.
+    bool freshStart = true;
+    {
+        const instantList ts = mesh.time().times();
+        scalar earliest = VGREAT;
+
+        forAll(ts, i)
+        {
+            if (ts[i].name() != mesh.time().constant())
+            {
+                earliest = min(earliest, ts[i].value());
+            }
+        }
+
+        if (earliest < VGREAT)
+        {
+            freshStart =
+                mag(mesh.time().value() - earliest)
+             <= SMALL*max(scalar(1), mag(earliest));
+        }
+    }
 
     if
     (
