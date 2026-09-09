@@ -581,22 +581,41 @@ struggling Newton solve grind for 200 iterations delays the retry that would
 have found a workable step sooner. The retry ladder is a better response to a
 hard step than more iterations on it.
 
-## Still untested (next, in priority order)
+## Still untested / next, in priority order (as of 2026-09-11 ~03:40)
 
-1. **Per-CELL scaling.** `sX` is one scalar per FIELD. An ignited discharge has
-   `Arp` spanning 1e11–5.7e18 WITHIN one block (7.7 decades), so cells at the
-   floor scale to ~1e-8 of the block's own scale and their Jacobian columns are
-   differenced at the noise level. Item (7) fixes the imbalance BETWEEN blocks;
-   this is the same disease WITHIN one.
-2. **Bounded Newton** (`SNESVINEWTONRSLS`, `bounded true`). The density clamp
-   is applied OUTSIDE the equations, so while it is active `F(u)=0` is not
-   reachable at all. At ignition, cells sit on the floor next to cells at 1e18.
-   (Test running.)
-3. **Pmat quality at the ignited state.** `-snes_test_jacobian` measured 6.75e-3
-   pre-ignition; re-measure it here. A Pmat that was an adequate approximation
-   in the quiescent state need not be one across a streamer head. (Test
-   running.)
-4. **log(n) formulation.** The principled fix for 1 and 2 at once, and already
-   on the deferred list. Positivity becomes intrinsic, the clamp goes, and the
-   seven-decade dynamic range becomes an O(1) range in the unknown. Everything
-   measured today argues for it: the failures are all dynamic-range failures.
+1. **`maxIt` is state-dependent — resolve it.** Raising `maxIt` 50→200 HURT at
+   the easy pre-ignition state (−16%), but the deep-avalanche run
+   (`newton_ignition_ew`, t≈1.90e-6) is failing with `DIVERGED_MAX_IT` at
+   `maxIt 50`, which is the opposite signal. The two are not contradictory —
+   more iterations waste time on a step that should be retried, EXCEPT when the
+   step is genuinely solvable and just needs them. Worth an `maxIt` sweep AT the
+   hard state rather than the easy one.
+2. **Per-CELL scaling.** `sX` is still one scalar per FIELD while `Arp` spans
+   1e11–5.7e18 within its block. Deliberately NOT attempted overnight: 42 usage
+   sites, and a wrong refactor would silently corrupt every result above. Do it
+   with a switch and an A/B, in daylight.
+3. **`d(Psrc)/dφ`, Joule heating's response to the field**, still missing from
+   the energy row. Direct and probably strong, but not laplacian-shaped, so it
+   needs its own derivation rather than a copy of the drift term.
+4. **Pmat staleness.** It is assembled once per outer step and held for the
+   whole SNES solve. At ignition the state moves fast within a step; a mid-solve
+   refresh is untested.
+5. **log(n).** Everything measured points the same way — the failures are
+   dynamic-range failures — and it fixes (2) and the clamp at once.
+
+## What is running (overnight, 2026-09-11)
+
+| case | configuration | purpose |
+|---|---|---|
+| `newton_ignition_ew` | coupling + ionisation deriv + EW | best config, through ignition |
+| `newton_ignition_fixed` | coupling only | control |
+| `newton_retry_ignition` | oldest library | control |
+| `ballast400_fine` | PICARD | the reference trajectory + fine snapshots |
+| `hyp_ew_best` | EW + `-mat_mffd_type ds` | best option stack, more samples |
+
+Ignition is at t ≈ 1.97e-6. Picard's own behaviour there is already measured and
+is the thing to beat: **dt collapses to ~1e-15 with 31–42 correctors/step.**
+
+**Compare at EQUAL SAMPLE SIZE and from a COMMON start time.** Four separate
+misreadings in this session came from comparing runs at unequal step counts or
+different start points, in both directions.
