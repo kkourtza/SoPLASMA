@@ -138,6 +138,19 @@ class snesNewtonSolver
     //      petscOptions "-fieldsplit_0_pc_type hypre -fieldsplit_1_pc_type ilu";
     string petscOptions_;
 
+    //- Whether the LAST SNES solve converged. Reported through
+    //  lastSolveConverged() instead of being turned into a FatalError, so a
+    //  step Newton cannot solve is DISCARDED AND RETRIED at a shorter dt via
+    //  the same `onNonConvergence retryStep` path Picard uses.
+    //
+    //  Measured 2026-09-10 on grubert2009_ballast400, and this is why it
+    //  matters: on handover Newton inherits whatever dt Picard's easy phase
+    //  wound up to (1.29e-9 there) and dies on contact, while the SAME state
+    //  solves cleanly at dt <= 1e-11 (154 and 256 steps, zero failures). The
+    //  step was merely too big, and a solver with no way to report that has no
+    //  way to find its own ceiling.
+    bool lastConverged_ = true;
+
 public:
 
     TypeName("SNES");
@@ -153,6 +166,14 @@ public:
         plasmaTransport& transport,
         plasmaEnergy* energy
     ) override;
+
+    //- Did the last solveOuterStep() converge? A false here makes soPlasmaFoam
+    //  DISCARD the step and retry it at a shorter dt through plasmaTimeControl,
+    //  rather than the run dying on a FatalError.
+    virtual bool lastSolveConverged() const override
+    {
+        return lastConverged_;
+    }
 };
 
 } // End namespace Foam

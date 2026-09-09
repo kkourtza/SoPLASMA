@@ -674,6 +674,14 @@ private:
             //  mechanism.
             bool outerHitCap_;
 
+            //- Set when the NEWTON outer solve failed outright (there is no
+            //  corrector count to compare against the cap). Kept SEPARATE from
+            //  outerHitCap_ because noteOuterLoop() assigns that one
+            //  unconditionally and runs AFTER the Newton call, so a shared
+            //  flag would be erased by the very next statement. Cleared at
+            //  each step start and on each retry.
+            bool outerSolveFailed_ = false;
+
             //- Correctors actually used on the last step, peak-held between
             //  reports
             label outerItersUsed_;
@@ -751,6 +759,18 @@ public:
         //  possibly disagreeing, criterion of ours.
         void noteOuterLoop(const label used);
 
+        //- The NEWTON equivalent of hitting the corrector cap: the coupled
+        //  solve did not converge at all.
+        //
+        //  Under `outerSolver newton` there is no corrector count to compare
+        //  against maxCorrectors -- one SNES call either converges or does
+        //  not -- so this routes that verdict into the SAME rejection
+        //  machinery, and `onNonConvergence` keeps ONE meaning whichever outer
+        //  solver runs. A rejected Newton step is then retried at a shorter
+        //  deltaT, which is almost always the right response: the step
+        //  exceeded the problem's Newton stability ceiling.
+        void noteOuterFailure();
+
         //- Should the step just solved be DISCARDED and re-run smaller?
         //
         //  True only under `onNonConvergence retryStep`, when the loop hit its
@@ -761,7 +781,12 @@ public:
         //- Record the time the step is starting FROM. Call it in the solver
         //  loop BEFORE ++runTime, which is the only place the value is
         //  unambiguous. See tStepStart_ for why it cannot be inferred later.
-        void noteStepStart() { tStepStart_ = runTime_.value(); }
+        void noteStepStart()
+        {
+            tStepStart_ = runTime_.value();
+            // A new step starts with no verdict; see outerSolveFailed_.
+            outerSolveFailed_ = false;
+        }
 
         //- Declare that an LMEA energy equation is transported, so the step
         //  is limited on ITS Courant number too. See energyCourantFactor_.

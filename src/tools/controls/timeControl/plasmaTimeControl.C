@@ -1655,7 +1655,8 @@ void plasmaTimeControl::adjustDeltaT(const plasmaTransport& transport)
     // separate mechanism that set deltaT on its own could override the
     // dielectric or Courant limits and trade an accuracy problem for a
     // stability one.
-    if (outerHitCap_ && outerOnNonConvergence_ == "reduceDeltaT")
+    if ((outerHitCap_ || outerSolveFailed_)
+     && outerOnNonConvergence_ == "reduceDeltaT")
     {
         // Halve. The coupling residual is not a smooth function of deltaT the
         // way a Courant number is -- there is no limit to solve for -- so this
@@ -2658,7 +2659,8 @@ void plasmaTimeControl::noteDegradedStep()
 
 bool plasmaTimeControl::stepRejected() const
 {
-    if (outerOnNonConvergence_ != "retryStep" || !outerHitCap_) return false;
+    if (outerOnNonConvergence_ != "retryStep"
+     || !(outerHitCap_ || outerSolveFailed_)) return false;
 
     // Halving a step that is already on the floor buys nothing but a wasted
     // solve; let the caller accept and degrade instead.
@@ -2744,6 +2746,7 @@ void plasmaTimeControl::prepareRetry(const bool keepDeltaT)
     // The step is being redone, so the verdict from the attempt just thrown
     // away must not also shrink the NEXT step in adjustDeltaT().
     outerHitCap_ = false;
+    outerSolveFailed_ = false;
 }
 
 
@@ -2787,6 +2790,43 @@ void plasmaTimeControl::noteOuterLoop(const label used)
             << "-corrector cap without converging; this step is not"
             << " second order." << endl;
     }
+}
+
+
+void plasmaTimeControl::noteOuterFailure()
+{
+    // THE NEWTON EQUIVALENT OF HITTING THE CORRECTOR CAP.
+    //
+    // Under `outerSolver newton` there is no corrector count to compare
+    // against outerMaxCorrectors_ -- the whole coupled system is solved in one
+    // SNES call, which either converges or does not. This routes that verdict
+    // into the SAME rejection machinery, so `onNonConvergence` means one thing
+    // whichever outer solver is running and the policy lives in one place.
+    //
+    // Deliberately NOT expressed as noteOuterLoop(outerMaxCorrectors_): that
+    // would fake a corrector count, corrupt outerItersUsed_ (which is reported
+    // and used for diagnostics), and silently depend on
+    // outerChaseConvergence_ being true.
+    outerSolveFailed_ = true;
+
+    if (outerOnNonConvergence_ == "fatal")
+    {
+        FatalErrorInFunction
+            << "The Newton outer solve did not converge." << nl
+            << "    With `onNonConvergence fatal` this is the end of the run."
+            << nl
+            << "    Use `retryStep` (the default) to DISCARD the step and"
+            << " retry it at a shorter" << nl
+            << "    deltaT instead -- a Newton failure usually means the step"
+            << " exceeded this" << nl
+            << "    problem's stability ceiling, not that the case is"
+            << " unsolvable." << nl
+            << exit(FatalError);
+    }
+
+    WarningInFunction
+        << "the Newton outer solve did not converge; the step will be"
+        << " rejected and retried at a shorter deltaT." << endl;
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

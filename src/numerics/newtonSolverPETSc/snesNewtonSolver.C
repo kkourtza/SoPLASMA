@@ -1544,11 +1544,29 @@ void Foam::snesNewtonSolver::solveOuterStep
     Info<< "outerSolver newton (SNES): reason " << reason
         << " (positive = converged), iterations " << its << endl;
 
-    if (reason <= 0)
+    // REPORTED, NOT FATAL. A step Newton cannot solve is a step that was too
+    // large, and the response to that is a shorter step -- exactly what Picard
+    // already does under `outerCoupling/onNonConvergence retryStep`. Killing
+    // the run instead denied Newton the one thing it needs to find its own
+    // stability ceiling, and made the Picard->Newton handover fatal by
+    // construction: Newton inherits whatever dt the easy Picard phase wound up
+    // to and meets it head-on.
+    //
+    // soPlasmaFoam reads lastSolveConverged() and, when it is false, discards
+    // the step and retries at a shorter dt. If the case's policy is `fatal`,
+    // plasmaTimeControl raises that itself -- the policy lives in ONE place
+    // rather than being duplicated here.
+    lastConverged_ = (reason > 0);
+
+    if (!lastConverged_)
     {
-        FatalErrorInFunction
-            << "SNES did not converge (reason " << reason << ")."
-            << nl << exit(FatalError);
+        WarningInFunction
+            << "SNES did not converge (reason " << reason << ") at dt = "
+            << mesh_.time().deltaTValue() << "." << nl
+            << "    The step is being reported as non-converged so the outer"
+            << " loop can DISCARD and retry it at a shorter dt." << nl
+            << "    A persistent failure here means the step is above this"
+            << " problem's Newton stability ceiling." << endl;
     }
 }
 

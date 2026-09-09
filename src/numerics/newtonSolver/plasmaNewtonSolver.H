@@ -115,6 +115,30 @@ public:
             plasmaTransport& transport,
             plasmaEnergy* energy
         ) = 0;
+
+        //- Did the LAST solveOuterStep() converge?
+        //
+        //  REPORTED RATHER THAN FATAL, so a non-converged Newton step can be
+        //  DISCARDED AND RETRIED AT A SHORTER dt through exactly the machinery
+        //  Picard already uses (`outerCoupling/onNonConvergence retryStep`),
+        //  instead of killing the run.
+        //
+        //  The asymmetry this removes was real and it was the binding one:
+        //  Picard could back off from a step it could not solve and Newton
+        //  could not, so on any handover Newton inherited whatever dt Picard's
+        //  easy phase had wound up to and died on contact with it. Measured
+        //  2026-09-10 on grubert2009_ballast400: Newton is handed dt = 1.29e-9
+        //  and fails immediately, while the SAME state solves cleanly at
+        //  dt <= 1e-11 (154 and 256 steps, zero failures). The step was simply
+        //  too large, and a solver that cannot say so has no way to find that
+        //  out.
+        //
+        //  Default true, so an implementation that never fails need not
+        //  override it.
+        virtual bool lastSolveConverged() const
+        {
+            return true;
+        }
 };
 
 } // End namespace Foam
