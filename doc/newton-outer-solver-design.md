@@ -1323,3 +1323,81 @@ Candidate alternatives, to be planned properly rather than adopted by default:
 4. **Nonlinear preconditioning (ASPIN-family, K&K 3.6)** for the unbalanced
    sheath-vs-bulk nonlinearity that is our actual failure. Research-grade and
    publishable (rule 33).
+
+## The Phase D blocker is CONDITIONING, not nonlinearity: dt is the lever, and SG makes it WORSE -- 2026-09-09
+
+SUPERSEDES the "nonlinear stiffness" attribution in the section above. That was
+too pessimistic and is retracted.
+
+### dt IS the lever (option 1 confirmed)
+
+Newton restarted at t=2e-8, ONLY deltaT varied, 20 steps each, `standard` flux
+scheme:
+
+    dt        result
+    1e-12     FAIL at step 1 (DIVERGED_LINEAR_SOLVE)   <- Picard's dt
+    9e-13     FAIL at step 1
+    7.5e-13   FAIL at step 1
+    5e-13     20/20 converged, 3 Newton iterations
+    1e-13     20/20 converged, 3 Newton iterations
+    1e-14     20/20 converged, 3 Newton iterations
+
+Threshold between 5e-13 and 7.5e-13, so the penalty against Picard's 1e-12 is
+only about 1.5-2x -- NOT the 10x first guessed.
+
+WHY, and it is a straightforward conditioning argument borne out by the block
+norms at that state: for the species blocks |lap| exceeds |ddt| by ~1000x
+(n_e: |ddt| 1.5e19, |div| 4.4e21, |lap| 1.4e22). The ddt term contributes
+1/dt = 1e12 to the diagonal while diffusion contributes D/dx^2 ~ 5e14, so at
+dt = 1e-12 the Jacobian is NOT diagonally dominant. Halving dt doubles the
+diagonal and the linear system becomes solvable. This is a DIFFUSION-stiffness
+limit, not a failure of Newton's method.
+
+Note the honest comparison: Picard RAN at dt=1e-12 while Newton REFUSES there.
+Picard was not solving the coupled system at that dt either (rho ~ 1321, not
+contracting) -- it advanced the clock regardless. Newton failing is Newton
+reporting the truth. But operationally it costs ~2x the steps at this state.
+
+### Scharfetter-Gummel makes it WORSE (option 3 refuted)
+
+Tested because SG is exponentially fitted and positivity-friendly, i.e. it
+encodes log(n)'s insight inside the FLUX while keeping the unknown
+conservative. Measured, only the scheme varied:
+
+    dt = 1e-12   SG        FAIL   (as standard does)
+    dt = 5e-13   standard  20/20 converged
+    dt = 5e-13   SG        FAIL at step 1
+
+So SG NARROWS the usable dt envelope rather than widening it. On reflection
+this is expected: SG's Bernoulli-function flux introduces exponential
+dependence on the local Peclet number, which makes F MORE nonlinear and so
+harder to finite-difference. SG remains the right choice for positivity and
+monotonicity -- it is the wrong lever for JFNK conditioning. Verified SG was
+actually active (all 3 species and the LMEA energy report
+`fluxScheme ScharfetterGummel`, "Discretizing transport with SG scheme...").
+
+### Consequence for the log(n) question
+
+This strengthens the case AGAINST log(n) further. COMSOL's guide says the log
+form "increases the nonlinearity of the equation system"; we have now MEASURED
+that a different exponentially-fitted reformulation (SG) does exactly that and
+costs us dt headroom. Two independent lines of evidence now say that adding
+exponential structure to the residual hurts the thing that currently limits us.
+
+### Where this leaves the options
+
+1. **dt-aware Newton (do this).** The framework already limits dt by `Co_diff`
+   and already has `retryStep` for rejected steps. The natural fix is to let a
+   failed SNES solve REJECT the step and retry at smaller dt, exactly as the
+   temporal-error controller already does -- rather than FatalError. That turns
+   a hard failure into an automatic, documented dt reduction of ~2x at the
+   stiffest moments and needs no new mechanism (rule 30).
+2. **Bounded Newton (SNESVINEWTONRSLS)** -- still worth doing, but for the
+   COLD START and to remove the clamp-outside-the-equations defect. Measured
+   NOT to be the Phase D blocker: zero out-of-range table lookups in either
+   run, and the mean-energy clamp is not binding (bounds [0.039, 2644] eV
+   against meanE 0.81-1.62).
+3. SG for JFNK conditioning: REFUTED above, do not pursue for this purpose.
+4. ASPIN / nonlinear preconditioning: the motivation is weaker than thought,
+   since the blocker is linear conditioning rather than unbalanced
+   nonlinearity. Keep as a research track, not the next step.
