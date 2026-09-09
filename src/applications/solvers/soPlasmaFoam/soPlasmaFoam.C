@@ -591,6 +591,18 @@ int main(int argc, char *argv[])
                         em(), species, transport, energy.get()
                     );
 
+                    // A Newton step that did not converge is DISCARDED and
+                    // retried at a shorter dt, through exactly the machinery
+                    // Picard uses. Newton reports rather than dies precisely
+                    // so this is possible: on handover it inherits whatever dt
+                    // the easy Picard phase wound up to, and its stability
+                    // ceiling is a property of the state, not something a case
+                    // can be expected to know in advance.
+                    if (!newtonSolver->lastSolveConverged())
+                    {
+                        timeControl.noteOuterFailure();
+                    }
+
                     // NOT part of "the solve" -- these are REQUIRED every
                     // corrector regardless of solver strategy (see the
                     // Picard branch's own comment on why: idempotent,
@@ -722,6 +734,18 @@ int main(int argc, char *argv[])
                     (
                         em(), species, transport, energy.get()
                     );
+
+                    // A Newton step that did not converge is DISCARDED and
+                    // retried at a shorter dt, through exactly the machinery
+                    // Picard uses. Newton reports rather than dies precisely
+                    // so this is possible: on handover it inherits whatever dt
+                    // the easy Picard phase wound up to, and its stability
+                    // ceiling is a property of the state, not something a case
+                    // can be expected to know in advance.
+                    if (!newtonSolver->lastSolveConverged())
+                    {
+                        timeControl.noteOuterFailure();
+                    }
                     species.updateChargeDensity();
                     transport.updateSurfaceCharge();
                 }
