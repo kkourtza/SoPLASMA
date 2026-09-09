@@ -1538,3 +1538,101 @@ equal to an exact LU of Pmat.
 * Precedent to copy: `src/snes/tutorials/ex28.c` (elliptic coefficient coupled
   to a second field, run with `-snes_mf_operator -pc_type fieldsplit`) and
   `ex19.c` for AMG on the elliptic block.
+
+## Pmat + PCFIELDSPLIT: the design, and what petsc4Foam does and does not give us -- 2026-09-09
+
+Rule 40 (work inside OpenFOAM's structures; confine third-party libraries
+behind a thin MECHANICAL boundary) decides the shape of this, and the first
+question it forces is whether the framework already does the job.
+
+### What petsc4Foam provides -- checked, not assumed
+
+Upstream (https://gitlab.com/petsc/petsc4foam) README lists:
+
+    "ldu2csr: convert OpenFOAM lduMatrix to PETSc mataij (csr)"
+    "Selection of solvers and preconditioners available in PETSc and in its
+     external libraries", GPU support, dictionary/rc configuration, caching.
+
+It is a LINEAR-SOLVER REPLACEMENT AT THE SEGREGATED FIELD LEVEL -- selected by
+naming `petsc` as the solver for one equation in `fvSolution`. It provides NO
+SNES/nonlinear layer, NO block or coupled multi-field assembly, and NO
+PCFIELDSPLIT. So the conversion primitive is reusable; the nonlinear layer and
+the block assembly are genuinely ours to build, and building them is not
+duplicating the framework (rule 30 satisfied).
+
+NOTE, for future upstream merges: our vendored copy at `ThirdParty/petsc4Foam`
+is LOCALLY PATCHED, not pristine -- see commit 215d032 ("Corrected petsc4foam
+to run for implicit and no coupling in the same case"), and it carries
+`useCoupledAssembly_` / `lduPrimitiveMeshAssembly` handling that the upstream
+README does not mention.
+
+### What we reuse from it: the CONVENTIONS, not the function
+
+`petscSolver::buildMat` (petscSolver.C:525) is the ldu2csr implementation, and
+it is exported. It cannot be called directly for our purpose because it sizes
+the matrix to ONE field -- `MatSetSizes(Amat, nrows_, nrows_, ...)` with
+`nrows_ = lduAddr.size()`. There is no field-block offset.
+
+But its COO layout IS the pattern to follow, and it ALREADY uses a row/column
+offset `off` for the multi-region coupled-assembly case, which is structurally
+the same thing we need with fields in place of regions:
+
+    diagonal   (celli + off,   celli + off)
+    upper      (low[f] + off,  upp[f] + off)
+    lower      (upp[f] + off,  low[f] + off)
+    + one entry per processor-interface face
+
+CRITICAL CONVENTION, and easy to get wrong: it copies `matrix_.diag()`
+DIRECTLY. That is correct only because `fvMatrix::solveSegregated` has already
+folded the boundary contribution into the diagonal with `addBoundaryDiag()`
+before handing the matrix to the lduMatrix solver. Converting an `fvScalarMatrix`
+ourselves, we must call `addBoundaryDiag(d, 0)` on a COPY of the diagonal, or
+every boundary cell's diagonal is wrong.
+
+### The design
+
+1. **Physics stays in OpenFOAM.** Each diagonal block is assembled with the
+   SAME `fvm::` expressions the preconditioner and the real equations already
+   use -- `fvm::ddt + fvm::div - fvm::laplacian + fvm::Sp` -- so the physics
+   exists once, in one language.
+2. **Extraction is mechanical**: read `diag()` (+ `addBoundaryDiag`), `upper()`,
+   `lower()` (falling back to `upper()` when `!hasLower()`), and the lduAddressing,
+   into plain `rows/cols/vals` arrays with the field-block offset applied.
+3. **The boundary stays plain-typed**: those arrays cross into `snesBridge`,
+   which builds the MATAIJ. No translation unit sees both `petscsnes.h` and
+   `fvCFD.H` -- the existing rule that made this library buildable at all.
+4. **THE COUPLING BLOCK**, which is the entire point and is cheap:
+   `A_01 = d(Poisson residual)/d n_i`. DERIVE THE SIGN FROM OUR OWN RESIDUAL,
+   do not copy it from elsewhere: residualCallback computes
+   `F_0 = lap(effEps, phi) - rhsSource` with
+   `rhsSource = -chargeDensity - dt*diffusiveChargeSource`, i.e.
+   `F_0 = lap + chargeDensity + dt*(...)`, and `chargeDensity = sum_i Z_i e n_i`.
+   So **`dF_0/dn_i = +Z_i e`**, a DIAGONAL block. (An external survey quoted
+   `-Z_i e`; that is a different sign convention and would be silently wrong here.)
+5. **SCALING IS NOT OPTIONAL.** Everything PETSc sees is scaled
+   (`x_p = x/sX`, `F_p = F/sF`), so the assembled Jacobian must be too:
+   every entry in block (row r, col c) is multiplied by **`sX[c]/sF[r]`**.
+   Getting this wrong yields a Pmat that is a valid matrix of the WRONG system,
+   which fails in the least obvious way possible.
+6. **Then** `PCFIELDSPLIT`: two splits via `PCFieldSplitSetIS` (our layout is
+   field-major, so NOT `PCFieldSplitSetFields`), `[phi]` against
+   `[n_e, n_Arp, n_Ar2p, nEps_e]`, `-pc_fieldsplit_type schur
+   -pc_fieldsplit_schur_fact_type full`. Retire the PCSHELL -- which also
+   removes its incompatibility with the bounded solver's reduced vectors.
+
+### Verify the Pmat BEFORE wiring any preconditioner onto it
+
+The check that makes this safe, and it is cheap: compare `Pmat*v` against the
+matrix-free `Amat*v` for a few random v. They should agree to the differencing
+error. If they do not, the assembly, the boundary handling, the coupling sign
+or the scaling is wrong, and finding that out through preconditioner behaviour
+instead would be miserable. Do this first.
+
+### Traps already paid for, do not rediscover
+
+* A matrix-free Pmat makes PCFIELDSPLIT degrade SILENTLY to `PC type: none`.
+* `-fieldsplit_*_pc_type hypre` on a shell densely probes it -- ~10,000 residual
+  evaluations per setup, i.e. the 1500x defect reintroduced.
+* Never set `-pc_use_amat` or the fieldsplit `*_use_amat` variants.
+* Schur requires EXACTLY two splits.
+* `PETSC_INFINITY` overflows under `FOAM_SIGFPE`; use a finite 1e30.
