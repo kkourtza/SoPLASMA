@@ -323,6 +323,23 @@ int main(int argc, char *argv[])
     // over the moment none is. That is exactly the condition that makes the
     // Newton problem non-degenerate, and it generalises to any case instead
     // of being fitted to this one.
+    //
+    // THE HANDOVER LATCHES, AND THAT IS THE WHOLE POINT -- see the guard at
+    // its use below. This is a START-UP criterion: it asks whether the run has
+    // left the degenerate initial state, NOT whether the current step is a
+    // good one for Newton. Re-testing it every step was a REAL BUG, found
+    // 2026-09-10 in the Phase D grubert2009 result: Newton ran steps 3-18,826
+    // converging every single time (18,824 solves, 0 divergences), then `Arp`
+    // touched its 1e11 floor in the quiescent far field, the test flipped, and
+    // PICARD silently ran the remaining 21,174 steps. The one-shot message
+    // meant nothing was printed, so the run LOOKED like a 40,000-step Newton
+    // success and was not one.
+    //
+    // A far-field cell resting on its floor is ordinary and permanent in a
+    // discharge; it does not make the coupled problem degenerate the way a
+    // cold start does, where EVERY species is pinned at once (8000 of 10000
+    // unknowns). Conflating the two is what made a start-up guard behave like
+    // a per-step solver-selection heuristic.
     auto anySpeciesOnFloor = [&species]() -> bool
     {
         bool onFloor = false;
@@ -526,18 +543,22 @@ int main(int argc, char *argv[])
 
                 // Warm up with Picard while the state is degenerate; see
                 // anySpeciesOnFloor()'s definition for why.
-                const bool useNewton =
-                    newtonSolver && !anySpeciesOnFloor();
-
-                if (useNewton && !newtonHandedOver)
+                //
+                // ONCE HANDED OVER, STAY HANDED OVER. The floor test gates the
+                // INITIAL handover only -- re-testing it every step let a
+                // single far-field species touching its floor put the run back
+                // on Picard for 21,174 steps without printing anything.
+                if (newtonSolver && !newtonHandedOver && !anySpeciesOnFloor())
                 {
                     newtonHandedOver = true;
                     Info<< "outerSolver newton: Picard warm-up COMPLETE at t = "
                         << runTime.timeName()
                         << " -- every species is off its density floor, so the"
                         << " Newton problem is no longer degenerate. Handing"
-                        << " over." << endl;
+                        << " over, and this handover is PERMANENT." << endl;
                 }
+
+                const bool useNewton = newtonSolver && newtonHandedOver;
 
                 if (useNewton)
                 {
@@ -657,18 +678,22 @@ int main(int argc, char *argv[])
 
                 // Warm up with Picard while the state is degenerate; see
                 // anySpeciesOnFloor()'s definition for why.
-                const bool useNewton =
-                    newtonSolver && !anySpeciesOnFloor();
-
-                if (useNewton && !newtonHandedOver)
+                //
+                // ONCE HANDED OVER, STAY HANDED OVER. The floor test gates the
+                // INITIAL handover only -- re-testing it every step let a
+                // single far-field species touching its floor put the run back
+                // on Picard for 21,174 steps without printing anything.
+                if (newtonSolver && !newtonHandedOver && !anySpeciesOnFloor())
                 {
                     newtonHandedOver = true;
                     Info<< "outerSolver newton: Picard warm-up COMPLETE at t = "
                         << runTime.timeName()
                         << " -- every species is off its density floor, so the"
                         << " Newton problem is no longer degenerate. Handing"
-                        << " over." << endl;
+                        << " over, and this handover is PERMANENT." << endl;
                 }
+
+                const bool useNewton = newtonSolver && newtonHandedOver;
 
                 if (useNewton)
                 {
