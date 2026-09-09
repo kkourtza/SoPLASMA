@@ -213,7 +213,38 @@ off from it instead of dying on contact.
   call, so a shared flag would be erased by the very next statement. Cleared at
   each step start and on each retry.
 
-### 6. Through-ignition run — IN PROGRESS
+### 11. THROUGH-IGNITION A/B, RUNNING OVERNIGHT (2026-09-10 ~02:05)
+
+Two processes, identical case, identical restart point, **only the Schur
+coupling block of (10) differs**:
+
+| case | library | started from |
+|---|---|---|
+| `validation/newton_retry_ignition` | OLD (no coupling block) — **control** | t=1.80014e-6, still running |
+| `validation/newton_ignition_fixed` | FIXED (coupling block) | t=1.86023e-6 |
+
+The control was launched at 01:44:16, before the 01:59:11 rebuild, so it kept
+the old `.so` mapped — which makes it a genuine control rather than a wasted
+run. **Verified at the INODE level** rather than assumed, because a rebuilt
+shared library is exactly the kind of thing that silently does not take effect:
+
+    on-disk (fixed) inode  622918
+    pid 4332  newton_retry_ignition  inode 616626   <= OLD lib
+    pid 13964 newton_ignition_fixed  inode 622918   <= FIXED lib
+
+The fixed run restarts from the control's own latest snapshot, so the 280 steps
+of progress are kept — rule 41 paying for itself the same day it was written.
+
+**What to compare in the morning.** The control's log already covers
+t=1.86023e-6 onward, so extract its behaviour from that instant and compare
+like-for-like against the fixed run:
+* did either reach ignition (~1.97e-6), and did dt survive it?
+* dt sustained through the breakdown — **the number that decides everything**.
+  Picard collapses to ~1e-15 there;
+* retries per step, and DIVERGED_ITS count per solve;
+* wall clock per ns of simulated time.
+
+### 6. Earlier through-ignition run — superseded by (11)
 
 `validation/newton_retry_ignition`: Newton + retry, no dt cap, from
 t=1.80014e-6 through the breakdown at ~1.97e-6 to 2.05e-6. This is the
