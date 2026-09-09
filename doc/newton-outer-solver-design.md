@@ -1636,3 +1636,76 @@ instead would be miserable. Do this first.
 * Never set `-pc_use_amat` or the fieldsplit `*_use_amat` variants.
 * Schur requires EXACTLY two splits.
 * `PETSC_INFINITY` overflows under `FOAM_SIGFPE`; use a finite 1e30.
+
+## Cold start SOLVED, bounded Newton retired, and Phase D launched -- 2026-09-10
+
+### Cold start: a Picard warm-up, with the switch DERIVED
+
+Newton now runs from t=0: 100 steps, 98 SNES solves, ZERO failures.
+
+The diagnosis that made it obvious came from the bounded solver's own report at
+a cold start: **"REDUCED system (2000 of 10000 unknowns)"**. 8000 of 10000
+unknowns pinned at their bound, leaving only the potential block free -- so
+"bounded Newton" there was a Poisson solve with every transport unknown frozen
+on its floor, and the shell preconditioner could not even be applied to the
+restricted vector. Degenerate BY CONSTRUCTION, which is why the linear solve
+failed however the preconditioner was configured.
+
+Fix: run the ordinary Picard sequence while ANY species sits on its
+minNumberDensity floor, and hand over to Newton the moment none does. The
+criterion is DERIVED from the state rather than a tuned step count (G1), it
+reuses the Picard path already present in both pimple branches rather than
+adding a mechanism (rule 30), and it generalises to any case. `gMin` is reached
+uniformly on all ranks (rule 31).
+
+Measured: the handover fires at t = 3e-12, i.e. after only TWO Picard steps.
+On an already-established restart it fires immediately, so there is no cost
+when the warm-up is not needed.
+
+### `bounded` now defaults to FALSE, and the DM work is DROPPED, not deferred
+
+What bounds actually bought, totalled honestly:
+* t=2e-9: identical to unbounded.
+* t=2e-8: they BLOCK fieldsplit (the KSPReset destroys its index sets), i.e.
+  they prevent the configuration that solves the state.
+* cold start: they remove the fake step-1 convergence but cannot solve, being
+  degenerate as above.
+
+So `bounded` defaults FALSE. The DM-based field decomposition that would let it
+coexist with fieldsplit is CONSCIOUSLY DROPPED rather than left pending: the
+degenerate regime it was needed for is now handled by the warm-up, which
+avoids that regime entirely instead of trying to solve inside it. `bounded`
+remains available as an option, and this section is the record of why it is not
+the default -- if a future case genuinely needs a constrained solve, the DM
+route (PETSc's own src/snes/tutorials/ex28.c pattern) is the way in.
+
+### NEAR-FUTURE WORK (user, 2026-09-10): automatic Picard <-> Newton switching
+
+The warm-up switch is deliberately narrow -- it asks only "is the state
+degenerate". A general solver should choose between Picard and Newton on
+something PHYSICALLY OR MATHEMATICALLY MEANINGFUL, and that decision needs COST
+DATA on both sides to be worth anything. Candidate signals already measured
+here: the outer-loop contraction factor `rho` (crosses 1 at the NDR point,
+though [[deferred-action-items]] records it as prone to crying wolf), the
+Aitken `omega` coupling margin, the number of Picard correctors per step, and
+the SNES iteration count. The costs to measure per step: Picard correctors x
+linear solves, against Newton's residual evaluations x (Pmat assembly + Schur
+fieldsplit). Picard is currently ~5-15x cheaper per step where it works at all,
+so the switch must be genuinely selective rather than defaulting to Newton.
+
+### PHASE D LAUNCHED
+
+Newton, t=0 -> 4e-8 (40,000 steps, dt 1e-12 fixed), cold start via the warm-up,
+fieldsplit Schur, `bounded false`. Control arm already run: the same case under
+Picard took 953 s, never crashed, but its `rho` crossed 1.0 at step ~18,878 and
+reached ~1321 -- the outer loop stopped contracting and the clock kept
+advancing with the coupling unconverged.
+
+THE QUESTION PHASE D ANSWERS: in the region where Picard's outer loop no longer
+contracts, does Newton actually CONVERGE the coupled system?
+
+REMEMBER WHEN READING THE RESULT: every state reached so far is PRE-IGNITION --
+~1.7 V across the gap at t=4e-8 against ~500 V for a real DC glow, and
+[[avalanche-outruns-ion-transit]] records that no cathode fall has ever formed
+in this project. Whatever Phase D shows, it is not yet evidence about sheath
+physics.

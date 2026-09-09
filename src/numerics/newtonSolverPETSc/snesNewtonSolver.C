@@ -1224,6 +1224,13 @@ void Foam::snesNewtonSolver::solveOuterStep
       // floods a long run. -ksp_max_it caps the Krylov work per Newton step.
       + " -ksp_converged_reason -ksp_max_it 100"
       + " -mat_mffd_type wp"
+      // FIELDSPLIT defaults, baked in rather than left to the environment so
+      // a long unattended run is reproducible. Schur is the only fieldsplit
+      // type that uses the off-diagonal species->Poisson block, which is the
+      // entire reason the Pmat is assembled; `full` matched an exact LU of
+      // Pmat in the survey's measurements (7 KSP iterations against 36 for
+      // the block Gauss-Seidel shell). A case may still override any of these.
+      + " -pc_fieldsplit_schur_fact_type full"
       // Differencing step: PETSc's own default unless a case overrides it.
       // It is deliberately NOT set to a large value by default -- see
       // mffdErr_'s declaration for why that would have papered over a real
