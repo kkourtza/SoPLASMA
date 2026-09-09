@@ -898,7 +898,7 @@ Foam::snesNewtonSolver::snesNewtonSolver
     rtol_(dict.getOrDefault<scalar>("rtol", 1e-8)),
     maxIt_(dict.getOrDefault<label>("maxIt", 50)),
     mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5)),
-    bounded_(dict.getOrDefault<bool>("bounded", true))
+    bounded_(dict.getOrDefault<bool>("bounded", false))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay

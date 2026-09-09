@@ -307,6 +307,50 @@ int main(int argc, char *argv[])
         }
     }
 
+    // PICARD WARM-UP FOR NEWTON, decided per step from the STATE rather than
+    // from a step count.
+    //
+    // A Newton step is DEGENERATE while the species densities are sitting on
+    // their minNumberDensity floor. Measured at a cold start, 2026-09-09:
+    // 8000 of 10000 unknowns were pinned at their bound, leaving only the
+    // potential block free -- so "Newton" was solving Poisson with all
+    // transport frozen, and the linear solve failed. The floor is a clamp
+    // applied OUTSIDE the equations, so while it is active there is no
+    // F(u) = 0 for Newton to converge to (design doc, defect A).
+    //
+    // The criterion is DERIVED, not a tunable step count (G1): run the
+    // ordinary Picard sequence while any species is on its floor, and hand
+    // over the moment none is. That is exactly the condition that makes the
+    // Newton problem non-degenerate, and it generalises to any case instead
+    // of being fitted to this one.
+    auto anySpeciesOnFloor = [&species]() -> bool
+    {
+        bool onFloor = false;
+
+        for (label i = 0; i < species.nSpecies(); ++i)
+        {
+            const scalar fl = species.speciesMinNumberDensity(i);
+
+            // gMin is a COLLECTIVE and the guard is on a per-species property
+            // that is identical on every rank, so all ranks reach it the same
+            // number of times (rule 31).
+            if (fl > 0)
+            {
+                const scalar mn =
+                    gMin(species.numberDensity(i).primitiveField());
+
+                if (mn <= fl*(1 + 1e-9))
+                {
+                    onFloor = true;
+                }
+            }
+        }
+
+        return onFloor;
+    };
+
+    bool newtonHandedOver = false;
+
     //- Create the PIMPLE loop control
     pimpleControl pimple(gasMesh());
 
@@ -480,7 +524,22 @@ int main(int argc, char *argv[])
                 // If an early exit is ever genuinely needed here: set a flag
                 // and DRAIN the loop. Never `break`.
 
-                if (newtonSolver)
+                // Warm up with Picard while the state is degenerate; see
+                // anySpeciesOnFloor()'s definition for why.
+                const bool useNewton =
+                    newtonSolver && !anySpeciesOnFloor();
+
+                if (useNewton && !newtonHandedOver)
+                {
+                    newtonHandedOver = true;
+                    Info<< "outerSolver newton: Picard warm-up COMPLETE at t = "
+                        << runTime.timeName()
+                        << " -- every species is off its density floor, so the"
+                        << " Newton problem is no longer degenerate. Handing"
+                        << " over." << endl;
+                }
+
+                if (useNewton)
                 {
                     // Genuine Newton outer step, REPLACING the SOLVE
                     // sequence below -- see doc/newton-outer-solver-design.md.
@@ -596,7 +655,22 @@ int main(int argc, char *argv[])
                 // If an early exit is ever genuinely needed here: set a flag
                 // and DRAIN the loop. Never `break`.
 
-                if (newtonSolver)
+                // Warm up with Picard while the state is degenerate; see
+                // anySpeciesOnFloor()'s definition for why.
+                const bool useNewton =
+                    newtonSolver && !anySpeciesOnFloor();
+
+                if (useNewton && !newtonHandedOver)
+                {
+                    newtonHandedOver = true;
+                    Info<< "outerSolver newton: Picard warm-up COMPLETE at t = "
+                        << runTime.timeName()
+                        << " -- every species is off its density floor, so the"
+                        << " Newton problem is no longer degenerate. Handing"
+                        << " over." << endl;
+                }
+
+                if (useNewton)
                 {
                     // See the semi-implicit branch above -- same interface,
                     // same replacement of the solve sequence, same required
