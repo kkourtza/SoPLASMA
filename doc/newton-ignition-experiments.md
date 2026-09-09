@@ -3,6 +3,29 @@
 **Live log. Every idea tried is recorded here, including the ones that failed
 and the ones that turned out to be measuring nothing.** Started 2026-09-10.
 
+## SUMMARY — read this first
+
+| # | idea | verdict | the number that decides it |
+|---|---|---|---|
+| 5 | **Newton retries a failed step** | **WORKS — the one that mattered** | dt 1e-11 (hard cap) → **1.5–4e-10 self-regulated**, 15–40× |
+| 3 | FGMRES instead of GMRES | works, kept | removed `DIVERGED_BREAKDOWN` at the restart boundary |
+| 8 | rebalance residual scales | correct, neutral | blocks 0.0077–111 → all 44.72; KSP unchanged |
+| 2 | preconditioner (hypre/bjacobi/selfp/500 its) | **no effect** | all `DIVERGED_ITS`, PC verified by `-ksp_view` |
+| 4 | 8 PETSc options (EW, 3 line searches, mffd_err) | **all failed** | none survives the dt baseline dies at |
+| 9 | **bounded Newton** (`SNESVINEWTONRSLS`) | **FAILS BADLY** | dt collapses to **5e-15**, 10⁵× worse than unbounded |
+| 1 | dt cap sweep | diagnostic | ceiling between 1e-11 (works) and 1e-10 (dies) |
+
+**The one-line conclusion so far:** the binding constraint was never the
+preconditioner or any PETSc knob — it was that **Newton had no way to back off
+from a step that was too large.** Giving it the retry path Picard already had
+raised its sustained dt by 15–40× and made the Picard→Newton handover survivable
+at all.
+
+**Two traps this log exists to stop anyone repeating:** read the ACHIEVED dt,
+never the step count (bounded Newton's 360 steps advanced 4e-11); and confirm
+the knob moved before believing a comparison (four separate inert-knob
+incidents, now rule 42).
+
 ## The case, fixed for every experiment below
 
 `grubert2009_ballast400_picard` — Grubert DC glow, ballasted electrode
