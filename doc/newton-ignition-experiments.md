@@ -536,6 +536,51 @@ That makes `maxIt` and the line-search type relevant again — both were tested
 early and dismissed, but against the broken Pmat AND without EW, so neither was
 ever a fair test of this regime. Under test now.
 
+### 18. IMPORTANT QUALIFICATION — with EW on, `chemJacobian` adds nothing
+
+Measured at EQUAL SAMPLE SIZE, which is what exposed it. Both arms verified to
+carry the setting they claim and `-snes_ksp_ew` confirmed reaching PETSc:
+
+| arm | mean dt @16 | mean dt @30 |
+|---|---|---|
+| `chemJacobian on`, **no EW** | 1.998e-10 | 1.912e-10 |
+| EW + `chemJacobian on` | 3.653e-10 | 3.325e-10 |
+| EW + `chemJacobian OFF` | **3.653e-10** | **3.316e-10** |
+
+**Identical.** The +41% attributed to the ionisation derivative in (12) was
+measured WITHOUT EW; once EW is on, EW subsumes it. That makes sense
+mechanically — an adaptive forcing term chooses the linear tolerance from how
+well the previous step reduced `||F||`, so it compensates for a worse Jacobian
+by simply not over-solving against it.
+
+**`chemJacobian` stays default TRUE anyway**, for reasons that are not
+performance: it is a genuinely missing Jacobian term, it is nearly free, it is
+worth +41% whenever EW is off or unavailable, and it is never harmful. But the
+honest attribution is that **EW is doing the heavy lifting**, and the earlier
+commit message overstates the ionisation derivative's standalone importance in
+the final configuration.
+
+This is the unequal-sample trap for the fourth time in one session: `ew_nochem`
+first appeared to BEAT `ew_v2` (3.416e-10 against 2.955e-10) purely because its
+average covered 34 steps and the other's covered 93. Always compare at equal N.
+
+### 19. Options stacked on top of EW — only the differencing type adds anything
+
+Equal-sample (N=16), all with EW:
+
+| on top of EW | mean dt |
+|---|---|
+| — | 3.653e-10 |
+| **`-mat_mffd_type ds`** | **3.926e-10 (+7%)** |
+| `-snes_linesearch_type l2` | 3.657e-10 (0%) |
+| `maxIt 50 → 200` | 3.074e-10 (−16%) |
+| `-snes_linesearch_type cp` | 2.782e-10 (−24%) |
+
+Raising `maxIt` HURTS, which is counter-intuitive and worth stating: letting a
+struggling Newton solve grind for 200 iterations delays the retry that would
+have found a workable step sooner. The retry ladder is a better response to a
+hard step than more iterations on it.
+
 ## Still untested (next, in priority order)
 
 1. **Per-CELL scaling.** `sX` is one scalar per FIELD. An ignited discharge has
