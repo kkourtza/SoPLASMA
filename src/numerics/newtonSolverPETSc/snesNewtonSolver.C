@@ -898,7 +898,8 @@ Foam::snesNewtonSolver::snesNewtonSolver
     rtol_(dict.getOrDefault<scalar>("rtol", 1e-8)),
     maxIt_(dict.getOrDefault<label>("maxIt", 50)),
     mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5)),
-    bounded_(dict.getOrDefault<bool>("bounded", false))
+    bounded_(dict.getOrDefault<bool>("bounded", false)),
+    petscOptions_(dict.getOrDefault<string>("petscOptions", string::null))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -1223,6 +1224,26 @@ void Foam::snesNewtonSolver::solveOuterStep
       // -ksp_monitor deliberately NOT set: it prints per GMRES iteration and
       // floods a long run. -ksp_max_it caps the Krylov work per Newton step.
       + " -ksp_converged_reason -ksp_max_it 100"
+      // FGMRES, NOT GMRES, and the restart raised to match -ksp_max_it so no
+      // restart happens inside one solve.
+      //
+      // THE PRECONDITIONER VARIES BETWEEN KRYLOV ITERATIONS: PCFIELDSPLIT with
+      // a Schur complement solves its blocks ITERATIVELY, so its action is not
+      // a fixed linear operator. Standard GMRES assumes a constant right
+      // preconditioner and loses the Arnoldi relation when that assumption
+      // fails; FGMRES stores the preconditioned vectors precisely so a varying
+      // PC is admissible. Knoll & Keyes (JCP 193 (2004) 357-397) section 3.5
+      // makes exactly this recommendation for JFNK with a variable PC.
+      //
+      // MEASURED, 2026-09-10, and this is why it is not a stylistic choice:
+      // with adaptive dt enabled on grubert2009, the Krylov solve failed with
+      // DIVERGED_BREAKDOWN at ITERATION 30 -- GMRES's default restart length --
+      // once dt had grown to ~6.5e-10 (650x the fixed step Phase D used). The
+      // breakdown is at the restart boundary, which is the classic signature of
+      // a varying PC breaking GMRES's assumption rather than of a bad matrix:
+      // no NaN was present, and the SNES norms were falling cleanly (3.5e2 ->
+      // 1.3e-9 in 5 iterations) on the steps before it.
+      + " -ksp_type fgmres -ksp_gmres_restart 100"
       + " -mat_mffd_type wp"
       // FIELDSPLIT defaults, baked in rather than left to the environment so
       // a long unattended run is reproducible. Schur is the only fieldsplit
@@ -1236,7 +1257,28 @@ void Foam::snesNewtonSolver::solveOuterStep
       // mffdErr_'s declaration for why that would have papered over a real
       // ordering bug rather than accommodating genuine noise in F.
       + (mffdErr_ > 0 ? " -mat_mffd_err " + Foam::name(mffdErr_) : word(""));
-    setPetscOptions(petscOptions.c_str());
+
+    // THE CASE'S OWN OPTIONS GO LAST, so they WIN: PetscOptionsInsertString
+    // applies settings in order and a later one replaces an earlier one. That
+    // ordering is the whole point -- the defaults above are a starting point a
+    // case can tune from, not a ceiling it has to rebuild the library to pass.
+    const string allPetscOptions =
+        petscOptions_.empty()
+      ? string(petscOptions)
+      : string(petscOptions) + " " + petscOptions_;
+
+    if (!petscOptions_.empty())
+    {
+        static bool reported = false;
+        if (!reported)
+        {
+            reported = true;
+            Info<< "outerSolver newton: case PETSc options appended (they"
+                << " override the defaults): " << petscOptions_ << endl;
+        }
+    }
+
+    setPetscOptions(allPetscOptions.c_str());
 
     // ---- LOWER BOUNDS, in SCALED units (everything PETSc sees is scaled).
     //

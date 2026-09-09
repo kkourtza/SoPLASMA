@@ -348,15 +348,32 @@ int main(int argc, char *argv[])
         {
             const scalar fl = species.speciesMinNumberDensity(i);
 
-            // gMin is a COLLECTIVE and the guard is on a per-species property
+            // gMax is a COLLECTIVE and the guard is on a per-species property
             // that is identical on every rank, so all ranks reach it the same
             // number of times (rule 31).
+            //
+            // gMax, NOT gMin, AND THAT IS THE WHOLE CORRECTION. The question
+            // this guard exists to ask is "does the density field carry any
+            // information yet?", and the degenerate answer is that the species
+            // is at its floor EVERYWHERE -- max == floor. Asking gMin instead
+            // asks "is ANY cell at the floor?", which is TRUE FOREVER in any
+            // real discharge, because the quiescent far field always rests on
+            // the floor.
+            //
+            // Measured 2026-09-10 on grubert2009_ballast400: `Arp` has
+            // minNumberDensity 1e11 and its far-field min sits at exactly 1e11
+            // for the whole run, ignition included -- while its max reaches
+            // 5.7e18. Under the gMin test the guard is permanently true, so
+            // Newton could NEVER be handed to on that case, which is precisely
+            // the case it was wanted for. Combined with the latch added earlier
+            // the same day, that made the intended Picard-warm-up ->
+            // Newton-at-ignition architecture unreachable by construction.
             if (fl > 0)
             {
-                const scalar mn =
-                    gMin(species.numberDensity(i).primitiveField());
+                const scalar mx =
+                    gMax(species.numberDensity(i).primitiveField());
 
-                if (mn <= fl*(1 + 1e-9))
+                if (mx <= fl*(1 + 1e-9))
                 {
                     onFloor = true;
                 }

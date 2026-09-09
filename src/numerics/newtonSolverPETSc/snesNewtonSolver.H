@@ -121,6 +121,23 @@ class snesNewtonSolver
     //  and the cold-start guard in solveOuterStep.
     bool bounded_;
 
+    //- Extra PETSc options, appended AFTER this class's own defaults so they
+    //  WIN (PetscOptionsInsertString lets a later setting replace an earlier
+    //  one). Empty by default, so a case that says nothing gets exactly the
+    //  behaviour it got before this existed.
+    //
+    //  Exists because preconditioner tuning is EXPERIMENTAL WORK, and without
+    //  this every trial -- a different sub-PC, a different Schur
+    //  approximation, a raised Krylov cap -- needed a library rebuild. The
+    //  binding constraint on this solver today is the PC's behaviour as dt
+    //  grows (measured 2026-09-10: KSP iterations 14 -> 15 -> 17 -> 20 -> 32 ->
+    //  100(cap) as dt rose toward 3.5e-10), so making that cheap to iterate on
+    //  is the difference between tuning it and not.
+    //
+    //  Example, in the case's newtonSolver dict:
+    //      petscOptions "-fieldsplit_0_pc_type hypre -fieldsplit_1_pc_type ilu";
+    string petscOptions_;
+
 public:
 
     TypeName("SNES");
