@@ -601,6 +601,37 @@ struggling Newton solve grind for 200 iterations delays the retry that would
 have found a workable step sooner. The retry ladder is a better response to a
 hard step than more iterations on it.
 
+### 20. EW MAY BE STATE-DEPENDENT — the default is UNDER REVIEW
+
+**Do not treat `adaptiveForcing true` as settled.** On the ignition runs, at the
+DEEP-AVALANCHE state (t >= 1.90e-6) rather than the pre-ignition state where
+(15) was measured, the run carrying EW came out WORSE:
+
+| run (equal N=58, from t=1.90026e-6) | mean dt | advanced |
+|---|---|---|
+| current lib (coupling + `chemJacobian` + EW) | 1.862e-10 | 8.71e-09 |
+| older lib (coupling only) | **2.213e-10** | **1.184e-08** |
+| oldest lib | 2.180e-10 | 1.148e-08 |
+
+**That table is CONFOUNDED and must not be quoted as an EW result** — the three
+runs differ in three changes at once (the Schur coupling block, the ionisation
+derivative, and EW), not one. It is listed only because it was enough to
+suspect the default.
+
+The mechanism that would explain it: EW loosens the linear tolerance, which is
+free when the Newton step is going to be superseded anyway, but at a hard state
+a loose linear solve gives a poor Newton DIRECTION, costing nonlinear
+iterations. Consistent with the `newton_ignition_ew` run failing on
+`DIVERGED_MAX_IT` — the -5 reason — which is the nonlinear iteration running
+out, not the linear one.
+
+That is the same shape as the `maxIt` contradiction in the next-steps list:
+**both options help on the easy state and hurt on the hard one.**
+
+**A clean isolation is running** (`hard_ew_on` vs `hard_ew_off`): identical
+library, identical restart at t=1.90026e-6, one switch. If EW loses there, the
+default from commit b7e0d8d should be reverted to false, or made conditional.
+
 ## Still untested / next, in priority order (as of 2026-09-11 ~03:40)
 
 1. **`maxIt` is state-dependent — resolve it.** Raising `maxIt` 50→200 HURT at
