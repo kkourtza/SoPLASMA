@@ -389,6 +389,64 @@ J·E` is a direct and probably stronger dependence on the potential than the
 drift term retained here, but it is not laplacian-shaped and needs its own
 derivation.
 
+### 12. THE IONISATION DERIVATIVE — the biggest Pmat win so far
+
+Second missing Jacobian term, found by asking the same question as (10) about a
+different operator. `F = ddt + div - lap - P + L*n`, so `dF/dn = L - dP/dn`. The
+Pmat carried `fvm::Sp(chemL)` — the `L` — and **not `-dP/dn`**. For
+electron-impact ionisation `P_e = k_iz·n_e·n_Ar`, so
+
+    dP_e/dn_e = k_iz·n_Ar = THE IONISATION FREQUENCY
+
+the avalanche growth rate, i.e. the defining physics of ignition. Without it the
+preconditioner believed the species equation was far more diagonally dominant —
+far more stable — than it is, exactly where it is not.
+
+Approximated `dP_s/dn_s ≈ P_s/n_s`, exact whenever production is first order in
+the species itself. The term is NEGATIVE on the diagonal deliberately: an
+avalanche genuinely is unstable, and a preconditioner that hides that is
+describing a different problem.
+
+| `chemJacobian` | advance/step | mean dt (90) |
+|---|---|---|
+| off | 9.50e-11 | 1.580e-10 |
+| **on** | **1.344e-10 (+41%)** | **1.855e-10 (+17%)** |
+
+For scale, the drift-coupling block of (10) was worth ~7%.
+
+### 13. WHY IT STILL FAILS — the linear solve, every time
+
+Diagnosed rather than guessed, on the best current configuration:
+
+    retry causes      10 of 10 : SNES reason -3 (DIVERGED_LINEAR_SOLVE)
+    SNES reasons      3 (37x), 4 (14x), -3 (10x)
+    KSP on failure    100 iterations = the cap, every time
+
+**Every single failure is the Krylov solve running out of iterations.** Not the
+line search, not the nonlinear iteration, not a bad state. That makes the linear
+solve the sole remaining target, and it retroactively justifies retesting the
+options that were dismissed in (2) and (4) — those all ran against the BROKEN
+Pmat, so they were never a fair test of "help the KSP".
+
+Consistent with that reading, the two options that help most are exactly the two
+that make the KSP's job easier rather than better-preconditioned:
+
+| on top of `chemJacobian on` | mean dt (90) |
+|---|---|
+| — | 1.855e-10 |
+| `-mat_mffd_type ds` | 1.936e-10 |
+| `-ksp_rtol 1e-3` | **1.960e-10** |
+
+### 14. Failures from the overnight batch, recorded
+
+* `-snes_type ngmres` — **fails hard**, drives the state to a singular
+  wall-flux condition ("the drift into the wall now exceeds the thermal speed")
+  within 2 steps.
+* `-pc_fieldsplit_schur_fact_type upper` — 45% KSP failure rate against 2.9%
+  for `full`. Stopped early.
+* `-snes_linesearch_type bt -snes_linesearch_order 2` — 20% KSP failure rate.
+  Stopped early.
+
 ## Still untested (next, in priority order)
 
 1. **Per-CELL scaling.** `sX` is one scalar per FIELD. An ignited discharge has
