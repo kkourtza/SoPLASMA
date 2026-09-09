@@ -242,6 +242,17 @@ void residualCallback
             eqns[s].reset(transport.transportModel(s).nEqn().ptr());
         }
         const volScalarField& ne = species.numberDensity(species.electronSpeciesID());
+
+        // NOTE, measured 2026-09-09 and recorded so it is not re-tried:
+        // freezing chemistry here (holding chemP_/chemL_ across the Newton
+        // solve) was tested as a DIAGNOSTIC for whether this path makes F
+        // history-dependent -- plasmaTransport.C:4310-4327 does increment
+        // chemOuterCount_ and overwrite chemSrcPrev_ on every call. It makes
+        // NO measurable difference: the KSP residual history matched to 8
+        // digits (35.95884133842 frozen vs 35.95884334902 live). So chemistry
+        // history dependence is NOT the cause of the linear-solve failure at
+        // a developed discharge state. The switch was removed again rather
+        // than left as a code path nothing needs.
         transport.refreshChemistrySources(eqns, ne, em.Emag());
     }
 
@@ -869,6 +880,51 @@ void Foam::snesNewtonSolver::solveOuterStep
     singleRegionPoisson& srp = refCast<singleRegionPoisson>(em);
 
     const label nSpecies = species.nSpecies();
+
+    // COLD ALL-ZERO START: refuse it, loudly, rather than pretend to converge.
+    //
+    // Measured 2026-09-09 on grubert2009 from t=0, where every field starts
+    // `internalField uniform 0`: every residual term is then exactly zero, so
+    // SNES reports `CONVERGED_FNORM_ABS, 0 iterations` having done NOTHING --
+    // a convergence that means the opposite of what it says. The step's own
+    // clamp then jams the densities from 0 to the floor, a state change made
+    // OUTSIDE the equations, and at the next step F is entirely the
+    // time-derivative of that jump, which nothing in the equations can
+    // balance (DIVERGED_LINEAR_SOLVE).
+    //
+    // This is rule 30's principle: the answer to a mechanism that fails on a
+    // bad input is a GUARD that refuses the input, not a parallel mechanism.
+    // The real fix is a formulation in which positivity is structural so no
+    // clamp is needed -- see doc/newton-outer-solver-design.md.
+    {
+        bool allSpeciesZero = true;
+        for (label s = 0; s < nSpecies; ++s)
+        {
+            if (rmsOf(species.numberDensity(s).primitiveField()) > SMALL)
+            {
+                allSpeciesZero = false;
+            }
+        }
+
+        if (allSpeciesZero)
+        {
+            FatalErrorInFunction
+                << "outerSolver newton cannot start from an all-zero state."
+                << nl << nl
+                << "    Every species number density is identically zero, so"
+                << " the residual F is exactly zero and SNES would report"
+                << " CONVERGED having solved nothing. The density clamp would"
+                << " then move the state from outside the equations, and the"
+                << " next step's residual would be unsolvable." << nl << nl
+                << "    WHAT TO DO: reach a physical state with `outerSolver"
+                << " picard` first, then restart in newton mode from it --"
+                << " `startFrom latestTime` in system/controlDict. The"
+                << " densities must sit above the floor, not on it." << nl
+                << "    See doc/newton-outer-solver-design.md (defect A)."
+                << nl << exit(FatalError);
+        }
+    }
+
     for (label s = 0; s < nSpecies; ++s)
     {
         if (!isA<driftDiffusion>(transport.transportModel(s)))

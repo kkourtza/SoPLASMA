@@ -1197,3 +1197,129 @@ these numbers as validation of the coupling.
    ONLY -- re-check before offering Newton for needleDBD or the streamer cases.
 6. Chemistry accuracy under Newton is still UNVERIFIED.
 7. Remove the temporary per-phase timers and per-block residual diagnostics.
+
+## Cold-start guard added, and PHASE D: Newton FAILS at a developed discharge -- 2026-09-09
+
+### The guard (done)
+
+`solveOuterStep` now refuses an all-zero start with an actionable message
+instead of reporting CONVERGED after solving nothing. Verified BOTH ways
+(rule 23 / [[silent-diagnostic-trap]]): it fires on `grubert2009` from t=0, and
+stays silent on the 2e-9 restart, which still runs 20/20 steps converged.
+
+### Phase D control arm: Picard does NOT crash -- it stops CONTRACTING
+
+Picard, t=0 -> 4e-8 (40,000 steps, dt 1e-12 fixed), 953 s: ran to completion,
+no FatalError, no reported convergence failure. But `rho [contraction]`
+crossed 1.0 at step ~18,878 and climbed to ~1321 ("residual GREW"), while
+`omega` stayed 0.8-1.0 and PIMPLE kept running its fixed 4 correctors.
+
+So the documented "divergence" is not a crash in this configuration: the outer
+loop simply stops contracting and the clock keeps advancing with the coupling
+unconverged. Per [[deferred-action-items]] `rho` is independently known to cry
+wolf, so this is NOT called a divergence on `rho` alone -- but it does sharpen
+Phase D's question to: at a state past step 18,878, does Newton actually
+CONVERGE the coupled system where Picard's outer loop no longer contracts?
+
+### Phase D Newton arm: FAILS, and it is OUR solver, not the physics
+
+Newton restarted at t=2e-8 (step 20,000): the very first step fails,
+`DIVERGED_LINEAR_SOLVE`. Per-block scaled residuals there:
+
+    Poisson   44.7   (= sqrt(2000), i.e. 1.0 per cell)
+    n_e        0.089
+    n_Ar2p     0.0025
+    n_Arp      0.00011
+    nEps_e   172.5    <-- dominates; |ddt| 2.98e25 vs |lap| 1.08e25
+
+Ruled out BY MEASUREMENT, not by inspection:
+
+* **The preconditioner.** Under `-pc_type none` (0 pcApplyCallback calls) the
+  failure is identical.
+* **The differencing step.** mffdErr 1e-4, 1e-3, 1e-2 all fail identically --
+  no effect whatsoever, unlike at t=2e-9.
+* **Chemistry history dependence.** Freezing chemP_/chemL_ across the solve
+  changed the KSP residual history by less than one part in 1e8.
+* **The mean-energy clamp.** Bounds are [0.039, 2644] eV; meanE is 0.81-1.62 eV,
+  nowhere near binding.
+* **GMRES restart length.** `fgmres` gives DIVERGED_DTOL at 30, `bcgs` and
+  `gmres_restart 200` give DIVERGED_ITS at 100. So DIVERGED_BREAKDOWN was an
+  artifact of the 30-vector restart; the real situation is a linear system that
+  will not converge.
+
+What remains, and it is the smoking gun: **under PCNONE the preconditioned and
+true residual norms MUST be identical, and they are not** --
+
+    iter 0   preconditioned 178.16   true 178.16     (equal, as required)
+    iter 1   preconditioned  35.96   true 348.57     (impossible if A is linear)
+
+GMRES's Arnoldi recurrence and the explicit b - A*x disagree, which cannot
+happen for a consistent LINEAR operator. With the preconditioner, the
+chemistry, the clamp and the Krylov method all excluded, the indicated cause is
+that the finite-difference Jacobian is not acting linearly over the
+perturbations GMRES uses -- i.e. genuine nonlinear stiffness at a developed
+discharge, the regime Knoll & Keyes address in section 3.6 (nonlinear
+preconditioning / ASPIN) and section 2.4 (globalization). NOT yet proven by a
+direct linearity test; stated as the indicated cause.
+
+Note this is consistent with everything else: it worked at t=2e-9 (weak,
+quasi-static, chemistry inactive -- chemP was exactly 0) and fails at t=2e-8
+(sheath forming, chemP ~ 3.4e9).
+
+### What COMSOL does, read from the User's Guide (their Plasma Module)
+
+Read 2026-09-09 from `Literature/COMSOL_PlasmaModuleUsersGuide.pdf` because
+the log(n) question is really "should we copy COMSOL here". Findings, quoted:
+
+* **Their DEFAULT is the log formulation**: "Finite element, log formulation
+  (linear shape function) (the default) to solve the equations in logarithmic
+  form". They solve for ln(n_e) AND ln(n_eps).
+* **Their rationale**: "the electron number density can span 10 orders of
+  magnitude over a very small distance... The best way of handling this from a
+  numerical point of view is to solve for the log of the electron number and
+  energy density. This also prevents a divide by zero."
+* **Their admitted cost, in their own words**: "This makes it more numerically
+  stable but INCREASES THE NONLINEARITY of the equation system, and as such the
+  model might take slightly longer to solve."
+* **It does not remove the zero problem, it relocates it**: "the solver can run
+  into difficulties when the species mass fractions approach zero", handled by
+  a "Source stabilization" term `R_k,tot = R_k + exp(-iota*ln(n_k))` with a
+  USER-TUNED parameter (default 1, "if the plasma is high pressure
+  (atmospheric) then it can help to lower this number to 0.25-0.5"). A
+  per-regime tuning knob is a direct G1 violation in our terms.
+* Zero becomes inexpressible: "specifying an electron density of zero is not
+  allowed."
+* **Their log form is FINITE ELEMENT.** "Finite volume (constant shape
+  function)" is offered as a SEPARATE, non-log option -- they do not ship
+  log + finite volume. For an FV/OpenFOAM code that is both a warning and an
+  opening.
+* Their heavy-species log form divides through by rho*w_k (the
+  NON-conservative form): flux `V_k = D grad(W_k) + D grad(lnM) + D^T grad(lnT)
+  - Z mu E`.
+
+### Why this changes the log(n) recommendation
+
+Two independent sources now point the same way. COMSOL's own guide says the log
+formulation INCREASES nonlinearity; our own measurement says nonlinearity is
+exactly what is blocking us at t=2e-8. **So log(n) would likely make our
+CURRENT blocker worse, not better.** It addresses positivity, which for us only
+bites at cold start (now guarded), and not the developed-state failure.
+
+Candidate alternatives, to be planned properly rather than adopted by default:
+
+1. **Pseudo-transient continuation / dt as continuation parameter** (K&K 2.4.2).
+   Directly targets the measured blocker, cheap to try, no reformulation.
+2. **Bounded Newton via PETSc's variational-inequality solvers**
+   (SNESVINEWTONRSLS): enforce n >= n_floor as a CONSTRAINT inside the Newton
+   solve instead of by a post-hoc clamp or a change of variable. Keeps the
+   conservative FV form, the Scharfetter-Gummel scheme, every existing BC and
+   every diagnostic; removes the clamp-outside-the-equations defect; already
+   available in the PETSc we link. Smallest footprint, and genuinely distinct
+   from COMSOL.
+3. **Lean on exponential fitting we already own**: Scharfetter-Gummel is
+   already exponentially fitted and positivity-friendly, which is the same
+   physics insight log(n) encodes -- but inside the FLUX, keeping the unknown
+   conservative. Strengthening that is differentiating rather than imitative.
+4. **Nonlinear preconditioning (ASPIN-family, K&K 3.6)** for the unbalanced
+   sheath-vs-bulk nonlinearity that is our actual failure. Research-grade and
+   publishable (rule 33).
