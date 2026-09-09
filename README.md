@@ -662,6 +662,28 @@ pipeline it replaces: `C_g = 9.03816931478e-17 F` and
 on which patches are driven and grounded, so the generated conditions are
 electrostatically indistinguishable from the ones they replace.
 
+**The four `positiveStreamer` beds are HYBRID, and that is not yet the end
+state.** They each carry a `configuration/boundaries` (added 2026-09-10 —
+without it `plasmaCreateSpeciesFields` refuses to start and the tutorials could
+not run *at all*), but their `Allrun` still applies `etc/changeDictionary`
+afterwards, and it **wins on every field it names**: `ePotential`, `surfCharge`
+and the charged species. Layer 1 governs only what changeDictionary leaves
+alone — `nEps_e` and the excited/neutral set.
+
+The two paths **disagree on physics**, measured by generating both and diffing:
+
+| | layer 1 | `etc/changeDictionary` |
+|---|---|---|
+| charged species at the electrodes | `electron`/`ionDDWallFluxMixed` — **absorbing** | `zeroGradient` — non-absorbing |
+| `n_e` at `far` | `zeroGradient` | `inletOutlet`, `inletValue 1e13` — a far-field seed |
+
+`changeDictionary` is left authoritative **deliberately**: it produced these
+beds' validated 2 ns LFA/LMEA results, and switching the electrodes to
+absorbing walls would silently invalidate that comparison. Which one better
+models the benchmark is a real open question, recorded here rather than quietly
+decided — to be settled when the validation suite is next re-run end to end on
+the current generators.
+
 
 ## Materials come from a cited library, not from a case
 

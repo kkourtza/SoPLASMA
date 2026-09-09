@@ -1,0 +1,100 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  positiveStreamer_LMEA_minimal -- the SEMANTIC boundary description.        |
+|                                                                              |
+|  G2 / LAYER 1: this says WHAT each surface IS. `kind` is looked up in        |
+|  $SoPLASMA_ETC/boundaryRoles, and each module derives its own condition      |
+|  from it. Run plasmaSetupBoundaries with no arguments to list the kinds.     |
+|                                                                              |
+|  ADDED 2026-09-10, because WITHOUT IT THIS CASE DID NOT RUN AT ALL:          |
+|  plasmaCreateSpeciesFields refuses to start when layer 1 is missing, so      |
+|  Allrun-serial died at its third step under either outer solver. The case    |
+|  predates the boundary-role library and had never been swept onto layer 1.   |
+|                                                                              |
+|  ------------------------------------------------------------------------   |
+|  READ THIS BEFORE CHANGING ANYTHING HERE -- THIS FILE IS NOT THE ONLY        |
+|  SOURCE OF BOUNDARY TRUTH IN THIS CASE.                                      |
+|                                                                              |
+|  Allrun-serial still runs `etc/changeDictionary` AFTER the generators, and   |
+|  changeDictionary WINS on every field it names:                              |
+|                                                                              |
+|      set by etc/changeDictionary : ePotential, surfCharge,                   |
+|                                    n_e, n_N2p, n_O2p, n_Om, n_O2m           |
+|      set from THIS file          : nEps_e, and EVERY OTHER SPECIES the      |
+|                                    mechanism emits -- i.e. the excited and  |
+|                                    neutral set, which changeDictionary       |
+|                                    never names. Deliberately not enumerated: |
+|                                    the three streamer beds share air_plasma  |
+|                                    but differ in mechanismHash, so the list  |
+|                                    is per-case and would go stale here.      |
+|                                                                              |
+|  The two paths DISAGREE, and the disagreement is physics, not formatting     |
+|  (measured 2026-09-10 by generating both and diffing):                       |
+|                                                                              |
+|      charged species at the electrodes                                       |
+|          layer 1          electron/ionDDWallFluxMixed -- an ABSORBING wall  |
+|          changeDictionary zeroGradient                -- NON-absorbing      |
+|      n_e at `far`                                                            |
+|          layer 1          zeroGradient                                       |
+|          changeDictionary inletOutlet, inletValue 1e13 -- a far-field seed  |
+|                                                                              |
+|  changeDictionary is kept AUTHORITATIVE deliberately: it is what produced    |
+|  this bed's validated 2 ns LFA/LMEA results, and switching the electrodes    |
+|  to absorbing walls would silently invalidate that comparison. Which of the  |
+|  two is the better model of the benchmark is a REAL open question, recorded  |
+|  rather than quietly decided here. Resolve it by choosing one and re-running |
+|  the validation -- not by editing one file and assuming the other follows.   |
+|  ------------------------------------------------------------------------   |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// THE DRIVE. RAMPED, not stepped -- and the ramp is a deliberate deviation
+// from the benchmark, which specifies a constant 18.75 kV from t = 0. The
+// original case comment is preserved verbatim because it matters for
+// interpreting early-time results:
+//
+//     "Ramped, not a step. The benchmark specifies a constant 18.75 kV from
+//      t=0; ramping withholds part of the applied field over the first ~94 ps,
+//      so early-time behaviour is NOT directly comparable with the reference.
+//      Kept deliberately: a step change puts a very large field transient on
+//      the electrode in the first timesteps."
+//
+// The numbers are $appliedVoltage and $voltageRampTime from
+// configuration/config, written out LITERALLY here: a $var nested inside a
+// compound value is not expanded by OpenFOAM's dictionary reader, which is the
+// same constraint grubert2009's own boundaries file documents.
+active_electrode
+{
+    kind        drivenElectrode;
+    waveform    table ((0 0) (9.375e-11 18.75e3));   // 18.75 kV over 93.75 ps
+}
+
+grounded_electrode
+{
+    kind        groundedElectrode;
+}
+
+// The artificial outer boundary: the domain simply ends here. This is the
+// `zeroGradient` that the old changeDictionary applies through its ".*"
+// catch-all.
+far
+{
+    kind        openBoundary;
+}
+
+// NOT LISTED, BECAUSE THEY ARE DERIVED FROM THE MESH:
+//   axis             `empty`
+//   wedge_0, wedge_1 `wedge`
+// These are CONSTRAINT patches: they carry their own condition by
+// construction. A mechanical constraint is not a physical description, so
+// declaring it here would be a second source of truth for something the mesh
+// already states.
+
+// ************************************************************************* //
