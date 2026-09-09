@@ -55,7 +55,27 @@ run:
     t = 1.97177e-06   dt = 7.2e-15   <-- collapse
     t = 1.97177e-06   dt ~ 1e-15, stuck, 31-42 correctors/step
 
-That collapse is the thing Newton has to beat. Everything below is aimed at it.
+**AND PICARD DOES NOT MERELY GRIND — IT DIES.** The reference run
+`ballast400_fine` (pure Picard, from t=1.80014e-6) aborted at ignition with the
+solver's own give-up message:
+
+     The solver cannot converge this case.
+    10 consecutive time steps were accepted without the outer (PIMPLE) loop
+    reaching its residual tolerance, with deltaT already at 1.7986e-14 s
+    (floor 1.7986e-14 s, derived).
+
+        time                     1.971771e-06
+        deltaT                   1.7986e-14 s
+        largest deltaT sustained 1.29279923982e-09 s
+        correctors on last step  150 (cap 150)
+        n_e max                  4.61e+18
+
+**dt collapsed 72,000× — 1.29e-9 down to the 1.8e-14 floor — and the run
+stopped.** "Reducing the time step is the solver's last automatic lever and it
+is used up."
+
+THIS IS THE BENCHMARK. Newton has to get past t = 1.971771e-06 at a usable dt.
+Everything below is aimed at it.
 
 **Restart points.** Snapshots at 2e-7 spacing exist from 2.0e-7 to 1.8e-6;
 `ballast400_fine` is re-running Picard from 1.80014e-6 with 1e-8 spacing to get
