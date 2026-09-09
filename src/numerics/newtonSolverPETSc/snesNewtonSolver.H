@@ -138,6 +138,20 @@ class snesNewtonSolver
     //      petscOptions "-fieldsplit_0_pc_type hypre -fieldsplit_1_pc_type ilu";
     string petscOptions_;
 
+    //- Normalise each field block's residual scale by the MEASURED initial
+    //  residual, so every block starts the solve at |F_scaled| ~ 1.
+    //
+    //  `sF = sX/dt` is an a priori guess at the residual size and is a poor
+    //  one. Measured 2026-09-10 on grubert2009_ballast400 the per-block scaled
+    //  residuals spanned 0.0077 (n_Arp) to 111 (nEps_e) -- 14,000x across
+    //  blocks that are all supposed to be O(1). A Krylov method minimises the
+    //  norm of the WHOLE vector, so it fits the loud blocks and is nearly
+    //  blind to the quiet ones however wrong they are.
+    //
+    //  Default TRUE. Set false to reproduce the pre-2026-09-10 behaviour, or
+    //  to A/B the effect.
+    bool rebalanceScales_;
+
     //- Whether the LAST SNES solve converged. Reported through
     //  lastSolveConverged() instead of being turned into a FatalError, so a
     //  step Newton cannot solve is DISCARDED AND RETRIED at a shorter dt via

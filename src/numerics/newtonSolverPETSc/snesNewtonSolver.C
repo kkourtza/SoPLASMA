@@ -899,7 +899,8 @@ Foam::snesNewtonSolver::snesNewtonSolver
     maxIt_(dict.getOrDefault<label>("maxIt", 50)),
     mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5)),
     bounded_(dict.getOrDefault<bool>("bounded", false)),
-    petscOptions_(dict.getOrDefault<string>("petscOptions", string::null))
+    petscOptions_(dict.getOrDefault<string>("petscOptions", string::null)),
+    rebalanceScales_(dict.getOrDefault<bool>("rebalanceScales", true))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -1346,6 +1347,59 @@ void Foam::snesNewtonSolver::solveOuterStep
     {
         List<double> primeF(nLocalTotal, Zero);
         residualCallback(int(nLocalTotal), xBuf.data(), primeF.data(), &ctx);
+
+        // REBALANCE sF FROM THE MEASURED RESIDUAL, so every block starts the
+        // solve at |F_scaled| ~ 1.
+        //
+        // `sF = sX/dt` for the transported blocks is an A PRIORI estimate of
+        // how big the residual OUGHT to be, and it is not a good one. Measured
+        // 2026-09-10 on grubert2009_ballast400 at the pre-ignition state, the
+        // per-block scaled residuals at the first Newton call were:
+        //
+        //     Poisson  44.7    n_e  35.6    n_Ar2p  0.147
+        //     n_Arp     0.0077 nEps_e 111.2
+        //
+        // a spread of 14,000x across blocks that are all supposed to be O(1).
+        // A Krylov method minimises the NORM OF THE WHOLE VECTOR, so in that
+        // state it is fitting nEps_e and the Poisson block and is nearly blind
+        // to n_Arp: the ion block contributes ~1e-4 of the residual norm and
+        // therefore almost nothing to the Krylov space, however wrong it is.
+        //
+        // Normalising by the ACTUAL initial residual costs nothing -- the
+        // priming evaluation above already had to happen so that Pmat and F
+        // describe the same state -- and makes the blocks commensurate, which
+        // is the property the scaling was introduced to provide in the first
+        // place (Knoll & Keyes 2.3.1: the `typ u` scaling exists so that no
+        // component dominates the norm merely through its units).
+        //
+        // Done BEFORE the Pmat assembly below, which reads sX/sF to scale its
+        // entries, so the matrix and the residual stay consistent.
+        if (rebalanceScales_)
+        {
+            for (label b = 0; b < nFields; ++b)
+            {
+                const label off = b*nCellsLocal;
+
+                scalar ss = 0;
+                for (label c = 0; c < nCellsLocal; ++c)
+                {
+                    ss += sqr(scalar(primeF[off + c]));
+                }
+
+                // Collectives on every rank, same number of times (rule 31).
+                const scalar ssG = returnReduce(ss, sumOp<scalar>());
+                const label nG = returnReduce(nCellsLocal, sumOp<label>());
+
+                const scalar rms = (nG > 0 ? Foam::sqrt(ssG/nG) : 0);
+
+                // A block whose residual is already zero needs no rebalancing,
+                // and dividing by it would be a zero-scale catastrophe.
+                if (rms > SMALL)
+                {
+                    sF[b] *= rms;
+                }
+            }
+        }
     }
 
     blockMatrixCOO coo(nCellsLocal, nFields);

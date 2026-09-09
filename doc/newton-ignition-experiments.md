@@ -197,19 +197,58 @@ t=1.80014e-6 through the breakdown at ~1.97e-6 to 2.05e-6. This is the
 experiment the whole log is aimed at: **does Newton hold a usable dt where
 Picard collapses to 1e-15?**
 
+### 7. THE BLOCKS ARE NOT COMMENSURATE — a 14,000× spread, MEASURED
+
+The residual callback's own diagnostic, at the first Newton call of a failing
+step (`idea_baseline`, dt = 1e-10):
+
+    Poisson   |F_scaled| =  44.7
+    n_e       |F_scaled| =  35.6
+    n_Ar2p    |F_scaled| =   0.147
+    n_Arp     |F_scaled| =   0.0077
+    nEps_e    |F_scaled| = 111.2
+
+Every one of these is supposed to be O(1) — that is the entire purpose of the
+`typ u` scaling (Knoll & Keyes 2.3.1: no component should dominate the norm
+merely through its units). They span **0.0077 to 111**.
+
+**Why that is fatal rather than untidy:** a Krylov method minimises the norm of
+the WHOLE vector. In this state the norm is essentially `nEps_e` plus Poisson;
+`n_Arp` contributes ~1e-4 of it and therefore almost nothing to the Krylov
+space, no matter how wrong the ion block is. GMRES is fitting two blocks and is
+nearly blind to a third.
+
+**The cause is in the code, not the physics.** `sF = sX/dt` for the transported
+blocks is an A PRIORI estimate of how large the residual OUGHT to be. The
+measurement above is what it actually is.
+
+**Fix implemented: normalise `sF` by the MEASURED initial residual** (new
+`rebalanceScales`, default true). It costs nothing — the priming residual
+evaluation already had to happen so that Pmat and F describe the same state —
+and it is done BEFORE the Pmat assembly, which reads `sX`/`sF`, so matrix and
+residual stay consistent. A/B results below.
+
+Note this also explains why every PETSc knob failed: no choice of
+preconditioner, forcing term or line search repairs a residual in which one
+block is invisible. That is a property of the vector being handed to the Krylov
+method, not of how the Krylov method is run.
+
 ## Still untested (next, in priority order)
 
-1. **Per-block scaling.** `sX`/`sF` are ONE SCALAR PER FIELD. An ignited
-   discharge has `n_e` spanning 1e11–1e18 WITHIN the electron block, so a
-   single scale cannot condition it, and the Newton step is computed in badly
-   scaled variables. Strongest remaining candidate, and consistent with every
-   PETSc knob failing.
+1. **Per-CELL scaling.** `sX` is one scalar per FIELD. An ignited discharge has
+   `Arp` spanning 1e11–5.7e18 WITHIN one block (7.7 decades), so cells at the
+   floor scale to ~1e-8 of the block's own scale and their Jacobian columns are
+   differenced at the noise level. Item (7) fixes the imbalance BETWEEN blocks;
+   this is the same disease WITHIN one.
 2. **Bounded Newton** (`SNESVINEWTONRSLS`, `bounded true`). The density clamp
    is applied OUTSIDE the equations, so while it is active `F(u)=0` is not
    reachable at all. At ignition, cells sit on the floor next to cells at 1e18.
+   (Test running.)
 3. **Pmat quality at the ignited state.** `-snes_test_jacobian` measured 6.75e-3
    pre-ignition; re-measure it here. A Pmat that was an adequate approximation
-   in the quiescent state need not be one across a streamer head.
-4. **log(n) formulation.** The principled fix for both 1 and 2 at once, and
-   already on the deferred list. Positivity becomes intrinsic, the clamp goes,
-   and the seven-decade dynamic range becomes an O(1) range in the unknown.
+   in the quiescent state need not be one across a streamer head. (Test
+   running.)
+4. **log(n) formulation.** The principled fix for 1 and 2 at once, and already
+   on the deferred list. Positivity becomes intrinsic, the clamp goes, and the
+   seven-decade dynamic range becomes an O(1) range in the unknown. Everything
+   measured today argues for it: the failures are all dynamic-range failures.
