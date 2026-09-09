@@ -233,6 +233,50 @@ preconditioner, forcing term or line search repairs a residual in which one
 block is invisible. That is a property of the vector being handed to the Krylov
 method, not of how the Krylov method is run.
 
+### 8. RESIDUAL REBALANCING — works exactly as designed, does NOT fix convergence
+
+Verified it moved the knob (the first A/B printed identical numbers for both
+arms, because the diagnostic fires on the PRIMING call which runs BEFORE the
+rebalancing — a rule-42 near-miss; the later calls are the ones that show it):
+
+| block | `rebalanceScales true` | `false` |
+|---|---|---|
+| Poisson | 44.7214 | 44.7190 |
+| n_e | **44.7214** | 35.6396 |
+| n_Ar2p | **44.7215** | 0.1465 |
+| n_Arp | **44.7214** | 0.00766 |
+| nEps_e | **44.7213** | 111.168 |
+
+Every block now contributes equally. **And convergence did not improve**: KSP
+counts 24/49/100 against 25/49/100, one retry each. So block imbalance was A
+defect, not THE defect. Kept because it is correct, cheap, and removes a
+confound from every later measurement.
+
+### 9. BOUNDED NEWTON (`SNESVINEWTONRSLS`) — CLEAR FAILURE, dt collapses to 5e-15
+
+The hypothesis was that the density clamp, applied OUTSIDE the equations, makes
+`F(u)=0` unreachable, and that imposing the floor as a CONSTRAINT inside the
+solve would fix it. It does the opposite.
+
+    360 steps, 0 fatals, 2383 SNES calls   <-- looks like a success
+    final t = 1.80018e-06                  <-- advanced 4e-11 in 360 steps
+    dt      = 5.0e-15                      <-- COLLAPSED
+    135 retries out of 360 steps
+
+**The step count was the trap.** 360 steps of nothing. Bounded Newton grinds at
+dt ~5e-15, which is *the same collapse Picard suffers at ignition* and 10⁵×
+worse than unbounded Newton on the identical state (2–4e-10). Read the achieved
+dt, never the step count.
+
+Why it likely fails: `SNESVINEWTONRSLS` is a reduced-space active-set method.
+At this state a large fraction of cells sit exactly on the floor, so the active
+set is huge and changes every iteration, and the reduced space it solves in is
+both small and unstable between iterations.
+
+**Verdict: do not pursue bounded Newton for this problem.** The clamp is still a
+real defect, but the fix is to remove the need for it (log(n)), not to
+re-express it as a constraint.
+
 ## Still untested (next, in priority order)
 
 1. **Per-CELL scaling.** `sX` is one scalar per FIELD. An ignited discharge has
