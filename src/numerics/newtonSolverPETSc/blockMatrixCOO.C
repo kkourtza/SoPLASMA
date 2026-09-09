@@ -23,7 +23,8 @@ Foam::blockMatrixCOO::blockMatrixCOO
 )
 :
     nCells_(nCells),
-    nFields_(nFields)
+    nFields_(nFields),
+    rowNumbering_(nFields*nCells)
 {
     // Diagonal for every unknown, plus both triangles of every internal face
     // for every field block. An estimate only -- DynamicList grows if the
@@ -66,12 +67,9 @@ void Foam::blockMatrixCOO::addDiagonalBlock
     const scalar scaling
 )
 {
-    const label rowOff = rowField*nCells_;
-    const label colOff = colField*nCells_;
-
     forAll(coeff, c)
     {
-        add(rowOff + c, colOff + c, coeff[c]*scaling);
+        add(globalRow(rowField, c), globalRow(colField, c), coeff[c]*scaling);
     }
 }
 
@@ -84,28 +82,9 @@ void Foam::blockMatrixCOO::addFvMatrix
     const scalarField& rowFactor
 )
 {
-    if (Pstream::parRun())
-    {
-        FatalErrorInFunction
-            << "Assembling a block Jacobian in parallel is not implemented."
-            << nl << nl
-            << "    Processor-interface faces contribute OFF-DIAGONAL entries"
-            << " that couple cells owned by different ranks, and they are not"
-            << " gathered here. Assembling without them would silently"
-            << " produce a matrix describing a set of DISCONNECTED"
-            << " subdomains -- a preconditioner built on it would look"
-            << " plausible and be wrong, which is worse than refusing." << nl
-            << "    petsc4Foam's own buildMat() handles these via"
-            << " lduAddressing::patchAddr() and the interface"
-            << " boundaryCoeffs; follow that when adding parallel support."
-            << nl << exit(FatalError);
-    }
-
     const lduAddressing& addr = m.lduAddr();
     const labelUList& upp = addr.upperAddr();
     const labelUList& low = addr.lowerAddr();
-
-    const label off = field*nCells_;
 
     // DIAGONAL, with the boundary contribution folded in.
     //
@@ -136,7 +115,7 @@ void Foam::blockMatrixCOO::addFvMatrix
 
     forAll(d, c)
     {
-        add(off + c, off + c, d[c]*scaling*rowFactor[c]);
+        add(globalRow(field, c), globalRow(field, c), d[c]*scaling*rowFactor[c]);
     }
 
     // OFF-DIAGONAL, both triangles. An asymmetric matrix carries a separate
@@ -148,10 +127,92 @@ void Foam::blockMatrixCOO::addFvMatrix
     forAll(upp, f)
     {
         // row = owner (lower-numbered cell), col = neighbour
-        add(off + low[f], off + upp[f], uppVal[f]*scaling*rowFactor[low[f]]);
+        add
+        (
+            globalRow(field, low[f]), globalRow(field, upp[f]),
+            uppVal[f]*scaling*rowFactor[low[f]]
+        );
 
         // and the transpose position
-        add(off + upp[f], off + low[f], lowVal[f]*scaling*rowFactor[upp[f]]);
+        add
+        (
+            globalRow(field, upp[f]), globalRow(field, low[f]),
+            lowVal[f]*scaling*rowFactor[upp[f]]
+        );
+    }
+
+    // ---- PROCESSOR INTERFACES: the entries that couple cells owned by
+    // DIFFERENT ranks. Without them the matrix describes a set of
+    // disconnected subdomains -- plausible-looking and wrong.
+    //
+    // The neighbour's GLOBAL row is obtained through OpenFOAM's own interface
+    // transfer rather than by computing rank offsets by hand: we send this
+    // rank's global row index for every cell adjacent to the interface, and
+    // receive the neighbour's. That is exactly how petsc4Foam's buildMat()
+    // does it, and it means the field-major-inside-rank layout needs no
+    // special treatment -- the number that arrives is already the right one.
+    //
+    // The transfer carries the global rows OF THIS FIELD, so it is done once
+    // per field rather than once per matrix.
+    if (Pstream::parRun())
+    {
+        const lduInterfacePtrsList interfaces(m.psi().mesh().interfaces());
+
+        labelList globalRowsThisField(nCells_);
+        forAll(globalRowsThisField, c)
+        {
+            globalRowsThisField[c] = globalRow(field, c);
+        }
+
+        const label startOfRequests = UPstream::nRequests();
+
+        forAll(interfaces, patchi)
+        {
+            if (interfaces.set(patchi))
+            {
+                interfaces[patchi].initInternalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                );
+            }
+        }
+
+        UPstream::waitRequests(startOfRequests);
+
+        const FieldField<Field, scalar>& bouCoeffs = m.boundaryCoeffs();
+
+        forAll(interfaces, patchi)
+        {
+            if (!interfaces.set(patchi)) continue;
+
+            const labelUList& faceCells = addr.patchAddr(patchi);
+
+            const labelField nbrRows
+            (
+                interfaces[patchi].internalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                )
+            );
+
+            const scalarField& bc = bouCoeffs[patchi];
+
+            forAll(faceCells, i)
+            {
+                // MINUS the boundary coefficient: these are THIS side's
+                // coefficients, from discretising our own face rather than
+                // the neighbour's reversed one (petsc4Foam states the same
+                // convention explicitly at its own interface loop).
+                add
+                (
+                    globalRow(field, faceCells[i]),
+                    nbrRows[i],
+                    -bc[i]*scaling*rowFactor[faceCells[i]]
+                );
+            }
+        }
     }
 }
 

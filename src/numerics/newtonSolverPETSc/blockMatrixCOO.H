@@ -54,6 +54,7 @@ SourceFiles
 
 #include "fvMatrices.H"
 #include "DynamicList.H"
+#include "globalIndex.H"
 
 namespace Foam
 {
@@ -69,6 +70,13 @@ class blockMatrixCOO
 
     //- Number of field blocks.
     const label nFields_;
+
+    //- GLOBAL row numbering across ranks, over this rank's nFields*nCells
+    //  rows. PETSc's Vec/Mat layout is rank-contiguous, and our per-rank
+    //  layout is field-major inside that block, so the global row of
+    //  (field f, local cell c) is localStart() + f*nCells + c. In serial
+    //  localStart() is 0 and every index below is unchanged.
+    const globalIndex rowNumbering_;
 
     DynamicList<label> rows_;
     DynamicList<label> cols_;
@@ -97,6 +105,12 @@ public:
     //  contributions from separate blocks composable.
     void add(const label row, const label col, const scalar v);
 
+    //- GLOBAL row/column index of (field, local cell)
+    label globalRow(const label field, const label cell) const
+    {
+        return rowNumbering_.localStart() + field*nCells_ + cell;
+    }
+
     //- Add a DIAGONAL coupling block: d(residual of field rowField)/d(field
     //  colField), given cell-wise. Used for the Poisson<->species coupling,
     //  which is diagonal because chargeDensity is a pointwise sum of the
@@ -116,9 +130,11 @@ public:
     //  diagonal has addBoundaryDiag() applied first, exactly as
     //  fvMatrix::solveSegregated() does before handing a matrix to a solver.
     //
-    //  Processor interfaces are NOT yet contributed -- see the FatalError in
-    //  the implementation; this is refused in parallel rather than silently
-    //  assembling a matrix that ignores the coupling between ranks.
+    //  Processor interfaces ARE contributed: each coupled patch adds one
+    //  off-diagonal entry per face, at (this cell, the NEIGHBOUR's global
+    //  row), with value -boundaryCoeffs. The neighbour's global row arrives
+    //  through OpenFOAM's own interface transfer rather than any manual rank
+    //  arithmetic, exactly as petsc4Foam's buildMat does it.
     //  rowFactor multiplies every entry of row c. Pass 1/V to convert an
     //  fvm:: matrix (which is VOLUME-INTEGRATED -- e.g. EulerDdtScheme sets
     //  diag = rDeltaT*mesh().V()) into the per-unit-volume convention the
