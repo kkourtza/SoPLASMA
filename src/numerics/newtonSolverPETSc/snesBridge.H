@@ -120,6 +120,7 @@ int solveWithSNES
     void* pcUserData,
     const double* lowerBounds,
     const SnesPmatCOO* pmat,
+    int nFieldBlocks,
     int* itsOut
 );
 

@@ -1444,6 +1444,7 @@ void Foam::snesNewtonSolver::solveOuterStep
         &pcCtx,
         bounded_ ? lowerBounds.cdata() : nullptr,
         &pmatCOO,
+        int(nFields),
         &its
     );
 

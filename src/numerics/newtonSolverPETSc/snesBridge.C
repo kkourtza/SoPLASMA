@@ -127,6 +127,7 @@ int solveWithSNES
     void* pcUserData,
     const double* lowerBounds,
     const SnesPmatCOO* pmat,
+    int nFieldBlocks,
     int* itsOut
 )
 {
@@ -304,7 +305,35 @@ int solveWithSNES
         PC pc;
         KSPGetPC(ksp, &pc);
 
-        if (pcCallback)
+        if (Pmat && nFieldBlocks > 1)
+        {
+            // PCFIELDSPLIT on the ASSEMBLED Pmat.
+            //
+            // Two splits, because Schur requires EXACTLY two
+            // (fieldsplit.c: "To use Schur complement preconditioner you must
+            // have exactly 2 fields"): the elliptic potential against ALL the
+            // transport fields. The Schur complement is the only fieldsplit
+            // type that uses the off-diagonal coupling block, which is the
+            // whole reason the Pmat was assembled.
+            //
+            // PCFieldSplitSetIS, NOT PCFieldSplitSetFields: our DOF layout is
+            // FIELD-MAJOR (all of field 0, then all of field 1, ...), not
+            // interlaced, so the block-size-based helper does not describe it.
+            const PetscInt nc = nLocal/nFieldBlocks;
+
+            IS isPhi, isTransport;
+            ISCreateStride(petscComm, nc, 0, 1, &isPhi);
+            ISCreateStride(petscComm, nLocal - nc, nc, 1, &isTransport);
+
+            PCSetType(pc, PCFIELDSPLIT);
+            PCFieldSplitSetIS(pc, "phi", isPhi);
+            PCFieldSplitSetIS(pc, "transport", isTransport);
+            PCFieldSplitSetType(pc, PC_COMPOSITE_SCHUR);
+
+            ISDestroy(&isPhi);
+            ISDestroy(&isTransport);
+        }
+        else if (pcCallback)
         {
             PCSetType(pc, PCSHELL);
             PCShellSetContext(pc, &pcCtx);
