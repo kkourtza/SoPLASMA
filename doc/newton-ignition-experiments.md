@@ -601,36 +601,37 @@ struggling Newton solve grind for 200 iterations delays the retry that would
 have found a workable step sooner. The retry ladder is a better response to a
 hard step than more iterations on it.
 
-### 20. EW MAY BE STATE-DEPENDENT — the default is UNDER REVIEW
+### 20. EW IS STATE-DEPENDENT — +80% on the easy state, ~neutral on the hard one
 
-**Do not treat `adaptiveForcing true` as settled.** On the ignition runs, at the
-DEEP-AVALANCHE state (t >= 1.90e-6) rather than the pre-ignition state where
-(15) was measured, the run carrying EW came out WORSE:
+**RESOLVED by a clean isolation, and it corrects TWO of my own readings.**
+Identical library, identical restart at t=1.90026e-6, one switch:
 
-| run (equal N=58, from t=1.90026e-6) | mean dt | advanced |
-|---|---|---|
-| current lib (coupling + `chemJacobian` + EW) | 1.862e-10 | 8.71e-09 |
-| older lib (coupling only) | **2.213e-10** | **1.184e-08** |
-| oldest lib | 2.180e-10 | 1.148e-08 |
+| equal N=30 | mean dt | advanced | retries | MAX_IT | LINE_SEARCH |
+|---|---|---|---|---|---|
+| **EW ON** (default) | **2.536e-10** | **5.39e-09** | 9 | **5** | 4 |
+| EW OFF | 2.421e-10 | 5.11e-09 | 6 | 1 | 4 |
 
-**That table is CONFOUNDED and must not be quoted as an EW result** — the three
-runs differ in three changes at once (the Schur coupling block, the ionisation
-derivative, and EW), not one. It is listed only because it was enough to
-suspect the default.
+So at the deep-avalanche state EW is **+4.7% on dt** — marginally BETTER, not
+worse — while causing **5× more `DIVERGED_MAX_IT`** and 50% more retries.
 
-The mechanism that would explain it: EW loosens the linear tolerance, which is
-free when the Newton step is going to be superseded anyway, but at a hard state
-a loose linear solve gives a poor Newton DIRECTION, costing nonlinear
-iterations. Consistent with the `newton_ignition_ew` run failing on
-`DIVERGED_MAX_IT` — the -5 reason — which is the nonlinear iteration running
-out, not the linear one.
+**Both of my earlier readings were wrong, in opposite directions:**
+* the "+80%, now default" headline (15) was measured at the PRE-IGNITION state
+  and does not generalise — at the hard state the gain is ~5%;
+* the "EW may be hurting" flag was based on (a) a CONFOUNDED three-way
+  comparison differing in three changes at once, and (b) a 4–5 step sample of
+  the clean test, which was noise. At N=30 it reverses.
 
-That is the same shape as the `maxIt` contradiction in the next-steps list:
-**both options help on the easy state and hurt on the hard one.**
+**Verdict: keep `adaptiveForcing true`.** It is a large win over most of a run
+(the long pre-ignition phase is where most steps are), neutral-to-slightly-
+positive at ignition, and never actually harmful. But the caveat is real and
+belongs next to the default: **EW trades linear-solve effort for nonlinear
+iterations, and at a hard state that trade is roughly break-even** — which is
+why `MAX_IT` failures multiply even as dt holds up.
 
-**A clean isolation is running** (`hard_ew_on` vs `hard_ew_off`): identical
-library, identical restart at t=1.90026e-6, one switch. If EW loses there, the
-default from commit b7e0d8d should be reverted to false, or made conditional.
+That is the same shape as the `maxIt` result: an option tuned on the easy phase
+is not automatically right for the hard one. **Measure both states before making
+anything a default** — I did not, and got a headline number that does not
+generalise.
 
 ## Still untested / next, in priority order (as of 2026-09-11 ~03:40)
 
