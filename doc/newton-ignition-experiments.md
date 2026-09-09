@@ -7,24 +7,34 @@ and the ones that turned out to be measuring nothing.** Started 2026-09-10.
 
 | # | idea | verdict | the number that decides it |
 |---|---|---|---|
-| 5 | **Newton retries a failed step** | **WORKS — the one that mattered** | dt 1e-11 (hard cap) → **1.5–4e-10 self-regulated**, 15–40× |
+| 5 | **Newton retries a failed step** | **WORKS** | dt 1e-11 (hard cap) → **1.5–4e-10 self-regulated**, 15–40× |
+| 15 | **Eisenstat–Walker (inexact Newton)** | **BIGGEST OPTION WIN — now default** | mean dt **+80%**, KSP failures **13× fewer** |
+| 12 | **ionisation derivative `dP/dn` in Pmat** | **WORKS — now default** | **+41%** advance/step; it IS the avalanche growth rate |
+| 10 | **Schur coupling block `dF_s/dφ`** | **real bug — Schur was INERT** | `A_tφ = 0` ⇒ `S = A_tt` exactly; +7% |
+| 17 | *(consequence)* | **regime change** | solver-driven rejections **38% → 8.6%** of steps |
 | 3 | FGMRES instead of GMRES | works, kept | removed `DIVERGED_BREAKDOWN` at the restart boundary |
 | 8 | rebalance residual scales | correct, neutral | blocks 0.0077–111 → all 44.72; KSP unchanged |
-| 2 | preconditioner (hypre/bjacobi/selfp/500 its) | **no effect** | all `DIVERGED_ITS`, PC verified by `-ksp_view` |
-| 4 | 8 PETSc options (EW, 3 line searches, mffd_err) | **all failed** | none survives the dt baseline dies at |
-| 9 | **bounded Newton** (`SNESVINEWTONRSLS`) | **FAILS BADLY** | dt collapses to **5e-15**, 10⁵× worse than unbounded |
-| 1 | dt cap sweep | diagnostic | ceiling between 1e-11 (works) and 1e-10 (dies) |
+| 16 | `chemCrossJacobian` (my own idea) | **HURTS** | **−29%**; approximation too crude |
+| 2 | preconditioner (hypre/bjacobi/selfp, retested) | **no effect** | −9%, −1%; verified by `-ksp_view` |
+| 9 | **bounded Newton** (`SNESVINEWTONRSLS`) | **FAILS BADLY** | dt collapses to **5e-15**, 10⁵× worse |
+| 14 | `ngmres`, Schur `upper`, quadratic backtracking | **all fail** | singular wall flux; 45%; 20% KSP failure |
 
-**The one-line conclusion so far:** the binding constraint was never the
-preconditioner or any PETSc knob — it was that **Newton had no way to back off
-from a step that was too large.** Giving it the retry path Picard already had
-raised its sustained dt by 15–40× and made the Picard→Newton handover survivable
-at all.
+**The one-line conclusion:** the preconditioner options were never the problem
+and could never have been, *while the matrix was missing physics*. Two Jacobian
+blocks were absent — the field→species drift coupling (which made the Schur
+complement mathematically inert) and the ionisation derivative (the avalanche
+growth rate itself). Once the Pmat was right, the option that ADAPTS to Jacobian
+quality — Eisenstat–Walker, which had *failed* on the broken matrix — nearly
+doubled the timestep and cut linear-solve failures 13×. Newton is now limited by
+the temporal-accuracy controller rather than by its own convergence.
 
-**Two traps this log exists to stop anyone repeating:** read the ACHIEVED dt,
-never the step count (bounded Newton's 360 steps advanced 4e-11); and confirm
-the knob moved before believing a comparison (four separate inert-knob
-incidents, now rule 42).
+**Three traps this log exists to stop anyone repeating:** read the ACHIEVED dt,
+never the step count (bounded Newton's 360 steps advanced 4e-11); confirm the
+knob moved before believing a comparison (four inert-knob incidents, now rule
+42); and **re-test options after fixing the model they were tested against** —
+EW, `hypre`, `maxit`, and the line searches were all dismissed on evidence
+gathered with a broken Pmat, and one of them turned out to be the biggest win
+available.
 
 ## The case, fixed for every experiment below
 
@@ -488,6 +498,43 @@ The approximation is right for electron-impact channels and wrong for
 ion-neutral and recombination ones, and evidently the wrong part dominates.
 Default stays FALSE. Do not turn it on without deriving the real per-reaction
 derivative.
+
+### 17. THE BOTTLENECK MOVED — Newton is now ACCURACY-limited, not solver-limited
+
+The most important result of the night, and it is a change of regime rather
+than another percentage.
+
+`plasmaTimeControl` states its own health test in the source:
+
+> *"This is the ACCURACY layer, and it is meant to be the primary setter of
+> deltaT. The Courant and stiffness limits below remain as CAPS: **if one of
+> them still names itself in `deltaT set by`, the controller is not in charge
+> and that is the thing to investigate.**"*
+
+Measured by that criterion:
+
+| config | `temporal` (accuracy) | **`rejection`** (solver failed) | `Co_conv` |
+|---|---|---|---|
+| `chemJacobian off` | 76 | **49 — 38%** | 3 |
+| `chemJacobian on` | 82 | **38 — 30%** | 4 |
+| **`+ -snes_ksp_ew`** | 59 | **7 — 8.6%** | 14 |
+
+**Solver-driven step rejections fell from 38% of steps to 8.6%.** The thing
+setting the timestep is now the temporal-error controller, which is precisely
+what the design intends. Further solver work has diminishing returns on this
+case; the next lever is the accuracy tolerance itself, which is a physics
+trade-off and the user's call, not a numerics fix.
+
+And the FAILURE MODE moved with it. Re-diagnosed on the EW run:
+
+    without EW   every retry: SNES reason -3 (DIVERGED_LINEAR_SOLVE), KSP at its cap
+    with EW      -6 LINE_SEARCH (5x), -5 MAX_IT (4x), -3 LINEAR_SOLVE (2x)
+                 and 9 solves hitting the maxIt = 50 cap
+
+So the remaining failures are in the NONLINEAR iteration, not the linear one.
+That makes `maxIt` and the line-search type relevant again — both were tested
+early and dismissed, but against the broken Pmat AND without EW, so neither was
+ever a fair test of this regime. Under test now.
 
 ## Still untested (next, in priority order)
 
