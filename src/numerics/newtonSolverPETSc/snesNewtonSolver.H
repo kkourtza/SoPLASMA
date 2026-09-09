@@ -114,6 +114,13 @@ class snesNewtonSolver
     //      from ~1e-4 to ~1e-5 -- but it did not make F smooth.
     scalar mffdErr_;
 
+    //- Enforce the species density floor as a CONSTRAINT inside the Newton
+    //  solve (PETSc SNESVINEWTONRSLS) instead of as a post-hoc clamp.
+    //  DEFAULT true. The clamp is applied outside the equations, which makes
+    //  F(u)=0 unreachable -- see doc/newton-outer-solver-design.md, defect A,
+    //  and the cold-start guard in solveOuterStep.
+    bool bounded_;
+
 public:
 
     TypeName("SNES");

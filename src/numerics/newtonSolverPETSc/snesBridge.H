@@ -69,6 +69,23 @@ typedef void (*PCApplyCallback)
 // pcCallback/pcUserData may be nullptr for no preconditioning (PCNONE).
 // Returns the SNESConvergedReason (positive = converged) and writes the
 // iteration count to *itsOut.
+// Sentinel meaning "this component has NO lower bound". Chosen rather than
+// exposing PETSC_NINFINITY, because the OpenFOAM side of this boundary must
+// not see a PETSc header (see the note at the top of this file).
+extern const double snesNoBound;
+
+// lowerBounds may be nullptr, in which case an ORDINARY unconstrained Newton
+// solve is done (SNESNEWTONLS). When it is supplied, the solve becomes a
+// BOUNDED one (SNESVINEWTONRSLS) enforcing lowerBounds[i] <= x[i], with no
+// upper bound. Components set to snesNoBound are left free.
+//
+// WHY BOUNDS AT ALL: species number densities must stay positive. That was
+// previously enforced by a clamp applied AFTER the solve, i.e. OUTSIDE the
+// equations, which makes F(u)=0 unreachable -- no Newton method can converge
+// to a state that its own residual does not call a root. Enforcing the same
+// floor as a CONSTRAINT inside the solve is the principled version, and it is
+// what makes a cold start possible at all (see doc/newton-outer-solver-design.md,
+// defect A).
 int solveWithSNES
 (
     int nLocal,
@@ -77,6 +94,7 @@ int solveWithSNES
     void* userData,
     PCApplyCallback pcCallback,
     void* pcUserData,
+    const double* lowerBounds,
     int* itsOut
 );
 

@@ -1401,3 +1401,140 @@ exponential structure to the residual hurts the thing that currently limits us.
 4. ASPIN / nonlinear preconditioning: the motivation is weaker than thought,
    since the blocker is linear conditioning rather than unbalanced
    nonlinearity. Keep as a research track, not the next step.
+
+## THE REAL BLOCKER FOUND: a one-shot model initialisation firing INSIDE the residual -- 2026-09-09
+
+SUPERSEDES both earlier attributions. "Nonlinear stiffness" was wrong; "dt is
+the lever / conditioning" was also wrong (and its dt sweep was non-monotonic at
+a second state, which no conditioning argument can produce).
+
+### The defect
+
+`localEnergyEnergyModel::correct()` carries a ONE-SHOT LFA seed:
+
+    if (seedFromLFA_) { seedFromLFA_ = false; nEps_ == meanE0*n_e; }
+
+The Newton path's first `correct()` sat INSIDE residualCallback (put there by
+the meanE ordering fix), so the seed fired on residual call #1 and on no other.
+F was therefore a DIFFERENT FUNCTION at the base point than at every perturbed
+point: the matrix-free product differenced F_{call>=2}(u+hv) against
+F_{call1}(u), so J*v was meaningless.
+
+**That is the "impossible" measurement recorded above** -- under PCNONE the
+preconditioned and true residual norms diverged from iteration 1, which cannot
+happen for a consistent linear operator. It was never stiffness and never
+conditioning; the operator was not a fixed linear map because the function
+underneath it changed after the first evaluation.
+
+Measured at t=2e-8, nEps block scaled residual: **172.46 on call #1 against
+0.00086 on call #2** -- a factor of 2e5, and ~97% of the reported initial norm
+(178.16 = sqrt(44.72^2 + 172.46^2)). It also explains why t=2e-9 worked: there
+the stored nEps is still ~the LFA equilibrium, so the seed is nearly a no-op,
+while by t=2e-8 the state has moved 3.4x away.
+
+### Fixed, and verified three ways
+
+`solveOuterStep` now calls `lmea->correct()` ONCE before the solve, making the
+seed part of the state the solve starts from -- which is what a one-shot
+initialisation is for. After the fix:
+
+    seed message now precedes residual call #1 (log line 176 vs 177)
+    nEps |F_scaled| calls #1/#2/#3: 26.9182 / 26.9183 / 26.9182   (was 172.46 / 0.00086)
+    initial SNES norm: 52.20                                       (was 178.16)
+
+F is now consistent across calls. The t=2e-8 / dt=1e-12 case STILL fails with
+DIVERGED_LINEAR_SOLVE, so this was one blocker and not the only one -- but it
+was the one invalidating every diagnosis built on the residual.
+
+### PRODUCTION BUG, not a Newton one -- needs its own fix (rule 37)
+
+The seed is gated on
+
+    freshStart = mesh.time().timeIndex() == mesh.time().startTimeIndex()
+
+evaluated in the CONSTRUCTOR, before the time loop -- so it is ALWAYS true,
+restart or not. The comment beside it states an intent the test cannot
+implement. Consequence: **every LMEA restart with `initialMeanEnergy` silently
+discards its stored energy state at the first correct(), on the PICARD path
+too.** Confirmed in the setup log. Deliberately NOT patched from the Newton
+code; it needs its own change and its own verification.
+
+### Also fixed this round
+
+* **Bounded Newton** (`newtonSolver/bounded`, default true): the species floor
+  is now a CONSTRAINT inside the solve (`SNESVINEWTONRSLS` +
+  `SNESVISetVariableBounds`) instead of a post-hoc clamp. Verified no
+  regression on the working 2e-9 restart (20/20 converged, same iteration
+  counts). The cold-start guard stands down when `bounded` is on.
+* **PETSC_INFINITY overflows under FOAM_SIGFPE.** It is PETSC_MAX_REAL/4 ~
+  4.5e307, so xu - xl ~ 9e307 and any further arithmetic overflows to inf,
+  which OpenFOAM TRAPS. Use a finite 1e30 -- effectively unbounded for the
+  O(1) scaled variables. (PETSc's own docs recommend PETSC_INFINITY; that
+  advice does not survive FPE trapping.)
+* **PCSHELL wrote past the end of its output vector under the bounded solver.**
+  SNESVINEWTONRSLS is REDUCED-SPACE: it removes components at their bound and
+  hands the KSP a SHORTER vector, while pcApplyCallback indexed the full field
+  layout. Now detected via the callback's own `n` and falling back to the
+  identity for restricted applications, with a warning. That is safe, not
+  right: the proper route is an assembled Pmat with PCFIELDSPLIT, which
+  SNESVI supports natively via PCFieldSplitRestrictIS.
+* **BC ordering**: species/nEps `correctBoundaryConditions()` moved to AFTER
+  phiE/meanE/mu are rebuilt. Structurally correct (the wall-flux BCs read live
+  phiE and patch mobility), though it changed the base-point residual not at
+  all here.
+
+### Reviewed and CLEARED (do not re-investigate)
+
+* **The ddt-at-restart anomaly is NOT a bug.** `ddtSchemes backward` is
+  three-level, so at u = u^n, ddt = 0.5(n^oo - n^o)/dt, i.e. minus half the
+  PREVIOUS step's backward difference -- not zero. Verified numerically to 7
+  significant figures against the restart files. Old-time handling is correct
+  (`storeOldTimes()` runs before `primitiveFieldRef()` writes).
+* **chemSrcPrev_/chemOuterCount_/chemPicardChange_** are mutated per residual
+  call but NOTHING in F reads them; `finalOuterIteration()`, the only
+  behavioural consumer, is dead code. Consistent with the measured freeze test
+  (no difference to 8 digits).
+* Scaling verified consistent at all four sites; signs verified block by block
+  against the residual; the chargeDensity and meanE fixes are complete.
+
+### Latent, worth fixing (rule 31)
+
+* `plasmaReactionRates::reportRange()` has `if (f.empty()) return;` -- a LOCAL
+  guard -- with gMin/gMax and three `reduce()` downstream. Rule 31's dangerous
+  spelling. Reached from the residual. Bites only on a zero-cell rank.
+* `plasmaTransport.C:4073` `gMax(chemL_[sp])` behind `if (!chemL_[sp].empty())`
+  -- same pattern, plus one global reduction per species per matvec.
+* ~10 global reductions per matvec overall. Benign in serial, a real cost in
+  parallel.
+* Peak-hold diagnostics (clampRaw_, advisoryLpeak_, chemStiffnessPeak_,
+  chemPicardPeak_) are mutated once per matvec and are therefore MEANINGLESS in
+  Newton mode. The earlier Phase D exclusion "the clamp is not binding" came
+  from one of these and is not sound evidence.
+
+### Next step, now well specified (from a verified PETSc survey)
+
+Assemble a Pmat and switch to PCFIELDSPLIT Schur. Measured on a coupled toy
+(MFFD Amat), KSP iterations over 3 Newton steps: PCNONE 77, additive 64,
+multiplicative (~= our current PCSHELL) 36, **Schur with fact_type full 7** --
+equal to an exact LU of Pmat.
+
+* PCFIELDSPLIT CANNOT work off a matrix-free Pmat, and it FAILS SILENTLY:
+  `-ksp_view` shows every split as `PC type: none` because PETSc cannot extract
+  sub-blocks from a MATSHELL. Verified by running. `-fieldsplit_*_pc_type
+  hypre` appears to work but densely probes the block -- ~10,000 residual
+  evaluations per setup, i.e. the 1500x disaster reintroduced.
+* Supported route: keep `MatCreateSNESMF` as Amat, pass a real MATAIJ Pmat as
+  SNESSetJacobian's second argument (PETSc manual: blocks come from Pmat, not
+  Amat). Never set `-pc_use_amat` or the fieldsplit `*_use_amat` variants.
+* Our layout is field-major, so use `PCFieldSplitSetIS` with stride index sets,
+  NOT `PCFieldSplitSetFields`. Schur requires EXACTLY two splits, so group
+  [phi] against [n_e, n_Arp, n_Ar2p, nEps_e].
+* The missing block is cheap and diagonal:
+  **A_01 = d(Poisson residual)/dn_i = -Z_i e**.
+* SNESVINEWTONRSLS works matrix-free (verified) and has first-class fieldsplit
+  support. SNESVINEWTONSSLS and SNESNEWTONTR both HARD-FAIL matrix-free
+  (they need MatMultTranspose, which MATMFFD lacks). NGMRES/QN/NCG/Anderson
+  ignore the Jacobian and the physics PC entirely -- skip.
+* Precedent to copy: `src/snes/tutorials/ex28.c` (elliptic coefficient coupled
+  to a second field, run with `-snes_mf_operator -pc_type fieldsplit`) and
+  `ex19.c` for AMG on the elliptic block.

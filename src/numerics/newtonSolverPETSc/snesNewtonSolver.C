@@ -158,13 +158,21 @@ void residualCallback
         ePotential.correctBoundaryConditions();
     }
 
+    // INTERNAL VALUES ONLY HERE. The species and nEps boundary conditions are
+    // corrected LATER, at step 4b, and the ordering is load-bearing:
+    // electronDDWallFluxMixed and the ddWallFlux family read the LIVE phiE and
+    // patch mobility, so correcting them here -- before updateDerivedFields()
+    // rebuilds phiE from the new ePotential and before transportModel.correct()
+    // refreshes mu -- gave patch VALUES from iterate k-1. That makes
+    // F = F(u_k, u_{k-1}) rather than F(u), which is the same purity defect as
+    // the meanE ordering and the LFA seed, and it corrupts the matrix-free
+    // Jacobian in the same way. Found by review, 2026-09-09.
     for (label s = 0; s < ctx.nSpecies; ++s)
     {
         volScalarField& ns = species.numberDensity(s);
         scalarField& f = ns.primitiveFieldRef();
         const label off = (1 + s)*nc;
         for (label c = 0; c < nc; ++c) { f[c] = x[off + c]*sX[1 + s]; }
-        ns.correctBoundaryConditions();
     }
 
     if (ctx.hasEnergy)
@@ -174,7 +182,6 @@ void residualCallback
         const label off = (1 + ctx.nSpecies)*nc;
         const scalar sxE = sX[1 + ctx.nSpecies];
         for (label c = 0; c < nc; ++c) { f[c] = x[off + c]*sxE; }
-        nEps.correctBoundaryConditions();
     }
 
     // ---- 1b. chargeDensity is DERIVED from the species densities, so it must
@@ -223,6 +230,18 @@ void residualCallback
     for (label s = 0; s < ctx.nSpecies; ++s)
     {
         transport.transportModel(s).correct();
+    }
+
+    // ---- 4b. NOW correct the species/nEps boundary conditions, with phiE
+    // (step 2), meanE (step 3) and mu/D (step 4) all rebuilt from THIS trial
+    // state. See the note at step 1 for why this cannot happen earlier.
+    for (label s = 0; s < ctx.nSpecies; ++s)
+    {
+        species.numberDensity(s).correctBoundaryConditions();
+    }
+    if (ctx.hasEnergy)
+    {
+        ctx.lmea->nEpsRef().correctBoundaryConditions();
     }
 
     tTransport += secSince(tPhase); tPhase = clockNow();
@@ -550,6 +569,43 @@ void pcApplyCallback
 
     PCContext& ctx = *static_cast<PCContext*>(userDataVoid);
     const label nc = ctx.nCellsLocal;
+
+    // THE VECTOR MAY BE SHORTER THAN THE FULL FIELD LAYOUT, and if it is we
+    // must not touch it as if it were not.
+    //
+    // SNESVINEWTONRSLS is the REDUCED-SPACE active-set method: components
+    // sitting at their bound are removed from the Newton system, so the KSP --
+    // and therefore this preconditioner -- is handed a vector covering only
+    // the INACTIVE components (virs.c). This routine indexes the full
+    // [ePotential][n_0..n_{N-1}][nEps] layout, so on a reduced vector it wrote
+    // past the end. Found 2026-09-09 by PETSc's own `-malloc_debug`, which
+    // named it in one run: "error detected in PCApply_Shell() ... is corrupted
+    // (probably write past end of array)". A backtrace of the eventual abort
+    // was useless, because corruption is only noticed later, at free().
+    //
+    // Falling back to the IDENTITY is safe and legitimate -- a preconditioner
+    // need only be an approximation, and M = I is the weakest valid one, so
+    // the solve continues unpreconditioned for that application instead of
+    // corrupting memory. It is NOT the real answer: the proper route is an
+    // assembled Pmat with PCFIELDSPLIT, which SNESVI supports natively via
+    // PCFieldSplitRestrictIS. See doc/newton-outer-solver-design.md.
+    const label nExpected = (1 + ctx.nSpecies + (ctx.hasEnergy ? 1 : 0))*nc;
+    if (label(n) != nExpected)
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            warned = true;
+            Pout<< "snesNewtonSolver: preconditioner received a REDUCED system"
+                << " (" << n << " of " << nExpected << " unknowns -- the"
+                << " bounded solver's active set). Falling back to the"
+                << " identity for those applications; the physics-based"
+                << " preconditioner cannot be applied to a restricted"
+                << " vector. See doc/newton-outer-solver-design.md." << endl;
+        }
+        for (int i = 0; i < n; ++i) { y[i] = b[i]; }
+        return;
+    }
     // Note: unlike residualCallback, the PC correction fields never need
     // E/phiE/reducedE refreshed (they are pure linear corrections, not
     // trial states the real derived fields must track), so ctx.srp is
@@ -840,7 +896,8 @@ Foam::snesNewtonSolver::snesNewtonSolver
     mesh_(mesh),
     rtol_(dict.getOrDefault<scalar>("rtol", 1e-8)),
     maxIt_(dict.getOrDefault<label>("maxIt", 50)),
-    mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5))
+    mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5)),
+    bounded_(dict.getOrDefault<bool>("bounded", true))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -906,7 +963,13 @@ void Foam::snesNewtonSolver::solveOuterStep
             }
         }
 
-        if (allSpeciesZero)
+        // Only a concern for the UNBOUNDED solve. With `bounded` on, x=0 is
+        // INFEASIBLE, so SNESVI projects the initial guess into the feasible
+        // region and the solution simply sits ON the constraint -- which is
+        // exactly what an active-set method is for, and is the physically
+        // right answer at t=0 (the density stays at its floor until
+        // ionisation builds it).
+        if (allSpeciesZero && !bounded_)
         {
             FatalErrorInFunction
                 << "outerSolver newton cannot start from an all-zero state."
@@ -916,7 +979,9 @@ void Foam::snesNewtonSolver::solveOuterStep
                 << " CONVERGED having solved nothing. The density clamp would"
                 << " then move the state from outside the equations, and the"
                 << " next step's residual would be unsolvable." << nl << nl
-                << "    WHAT TO DO: reach a physical state with `outerSolver"
+                << "    WHAT TO DO: either set `bounded true` in the newtonSolver"
+                << " dict (the density floor then becomes a CONSTRAINT inside"
+                << " the solve), or reach a physical state with `outerSolver"
                 << " picard` first, then restart in newton mode from it --"
                 << " `startFrom latestTime` in system/controlDict. The"
                 << " densities must sit above the floor, not on it." << nl
@@ -962,6 +1027,36 @@ void Foam::snesNewtonSolver::solveOuterStep
     const label nCellsLocal = mesh_.nCells();
     const label nFields = 1 + nSpecies + (lmea ? 1 : 0);
     const label nLocalTotal = nFields*nCellsLocal;
+
+    // ---- BURN ANY ONE-SHOT MODEL INITIALISATION *BEFORE* THE SOLVE.
+    //
+    // localEnergyEnergyModel::correct() carries a one-shot LFA seed
+    // (`if (seedFromLFA_) { seedFromLFA_ = false; nEps_ == meanE0*n_e; }`).
+    // The Newton path's first correct() is INSIDE residualCallback, so that
+    // seed fired on residual call #1 and not on calls #2+: F was literally a
+    // DIFFERENT FUNCTION at the base point than at every perturbed point, so
+    // the matrix-free product differenced F_2(u+hv) against F_1(u) and J*v was
+    // meaningless. GMRES's own recurrence then could not agree with the
+    // explicitly computed b - A*x, which is the "impossible" discrepancy
+    // recorded in the design doc and wrongly attributed first to nonlinear
+    // stiffness and then to conditioning.
+    //
+    // Measured 2026-09-09 at t=2e-8: the nEps block's scaled residual was
+    // 172.46 on call #1 against 0.00086 on call #2 -- a factor of 2e5, and
+    // ~97% of the reported initial norm. Calling correct() once here makes
+    // the seed part of the STATE the solve starts from, which is what a
+    // one-shot initialisation is supposed to be.
+    //
+    // NOT THE WHOLE STORY, and the rest is a PRODUCTION bug, not a Newton one:
+    // that seed is gated on `time().timeIndex() == time().startTimeIndex()`
+    // evaluated in the CONSTRUCTOR, before the time loop, so it is ALWAYS
+    // true and every LMEA restart discards its stored energy state at the
+    // first correct() -- on the Picard path too. Recorded in the design doc
+    // for its own fix; deliberately not patched from here.
+    if (lmea)
+    {
+        lmea->correct();
+    }
 
     // ---- PER-BLOCK SCALES, computed ONCE for this whole Newton solve.
     // See ResidualContext's own comment for the measurement that forced
@@ -1135,6 +1230,50 @@ void Foam::snesNewtonSolver::solveOuterStep
       + (mffdErr_ > 0 ? " -mat_mffd_err " + Foam::name(mffdErr_) : word(""));
     setPetscOptions(petscOptions.c_str());
 
+    // ---- LOWER BOUNDS, in SCALED units (everything PETSc sees is scaled).
+    //
+    // The species floor is the SAME number clampNumberDensities() applies
+    // (plasmaSpecies::clampNumberDensity, active only where the floor is
+    // positive), but imposed as a CONSTRAINT inside the solve instead of as a
+    // mutation of the state afterwards. That difference is what makes F(u)=0
+    // reachable: a post-hoc clamp moves the state to somewhere the residual
+    // does not call a root, so Newton cannot converge to it.
+    //
+    // ePotential is genuinely unbounded (it is signed). nEps is floored at
+    // zero: a negative energy density is meaningless, but its physical floor
+    // is n_floor*meanE_min rather than a stated constant, so zero is the
+    // defensible bound rather than an invented one.
+    List<double> lowerBounds(nLocalTotal, snesNoBound);
+    if (bounded_)
+    {
+        for (label c = 0; c < nCellsLocal; ++c)
+        {
+            lowerBounds[c] = snesNoBound;      // ePotential: free
+        }
+
+        for (label s = 0; s < nSpecies; ++s)
+        {
+            const scalar floorS = species.speciesMinNumberDensity(s);
+            const label off = (1 + s)*nCellsLocal;
+            const scalar sxS = sX[1 + s];
+            const double lb =
+                (floorS > 0 ? double(floorS/sxS) : 0.0);
+            for (label c = 0; c < nCellsLocal; ++c)
+            {
+                lowerBounds[off + c] = lb;
+            }
+        }
+
+        if (lmea)
+        {
+            const label off = (1 + nSpecies)*nCellsLocal;
+            for (label c = 0; c < nCellsLocal; ++c)
+            {
+                lowerBounds[off + c] = 0.0;
+            }
+        }
+    }
+
     int its = 0;
     const int reason = solveWithSNES
     (
@@ -1144,6 +1283,7 @@ void Foam::snesNewtonSolver::solveOuterStep
         &ctx,
         &pcApplyCallback,
         &pcCtx,
+        bounded_ ? lowerBounds.cdata() : nullptr,
         &its
     );
 

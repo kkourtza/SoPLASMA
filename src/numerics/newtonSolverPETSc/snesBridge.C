@@ -115,6 +115,8 @@ void setPetscOptions(const char* options)
     PetscOptionsInsertString(nullptr, options);
 }
 
+const double snesNoBound = -1.0e308;
+
 int solveWithSNES
 (
     int nLocal,
@@ -123,6 +125,7 @@ int solveWithSNES
     void* userData,
     PCApplyCallback pcCallback,
     void* pcUserData,
+    const double* lowerBounds,
     int* itsOut
 )
 {
@@ -145,8 +148,56 @@ int solveWithSNES
 
     SNES snes;
     SNESCreate(petscComm, &snes);
+
+    // TYPE FIRST, THEN THE FUNCTION -- PETSc's canonical order. Setting the
+    // type afterwards swaps the solver implementation underneath state that
+    // has already been registered, and SNESVISetVariableBounds_VI() assigns
+    // snes->vec_func itself (vi.c), so the ordering is load-bearing here in a
+    // way it is not for plain NEWTONLS.
+    SNESSetType(snes, lowerBounds ? SNESVINEWTONRSLS : SNESNEWTONLS);
+
     SNESSetFunction(snes, F, FormFunction, &ctx);
-    SNESSetType(snes, SNESNEWTONLS);
+
+    // BOUNDED (variational-inequality) Newton when bounds are supplied.
+    // SNESVINEWTONRSLS is the reduced-space active-set method: components at
+    // their bound are removed from the Newton system for that iteration,
+    // rather than being clamped afterwards.
+    Vec xl = nullptr;
+    if (lowerBounds)
+    {
+        // NOT PETSC_INFINITY. That is PETSC_MAX_REAL/4 ~ 4.5e307 -- finite,
+        // but close enough to the top of the range that SNESVI's own
+        // arithmetic on it (xu - xl is already 9e307) overflows to inf, and
+        // OpenFOAM runs with FOAM_SIGFPE enabled, so an overflow TRAPS. That
+        // was measured as an immediate SIGFPE at the first bounded solve,
+        // 2026-09-09.
+        //
+        // A far smaller magnitude is both safe and sufficient because
+        // everything PETSc sees here is SCALED to O(1) (see sX/sF): 1e30 is
+        // effectively unbounded for an O(1) variable. The only cost is that
+        // PETSc's `ntruebounds` bookkeeping compares against PETSC_INFINITY
+        // exactly, so it will count these components as bounded -- that
+        // figure is a heuristic, not a correctness input.
+        const PetscScalar bigBound = 1.0e30;
+
+        Vec xu;
+        VecDuplicate(x, &xl);
+        VecDuplicate(x, &xu);
+        VecSet(xu, bigBound);
+        {
+            PetscScalar* lArr;
+            VecGetArray(xl, &lArr);
+            for (int i = 0; i < nLocal; ++i)
+            {
+                lArr[i] = (lowerBounds[i] <= snesNoBound)
+                        ? -bigBound
+                        : lowerBounds[i];
+            }
+            VecRestoreArray(xl, &lArr);
+        }
+        SNESVISetVariableBounds(snes, xl, xu);
+        VecDestroy(&xu);
+    }
     // Matrix-free: no assembled Jacobian. PETSc finite-differences
     // FormFunction internally for Jacobian-vector products -- the JFNK
     // core idea. Unpreconditioned matrix-free JFNK on this problem was
@@ -238,9 +289,18 @@ int solveWithSNES
         VecRestoreArrayRead(x, &xArr);
     }
 
+    // SNES FIRST, THEN the vectors. SNES holds references to the solution and
+    // function vectors, and SNESVI additionally keeps active-set work vectors
+    // and index sets derived from the bounds, resetting its KSP whenever the
+    // active set changes (virs.c). Freeing the vectors first left it operating
+    // on released memory, which showed up as
+    // "double free or corruption (out)" inside SNESDestroy -> KSPReset_GMRES.
+    // Measured 2026-09-09, and only on the bounded path -- with `bounded
+    // false` the same run is clean.
+    SNESDestroy(&snes);
     VecDestroy(&x);
     VecDestroy(&F);
-    SNESDestroy(&snes);
+    if (xl) VecDestroy(&xl);
 
     return int(reason);
 }
