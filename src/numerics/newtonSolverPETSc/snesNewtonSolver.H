@@ -152,6 +152,52 @@ class snesNewtonSolver
     //  to A/B the effect.
     bool rebalanceScales_;
 
+    //- Include the CHEMISTRY PRODUCTION derivative d(chemP)/d(n) in the
+    //  preconditioner's species diagonal.
+    //
+    //  The species residual is F = ddt + div - lap - P + L*n, so
+    //  dF/dn = L - dP/dn. The Pmat carried fvm::Sp(chemL) -- the L term -- but
+    //  NOT -dP/dn. For electron-impact ionisation P_e = k_iz*n_e*n_Ar, so
+    //  dP_e/dn_e = k_iz*n_Ar IS THE IONISATION FREQUENCY: the avalanche growth
+    //  rate, and the defining physics of ignition. Omitting it leaves the
+    //  preconditioner believing the species equation is far more diagonally
+    //  dominant -- far more stable -- than it actually is, exactly when it is
+    //  not.
+    //
+    //  dP_s/dn_s is approximated as P_s/n_s, which is EXACT whenever the
+    //  production is first order in the species itself (electron-impact
+    //  ionisation is), and is a reasonable approximation otherwise. A
+    //  preconditioner need only approximate.
+    //
+    //  This term is NEGATIVE on the diagonal and deliberately so: it makes the
+    //  block less diagonally dominant, because an avalanche genuinely is
+    //  unstable. A preconditioner that hides that is describing a different
+    //  problem.
+    //
+    //  Default TRUE; set false to A/B it.
+    bool chemJacobian_;
+
+    //- Include the CROSS-SPECIES chemistry coupling d(chemP_s)/d(n_e) in the
+    //  preconditioner, as an off-diagonal (species, electron) block.
+    //
+    //  The same missing derivative as chemJacobian_, one step out: electron
+    //  impact ionisation produces an ION for every electron it produces, so
+    //  d(P_ion)/d(n_e) is as large as d(P_e)/d(n_e) and is what tells the
+    //  preconditioner that the ion population is slaved to the electron
+    //  avalanche. Without it the ion blocks look like independent
+    //  advection-diffusion problems with a source that happens to be there.
+    //
+    //  APPROXIMATED as d(P_s)/d(n_e) = P_s/n_e, i.e. ALL of a species'
+    //  production is treated as first order in the electron density. That is
+    //  right for electron-impact channels and wrong for the rest (ion-neutral
+    //  chemistry, three-body recombination), so it is an approximation and not
+    //  a Jacobian -- which is exactly what a preconditioner is allowed to be.
+    //  It is separately switchable from chemJacobian_ so the two can be told
+    //  apart in a measurement.
+    //
+    //  Default FALSE until measured on this case.
+    bool chemCrossJacobian_;
+
     //- Whether the LAST SNES solve converged. Reported through
     //  lastSolveConverged() instead of being turned into a FatalError, so a
     //  step Newton cannot solve is DISCARDED AND RETRIED at a shorter dt via

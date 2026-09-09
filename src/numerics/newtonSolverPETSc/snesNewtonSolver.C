@@ -900,7 +900,9 @@ Foam::snesNewtonSolver::snesNewtonSolver
     mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5)),
     bounded_(dict.getOrDefault<bool>("bounded", false)),
     petscOptions_(dict.getOrDefault<string>("petscOptions", string::null)),
-    rebalanceScales_(dict.getOrDefault<bool>("rebalanceScales", true))
+    rebalanceScales_(dict.getOrDefault<bool>("rebalanceScales", true)),
+    chemJacobian_(dict.getOrDefault<bool>("chemJacobian", true)),
+    chemCrossJacobian_(dict.getOrDefault<bool>("chemCrossJacobian", false))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -1492,6 +1494,30 @@ void Foam::snesNewtonSolver::solveOuterStep
                 chemLField.primitiveFieldRef() = transport.chemL(s);
             }
 
+            // -d(chemP)/d(n), approximated as -P/n. See chemJacobian_.
+            // Sized-guarded exactly like chemL above: chemP_ is sized by the
+            // chemistry preamble inside residualCallback, so on the very first
+            // outer step of a run it may not exist yet.
+            volScalarField chemPoverN
+            (
+                IOobject("chemPoverN_" + sName, mesh_.time().timeName(), mesh_,
+                         IOobject::NO_READ, IOobject::NO_WRITE),
+                mesh_, dimensionedScalar(dimless/dimTime, Zero)
+            );
+            if (chemJacobian_ && transport.chemP(s).size() == nCellsLocal)
+            {
+                const scalarField& P = transport.chemP(s);
+                const scalarField& nsf = species.numberDensity(s).primitiveField();
+                const scalar nFloor = max(species.speciesMinNumberDensity(s), SMALL);
+
+                scalarField& pn = chemPoverN.primitiveFieldRef();
+                forAll(pn, c)
+                {
+                    // NEGATIVE: F carries -P, so dF/dn gets -dP/dn.
+                    pn[c] = -P[c]/max(nsf[c], nFloor);
+                }
+            }
+
             fvScalarMatrix sEqn
             (
                 fvm::ddt(dn)
@@ -1502,6 +1528,7 @@ void Foam::snesNewtonSolver::solveOuterStep
                     "laplacian(D_" + sName + ",n_" + sName + ")"
                 )
               + fvm::Sp(chemLField, dn)
+              + fvm::Sp(chemPoverN, dn)
             );
             coo.addFvMatrix(1 + s, sEqn, sX[1 + s]/sF[1 + s], rV);
 
@@ -1566,6 +1593,37 @@ void Foam::snesNewtonSolver::solveOuterStep
                 coo.addFvMatrixBlock
                 (
                     1 + s, 0, cEqn, sX[0]/sF[1 + s], rV
+                );
+            }
+
+            // --- d(species residual)/d(n_e), the CROSS-SPECIES chemistry
+            // coupling. Diagonal in cells (a source term is pointwise), so it
+            // uses addDiagonalBlock rather than an fvMatrix. See
+            // chemCrossJacobian_ for the approximation and its limits.
+            if
+            (
+                chemCrossJacobian_
+             && s != species.electronSpeciesID()
+             && transport.chemP(s).size() == nCellsLocal
+            )
+            {
+                const label eID = species.electronSpeciesID();
+                const scalarField& P = transport.chemP(s);
+                const scalarField& ne =
+                    species.numberDensity(eID).primitiveField();
+                const scalar neFloor =
+                    max(species.speciesMinNumberDensity(eID), SMALL);
+
+                scalarField coeff(nCellsLocal);
+                forAll(coeff, c)
+                {
+                    // F carries -P, so dF/dn_e gets -dP/dn_e.
+                    coeff[c] = -P[c]/max(ne[c], neFloor);
+                }
+
+                coo.addDiagonalBlock
+                (
+                    1 + s, 1 + eID, coeff, sX[1 + eID]/sF[1 + s]
                 );
             }
         }
