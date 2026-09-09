@@ -82,6 +82,20 @@ void Foam::blockMatrixCOO::addFvMatrix
     const scalarField& rowFactor
 )
 {
+    // A diagonal block is the off-diagonal case with rowField == colField.
+    addFvMatrixBlock(field, field, m, scaling, rowFactor);
+}
+
+
+void Foam::blockMatrixCOO::addFvMatrixBlock
+(
+    const label rowField,
+    const label colField,
+    const fvScalarMatrix& m,
+    const scalar scaling,
+    const scalarField& rowFactor
+)
+{
     const lduAddressing& addr = m.lduAddr();
     const labelUList& upp = addr.upperAddr();
     const labelUList& low = addr.lowerAddr();
@@ -115,7 +129,7 @@ void Foam::blockMatrixCOO::addFvMatrix
 
     forAll(d, c)
     {
-        add(globalRow(field, c), globalRow(field, c), d[c]*scaling*rowFactor[c]);
+        add(globalRow(rowField, c), globalRow(colField, c), d[c]*scaling*rowFactor[c]);
     }
 
     // OFF-DIAGONAL, both triangles. An asymmetric matrix carries a separate
@@ -129,14 +143,14 @@ void Foam::blockMatrixCOO::addFvMatrix
         // row = owner (lower-numbered cell), col = neighbour
         add
         (
-            globalRow(field, low[f]), globalRow(field, upp[f]),
+            globalRow(rowField, low[f]), globalRow(colField, upp[f]),
             uppVal[f]*scaling*rowFactor[low[f]]
         );
 
         // and the transpose position
         add
         (
-            globalRow(field, upp[f]), globalRow(field, low[f]),
+            globalRow(rowField, upp[f]), globalRow(colField, low[f]),
             lowVal[f]*scaling*rowFactor[upp[f]]
         );
     }
@@ -161,7 +175,7 @@ void Foam::blockMatrixCOO::addFvMatrix
         labelList globalRowsThisField(nCells_);
         forAll(globalRowsThisField, c)
         {
-            globalRowsThisField[c] = globalRow(field, c);
+            globalRowsThisField[c] = globalRow(colField, c);
         }
 
         const label startOfRequests = UPstream::nRequests();
@@ -207,7 +221,7 @@ void Foam::blockMatrixCOO::addFvMatrix
                 // convention explicitly at its own interface loop).
                 add
                 (
-                    globalRow(field, faceCells[i]),
+                    globalRow(rowField, faceCells[i]),
                     nbrRows[i],
                     -bc[i]*scaling*rowFactor[faceCells[i]]
                 );

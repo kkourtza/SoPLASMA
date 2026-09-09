@@ -1504,6 +1504,70 @@ void Foam::snesNewtonSolver::solveOuterStep
               + fvm::Sp(chemLField, dn)
             );
             coo.addFvMatrix(1 + s, sEqn, sX[1 + s]/sF[1 + s], rV);
+
+            // --- THE COUPLING d(species residual)/d(ePotential), WITHOUT
+            // WHICH THE SCHUR COMPLEMENT IS INERT.
+            //
+            // The drift term is div(Z*mu_f*phiE*n) and
+            // phiE = -snGrad(ePotential)*magSf
+            // (singleRegionPoisson.C:39), so perturbing the potential by
+            // d(phi) perturbs the flux by -Z*mu_f*n_f*snGrad(dphi)*magSf, and
+            //
+            //     d/dphi [ div(Z*mu*phiE*n) ] = -laplacian(Z*mu*n, dphi)
+            //
+            // because fvm::laplacian(G, psi) IS div(G_f*snGrad(psi)*magSf).
+            //
+            // WHY THIS IS THE BUG AND NOT AN OMISSION. PCFIELDSPLIT with a
+            // Schur complement on splits {phi, transport} forms
+            //
+            //     S = A_tt - A_tp * A_pp^-1 * A_pt
+            //
+            // A_pt (d(Poisson)/d(n), the charge density) was assembled above.
+            // A_tp is THIS block, and it was absent -- so A_tp = 0, hence
+            // S = A_tt EXACTLY and the Schur complement contributed nothing at
+            // all. The assembled Pmat, the two ISs and the Schur factorisation
+            // were doing the work of a block-triangular preconditioner that
+            // knows the densities move the field but not that the field moves
+            // the densities.
+            //
+            // That is invisible while the coupling is weak and fatal once it
+            // is not, which is exactly the observed behaviour (measured
+            // 2026-09-10, doc/newton-ignition-experiments.md): Newton runs
+            // pre-ignition and stalls with DIVERGED_ITS at ignition, and NO
+            // sub-preconditioner helps -- hypre, bjacobi, selfp, 5x the Krylov
+            // budget, Eisenstat-Walker, three line searches and both
+            // differencing steps all failed, because the missing physics is
+            // not in the matrix for any of them to precondition.
+            //
+            // Z == 0 for a neutral species: it does not drift, the block is
+            // identically zero, and assembling it would only add explicit
+            // zeros.
+            if (mag(Z) > SMALL)
+            {
+                volScalarField driftCoeff
+                (
+                    IOobject
+                    (
+                        "driftCoeff_" + sName, mesh_.time().timeName(), mesh_,
+                        IOobject::NO_READ, IOobject::NO_WRITE
+                    ),
+                    Z*model.mu()*species.numberDensity(s)
+                );
+
+                fvScalarMatrix cEqn
+                (
+                  - fvm::laplacian
+                    (
+                        driftCoeff, dePotential,
+                        "laplacian(epsilon,ePotential)"
+                    )
+                );
+
+                coo.addFvMatrixBlock
+                (
+                    1 + s, 0, cEqn, sX[0]/sF[1 + s], rV
+                );
+            }
         }
 
             // --- Energy diagonal block
@@ -1527,6 +1591,50 @@ void Foam::snesNewtonSolver::solveOuterStep
             );
             const label fE = 1 + nSpecies;
             coo.addFvMatrix(fE, eEqnP, sX[fE]/sF[fE], rV);
+
+            // --- d(energy residual)/d(ePotential), the same missing coupling
+            // as the species block above and for the same reason: the energy
+            // drift flux is div(Ze*muEps_f*phiE*nEps) and
+            // phiE = -snGrad(ePotential)*magSf, so
+            //
+            //     d/dphi [ div(Ze*muEps*phiE*nEps) ]
+            //         = -laplacian(Ze*muEps*nEps, dphi)
+            //
+            // The (phi, energy) block is NOT its mirror and is deliberately
+            // absent: the Poisson residual depends on the species only through
+            // chargeDensity = sum_i q_i*n_i, and nEps carries no charge, so
+            // d(F_phi)/d(nEps) is identically zero. The coupling here is
+            // genuinely one-way.
+            //
+            // STILL MISSING FROM THIS BLOCK, and deliberately so for now:
+            // d(Psrc)/d(phi), the response of JOULE HEATING to the field.
+            // Psrc ~ J.E is a strong and direct dependence on the potential --
+            // arguably stronger than the drift term retained here -- but it is
+            // not a laplacian-shaped operator and needs its own derivation.
+            // Recorded rather than quietly skipped; see
+            // doc/newton-ignition-experiments.md.
+            {
+                volScalarField driftCoeffE
+                (
+                    IOobject
+                    (
+                        "driftCoeff_nEps", mesh_.time().timeName(), mesh_,
+                        IOobject::NO_READ, IOobject::NO_WRITE
+                    ),
+                    Ze*lmea->muEpsEff()*lmea->nEps()
+                );
+
+                fvScalarMatrix cEqnE
+                (
+                  - fvm::laplacian
+                    (
+                        driftCoeffE, dePotential,
+                        "laplacian(epsilon,ePotential)"
+                    )
+                );
+
+                coo.addFvMatrixBlock(fE, 0, cEqnE, sX[0]/sF[fE], rV);
+            }
         }
     }
 

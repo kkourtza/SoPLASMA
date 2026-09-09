@@ -148,6 +148,24 @@ public:
         const scalar scaling,
         const scalarField& rowFactor
     );
+
+    //- Place an fvMatrix in an OFF-DIAGONAL block: rows belong to rowField,
+    //  columns to colField.
+    //
+    //  This is what lets the Pmat carry d(species residual)/d(ePotential) --
+    //  the response of the drift flux to the field. Without it the Pmat is
+    //  block-triangular in {phi, transport}, and PCFIELDSPLIT's Schur
+    //  complement S = A_tt - A_tp*A_pp^-1*A_pt degenerates to A_tt exactly,
+    //  because A_tp is zero. The Schur complement then contributes NOTHING,
+    //  which defeats the entire reason an assembled Pmat exists here.
+    void addFvMatrixBlock
+    (
+        const label rowField,
+        const label colField,
+        const fvScalarMatrix& m,
+        const scalar scaling,
+        const scalarField& rowFactor
+    );
 };
 
 } // End namespace Foam

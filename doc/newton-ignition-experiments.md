@@ -300,6 +300,64 @@ both small and unstable between iterations.
 real defect, but the fix is to remove the need for it (log(n)), not to
 re-express it as a constraint.
 
+### 10. ROOT CAUSE FOUND — the Schur complement was INERT
+
+**The Pmat was missing d(species)/d(ePotential), so PCFIELDSPLIT's Schur
+complement contributed nothing at all.**
+
+Every block the Pmat actually contained:
+
+| block | content | present? |
+|---|---|---|
+| (φ, φ) | `laplacian(ε, dφ)` | yes |
+| (φ, nᵢ) | `q` — charge density, species → Poisson | yes |
+| (nₛ, nₛ) | species diagonal | yes |
+| (ε, ε) | energy diagonal | yes |
+| **(nₛ, φ)** | **d(drift)/d(φ) — Poisson → species** | **NO** |
+| **(ε, φ)** | **d(energy drift)/d(φ)** | **NO** |
+
+PCFIELDSPLIT with a Schur complement on splits {φ, transport} forms
+
+    S = A_tt − A_tφ · A_φφ⁻¹ · A_φt
+
+`A_φt` (charge density) was assembled. `A_tφ` was absent, i.e. **zero** — so
+**S = A_tt exactly**. The assembled Pmat, the two index sets and the Schur
+factorisation were all doing the work of a block-TRIANGULAR preconditioner that
+knows the densities move the field but not that the field moves the densities.
+The entire reason the Pmat exists was defeated.
+
+**This explains every observation in this log:**
+* harmless while the coupling is weak (pre-ignition, a linear capacitive ramp),
+  fatal once space charge makes the field and the field makes the ionisation;
+* no sub-preconditioner could ever help — hypre, bjacobi, `selfp`, 5× the
+  Krylov budget, Eisenstat–Walker, three line searches and both differencing
+  steps all failed, because **the missing physics is not in the matrix for any
+  of them to precondition**;
+* residual rebalancing was correct and yet neutral, for the same reason.
+
+**The derivative.** `phiE = -snGrad(ePotential)*magSf`
+(`singleRegionPoisson.C:39`) and the drift term is `div(Z·μ_f·phiE·n)`, so
+
+    d/dφ [ div(Z·μ·phiE·n) ] = -laplacian(Z·μ·n, dφ)
+
+since `fvm::laplacian(Γ,ψ)` IS `div(Γ_f·snGrad(ψ)·magSf)`. The energy row gets
+the same term with `Ze·μ_eps·nEps`.
+
+**The (φ, energy) block is NOT the mirror of this and is correctly absent:** the
+Poisson residual depends on species only through `chargeDensity = Σ qᵢnᵢ`, and
+`nEps` carries no charge, so `d(F_φ)/d(nEps)` is identically zero. That coupling
+is genuinely one-way.
+
+**Implemented** as `blockMatrixCOO::addFvMatrixBlock(rowField, colField, ...)`,
+generalising `addFvMatrix` (which is now the `rowField == colField` case) and
+carrying the processor-interface handling across unchanged.
+
+**Still missing from the energy row, deliberately and recorded rather than
+skipped:** `d(Psrc)/d(φ)`, the response of JOULE HEATING to the field. `Psrc ~
+J·E` is a direct and probably stronger dependence on the potential than the
+drift term retained here, but it is not laplacian-shaped and needs its own
+derivation.
+
 ## Still untested (next, in priority order)
 
 1. **Per-CELL scaling.** `sX` is one scalar per FIELD. An ignited discharge has
