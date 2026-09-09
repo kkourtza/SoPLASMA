@@ -127,6 +127,15 @@ private:
     autoPtr<plasmaPropertyEvaluator> Pelastic_;
     autoPtr<plasmaPropertyEvaluator> Pinelastic_;
 
+    //- OPTIONAL, OFF BY DEFAULT. epsilon_eff [eV] (Eliseev, Bogdanov &
+    //  Kudryavtsev, Phys. Plasmas 24, 093503 (2017), eq. 15) -- the mean
+    //  energy a newly-created ("secondary") electron redeposits into the
+    //  bulk via Coulomb collisions before fully thermalising. An ENERGY,
+    //  NOT a rate: unlike Pelastic_/Pinelastic_ it is NOT per-(n_e.N) and
+    //  must NOT be added into PlossN_. Multiplied explicitly by the local
+    //  ionisation source (S_iz) at the point of use -- see correct().
+    autoPtr<plasmaPropertyEvaluator> Pcoulomb_;
+
     //- Working fields for the above, so they are not reallocated per step.
     volScalarField muEf_;      // particle mobility
     volScalarField muEpsf_;    // energy mobility
@@ -187,6 +196,32 @@ private:
     bool transportEnergy_ = true;
     mutable bool chemSourceReported_ = false;
 
+    //- Interior flux scheme for the ENERGY transport: `standard` (separate
+    //  fvm::div + fvm::laplacian) or `ScharfetterGummel` (the two combined
+    //  into one exponentially-fitted flux).
+    //
+    //  IT FOLLOWS THE ELECTRON'S `fluxScheme` BY DEFAULT, and that is the
+    //  point of it. The wall condition already did: ddWallFluxMixed reads
+    //  `ddModel.fluxScheme()` from the ELECTRON's driftDiffusion model and
+    //  `energyDDWallFluxMixed` inherits that path -- only patchMobility and
+    //  patchDiffusivity are virtualised, not the scheme. So before this
+    //  member existed, `fluxScheme ScharfetterGummel` gave the energy
+    //  equation an SG WALL CONDITION ON A `standard` INTERIOR. testWallFlux
+    //  measures that mismatch at 18.4% of the imposed flux (SG f under
+    //  standard extraction) and 99.3% the other way. This closes it.
+    //
+    //  Resolved LAZILY, not in the constructor: it needs `plasmaTransport`
+    //  from the registry, which is not guaranteed to be constructed when the
+    //  energy model is. An explicit `fluxScheme` in energyModelCoeffs wins
+    //  over the inherited value, for the case that deliberately wants them
+    //  to differ.
+    mutable word fluxScheme_ = word::null;
+    mutable bool fluxSchemeResolved_ = false;
+    mutable bool fluxSchemeReported_ = false;
+
+    //- Resolve (once) and return the interior flux scheme.
+    const word& fluxScheme() const;
+
     //- Top of the tabulated mean-energy range, and whether the
     //  beyond-the-table warning has been issued. Extrapolation is ALLOWED --
     //  clamping would freeze the physics at the table edge, which is less
@@ -195,6 +230,22 @@ private:
     bool extrapWarned_ = false;
     mutable bool negativeWarned_ = false;
     volScalarField dSdEps_;
+
+    //- Joule heating / loss-rate source terms feeding the electron energy
+    //  equation, and the raw (pre-chemistry-override) model-only values the
+    //  per-term diagnostic dump in eEqn() compares against the chemistry-ODE
+    //  path. Computed together by updateSources(); PROMOTED from eEqn()-local
+    //  variables to persistent members 2026-09-09 so an explicit (fvc::)
+    //  residual can be built from OUTSIDE this class without re-deriving the
+    //  chemistry-ODE hand-off (`chemOwnsSource_`) or the optional Coulomb-
+    //  heating term -- see doc/newton-outer-solver-design.md. Pure refactor:
+    //  same formulas, same call site within eEqn(), same values.
+    //  `mutable` for the same reason energyTransportRate_ is: eEqn() is const.
+    mutable volScalarField jouleHeating_;
+    mutable volScalarField Lrate_;
+    mutable volScalarField Psrc_;
+    mutable volScalarField Lsrc_;
+    mutable bool chemOwnsSource_ = false;
 
     //- DENSITY FLOOR for eps_bar = n_eps/n_e, which is 0/0 in the far field.
     //
@@ -255,6 +306,14 @@ private:
 
     //- Refresh meanE_ and T_ from n_eps and n_e.
     void updateDerived();
+
+    //- Compute jouleHeating_/Lrate_ and, from them (plus the optional
+    //  chemistry-ODE hand-off and Coulomb-heating term), Psrc_/Lsrc_ --
+    //  the exact computation eEqn() has always done at this point, moved
+    //  here unchanged so the result is a persistent, readable field
+    //  instead of a value that only ever existed for the duration of one
+    //  eEqn() call. Called from eEqn() before assembly.
+    void updateSources() const;
 
 public:
 
@@ -356,6 +415,24 @@ public:
 
         //- Mean electron energy [eV].
         const volScalarField& meanE() const { return meanE_; }
+
+        //- Joule heating / loss-rate source terms feeding the electron
+        //  energy equation -- see updateSources(). Exposed so an explicit
+        //  (fvc::) residual can be built without re-deriving this model's
+        //  chemistry-ODE hand-off and optional Coulomb-heating logic.
+        //  Valid only after eEqn() has been called at least once this
+        //  outer iteration (updateSources() runs at the top of eEqn()).
+        const volScalarField& Psrc() const { return Psrc_; }
+        const volScalarField& Lsrc() const { return Lsrc_; }
+
+        //- Effective (energyFactor-scaled) energy mobility/diffusivity --
+        //  see updateDerived()/correct(); already what eEqn() itself uses
+        //  to build phiEps. Exposed for the SAME reason Psrc()/Lsrc() are:
+        //  an explicit (fvc::) residual needs to reconstruct phiEps at an
+        //  arbitrary trial state without re-deriving this model's energy-
+        //  factor/tabulated-coefficient logic.
+        const volScalarField& muEpsEff() const { return muEpsEff_; }
+        const volScalarField& DEpsEff() const { return DEpsEff_; }
 };
 
 

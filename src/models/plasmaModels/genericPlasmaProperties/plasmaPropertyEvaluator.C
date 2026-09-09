@@ -104,6 +104,15 @@ typedef Function1Property<plasmaPropertyEvaluator> function1Eval;
 static plasmaPropertyEvaluator::adddictionaryConstructorToTable<function1Eval>
     addFunction1EvalConstructorToTable_("function1");
 
+//- epsilon_eff, Eliseev, Bogdanov & Kudryavtsev, Phys. Plasmas 24, 093503
+//  (2017), eq. (15) -- an energy [eV], NOT a rate. See the class-level
+//  comment in genericPlasmaPropertyTemplates.H for what this does and does
+//  not compute, and why its output must not be routed through the same
+//  path as Pelastic_/Pinelastic_.
+typedef CoulombHeatingProperty<plasmaPropertyEvaluator> coulombHeatingEval;
+static plasmaPropertyEvaluator::adddictionaryConstructorToTable<coulombHeatingEval>
+    addCoulombHeatingEvalConstructorToTable_("coulombHeating");
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 } // End namespace Foam

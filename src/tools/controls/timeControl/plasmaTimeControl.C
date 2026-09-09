@@ -31,6 +31,7 @@ plasmaTimeControl::plasmaTimeControl(Time& runTime, const fvMesh& mesh)
     mesh_(mesh),
     dict_(dictionary::null),
     adjustTimeStep_(false),
+    simulationType_("transient"),
     maxDeltaT_(GREAT),
     limitDielectricRelaxationRatio_(false),
     printDielectricRelaxationRatio_(false),
@@ -107,8 +108,65 @@ void plasmaTimeControl::read()
     {
         dict_ = plasmaDict.subDict("plasmaTimeControl");
 
-        adjustTimeStep_ =
+        // ------------------------------------------------------------------
+        // simulationType: the ONE switch a user sets to ask for steady
+        // operation. Resolved FIRST, because it constrains adjustTimeStep and
+        // (through it) onNonConvergence.
+        // ------------------------------------------------------------------
+        simulationType_ =
+            dict_.lookupOrDefault<word>("simulationType", "transient");
+
+        if (simulationType_ != "transient" && simulationType_ != "pseudoSteady")
+        {
+            FatalErrorInFunction
+                << "Unknown simulationType `" << simulationType_ << "`." << nl
+                << "    Use `transient` or `pseudoSteady`." << nl
+                << "    `steadyState` is NOT offered: dropping the ddt term"
+                   " leaves a segregated species equation with no matrix"
+                   " diagonal at all," << nl
+                << "    which divides by zero on the first Gauss-Seidel"
+                   " sweep. `pseudoSteady` is the supported route -- it keeps"
+                   " ddt and demotes" << nl
+                << "    deltaT to a relaxation parameter. See"
+                   " doc/steady-mode-spec.md."
+                << exit(FatalError);
+        }
+
+        const bool askedAdjust =
             dict_.lookupOrDefault<Switch>("adjustTimeStep", false);
+
+        if (pseudoSteady())
+        {
+            // A pseudo-steady run needs a FIXED pseudo-time step. Every
+            // earlier steady attempt died the same way: the adaptive
+            // controller shrank deltaT chasing a transient it could not
+            // resolve, and the degraded-step guard then aborted. With the
+            // step fixed that cannot happen -- each iteration either
+            // converges or fails loudly.
+            //
+            // FATAL rather than silently overridden when the user asked for
+            // adjustment explicitly: the two requests are contradictory and
+            // guessing which one was meant is how a run ends up not being
+            // the run its author thinks it is.
+            if (dict_.found("adjustTimeStep") && askedAdjust)
+            {
+                FatalErrorInFunction
+                    << "simulationType `pseudoSteady` with `adjustTimeStep"
+                       " true`." << nl
+                    << "    These contradict: pseudoSteady marches a FIXED"
+                       " pseudo-time step, which is a relaxation parameter,"
+                       " not physics." << nl
+                    << "    Remove `adjustTimeStep`, or use simulationType"
+                       " `transient`."
+                    << exit(FatalError);
+            }
+
+            adjustTimeStep_ = false;
+        }
+        else
+        {
+            adjustTimeStep_ = askedAdjust;
+        }
 
         maxDeltaT_ =
             dict_.lookupOrDefault<scalar>("maxDeltaT", GREAT);
@@ -747,6 +805,137 @@ void plasmaTimeControl::read()
                     << "    Name the driven electrode to enable it." << endl;
             }
         }
+    }
+
+    // ----------------------------------------------------------------------
+    // CROSS-FILE INTERLOCKS FOR simulationType.
+    //
+    // These live here, not in the dictionaries, because an OpenFOAM
+    // dictionary cannot express a conditional: `system/*` are thin `$var`
+    // derivations of `configuration/config`, so `$simulationType` can be
+    // PASSED but its consequences cannot be DERIVED. The consequences span
+    // three files (plasmaSimulationControls, fvSchemes, fvSolution), and
+    // getting any one of them wrong has been measured to either abort the
+    // run or silently destroy its convergence.
+    // ----------------------------------------------------------------------
+
+    // (a) `ddtSchemes default steadyState` -- REFUSED for either
+    //     simulationType, because it does not fail cleanly. `ddt`
+    //     contributes V/dt to the matrix diagonal; drop it and a species
+    //     with no implicit chemistry loss has a row with NO diagonal at all
+    //     (verified: `plasmaChemistry: implicitRate, max(L*dt) = 0`). The
+    //     observed failure is a SIGFPE inside GaussSeidelSmoother::smooth on
+    //     iteration 1 -- a division by a zero diagonal, with a stack that
+    //     names the linear solver and so points nowhere near the cause.
+    if (!mesh_.transient())
+    {
+        FatalErrorInFunction
+            << "`ddtSchemes default steadyState` is not supported." << nl
+            << "    The ddt term IS the diagonal of a segregated species"
+               " transport equation. Removing it leaves rows with no"
+               " diagonal" << nl
+            << "    for any species without an implicit loss term, and the"
+               " linear solver then divides by zero on its first sweep"
+               " (observed: SIGFPE" << nl
+            << "    in GaussSeidelSmoother::smooth). simpleFoam can drop ddt"
+               " because SIMPLE's pressure equation and under-relaxation"
+               " supply the" << nl
+            << "    diagonal dominance; nothing here does." << nl
+            << nl
+            << "    For steady operation use:" << nl
+            << "        simulationType    pseudoSteady;   // in"
+               " configuration/config" << nl
+            << "        ddtSchemes        backward;" << nl
+            << "    which keeps ddt and demotes deltaT to a relaxation"
+               " parameter. See doc/steady-mode-spec.md."
+            << exit(FatalError);
+    }
+
+    if (pseudoSteady())
+    {
+        // (b) Manual `relaxationFactors` -- REFUSED. This is the interlock
+        //     that matters most, because it is the one that fails SILENTLY:
+        //     nothing aborts, the run simply stops converging. MEASURED:
+        //     adding `relaxationFactors { fields 0.3; equations 0.3; }` to
+        //     an otherwise-identical pseudo-steady case took it from
+        //     9472/9472 converged steps to 0/10.
+        //
+        //     The reason is that the outer relaxation ALREADY EXISTS and is
+        //     adaptive: `plasmaOuterRelaxation` runs Aitken acceleration,
+        //     enrolled automatically, with omega observed at 0.371 on this
+        //     case. A fixed factor layered on top fights a controller that
+        //     is already choosing one, and the two do not compose.
+        if (mesh_.solutionDict().found("relaxationFactors"))
+        {
+            FatalErrorInFunction
+                << "simulationType `pseudoSteady` with manual"
+                   " `relaxationFactors` in system/fvSolution." << nl
+                << "    REMOVE THEM. SoPLASMA already applies ADAPTIVE outer"
+                   " relaxation (plasmaOuterRelaxation, Aitken); fixed"
+                   " factors fight it." << nl
+                << "    Measured cost of leaving them in: 9472/9472 converged"
+                   " steps became 0/10 on an otherwise-identical case." << nl
+                << "    Under-relaxation is what `deltaT` does in this mode --"
+                   " lower it instead if the run will not converge."
+                << exit(FatalError);
+        }
+
+        // (c) The time scheme. Euler WORKS, so this is a note, not a
+        //     refusal: BDF2 was measured 5.5x faster to the same pseudo-time
+        //     on this case, which is worth saying but is not the user's
+        //     error if they chose otherwise.
+        word ddtName("unspecified");
+        {
+            const dictionary& ddtDict = mesh_.ddtSchemes();
+            if (ddtDict.found("default"))
+            {
+                const ITstream& is = ddtDict.lookup("default");
+                if (is.size() && is[0].isWord())
+                {
+                    ddtName = is[0].wordToken();
+                }
+            }
+        }
+
+        announce
+            << "plasmaTimeControl: simulationType `pseudoSteady`" << nl
+            << "    PSEUDO-TRANSIENT CONTINUATION, not a steady solver. The"
+               " ddt term is retained and supplies the matrix diagonal;"
+            << nl
+            << "    `deltaT` = " << runTime_.deltaTValue() << " s is a"
+               " RELAXATION PARAMETER, not physics, and the time axis of the"
+               " results is" << nl
+            << "    NOT physical. Convergence means the fields have stopped"
+               " changing, not that a transient was resolved." << nl
+            << "    adjustTimeStep is FORCED OFF, so the step cannot collapse:"
+               " each iteration converges or fails loudly." << nl
+            << "    time scheme: " << ddtName;
+
+        if (ddtName != "backward")
+        {
+            announce
+                << "  -- `backward` (BDF2) was measured 5.5x faster to the"
+                   " same pseudo-time here.";
+        }
+        announce << nl;
+
+        // (d) Voltage control near the CVC minimum. NOT refused -- the
+        //     circuit may legitimately be absent, and a case far from the
+        //     minimum is fine -- but stated, because it is the single
+        //     reason the DC-glow attempts in this repository did not
+        //     converge. Almeida et al 2016: the 1D current-voltage
+        //     characteristic has a MINIMUM, so voltage is not a monotone
+        //     function of current and voltage control is ill-posed there.
+        //     Measured here: current control converged in 6 outer
+        //     correctors where voltage control sat at 150/150.
+        announce
+            << "    If this is a DC glow near the CVC minimum, drive it with"
+               " `circuit { type currentSource; }`: with voltage control"
+            << nl
+            << "    the operating point is not unique (Almeida et al 2016)."
+               " Measured: 6 correctors under current control vs 150/150"
+            << nl
+            << "    under voltage control on the same case." << endl;
     }
 
     settingsAnnounced_ = true;
@@ -2054,6 +2243,30 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
         )
     );
     const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
+
+    // GENUINE NEWTON, not a Picard corrector count. A converged
+    // plasmaNewtonSolver::solveOuterStep() call already IS the fully
+    // coupled nonlinear solution (doc/newton-outer-solver-design.md) --
+    // pimpleControl's own residualControl mechanism has no way to observe
+    // that (it reads native fvMatrix::solve() residuals, none of which the
+    // Newton path ever produces), so leaving it unconfigured meant PIMPLE
+    // never saw "converged" and looped to its maxCorrectors cap on every
+    // step (measured 2026-09-09: 150/150, FatalError from plasmaStepAudit).
+    // ONE corrector, exactly like `target lagged` below, but for the
+    // opposite reason: not because convergence is deliberately skipped,
+    // but because it already happened, in full, inside that one call.
+    if (oc.getOrDefault<word>("outerSolver", "picard") == "newton")
+    {
+        dictionary& pimpleDictNewton = mesh.solution().subDict("PIMPLE");
+        pimpleDictNewton.set("nOuterCorrectors", 1);
+        Info<< "plasmaTimeControl: outerCoupling outerSolver `newton`" << nl
+            << "    ONE PIMPLE corrector -- the Newton solve already"
+            << " converges the full coupled system inside it; rule 29"
+            << " forbids a raw break out of pimple.loop(), so this"
+            << " configures the SAME exit mechanism target `lagged` uses,"
+            << " for the opposite reason." << endl;
+        return;
+    }
 
     const word target = oc.getOrDefault<word>("target", "converged");
     if (target != "converged" && target != "lagged")

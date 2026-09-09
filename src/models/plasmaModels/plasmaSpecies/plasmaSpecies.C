@@ -264,8 +264,45 @@ Foam::wordList Foam::plasmaSpecies::speciesFromMechanism
     if (chargeOut) *chargeOut = mechCharge_;
     if (massOut)   *massOut   = mechMass_;
     if (ionTrOut)  *ionTrOut  = ionTr;
-    if (fluxOut)   *fluxOut   =
-        md.getOrDefault<word>("ionFluxScheme", "standard");
+    if (fluxOut)
+    {
+        // THE ION DEFAULT FOLLOWS THE ELECTRON, it is not "standard".
+        //
+        // A flux scheme is a statement about how the drift-diffusion flux is
+        // discretised, and running the electron on ScharfetterGummel while
+        // every ion stays on the split div/laplacian is a mixed
+        // discretisation nobody asked for: `fluxScheme ScharfetterGummel` in
+        // the case reads as "use SG", and before this it silently switched
+        // ONLY the electron, because the derived ions are synthesised from
+        // this key and it was hard-defaulted. An explicit `ionFluxScheme` in
+        // mechanismSpecies still wins, for the case that means it.
+        word eScheme("standard");
+
+        if (speciesDict.found("speciesProperties"))
+        {
+            const dictionary& sp = speciesDict.subDict("speciesProperties");
+
+            if (sp.found(caseElectron))
+            {
+                const dictionary& ed = sp.subDict(caseElectron);
+
+                if (ed.found("driftDiffusionCoeffs"))
+                {
+                    eScheme = ed.subDict("driftDiffusionCoeffs")
+                        .lookupOrDefault<word>("fluxScheme", "standard");
+                }
+            }
+        }
+
+        *fluxOut = md.getOrDefault<word>("ionFluxScheme", eScheme);
+
+        if (*fluxOut != eScheme)
+        {
+            Info<< "plasmaSpecies: ion fluxScheme `" << *fluxOut
+                << "` OVERRIDES the electron's `" << eScheme
+                << "` (ionFluxScheme set explicitly)." << endl;
+        }
+    }
     return names;
 }
 
@@ -1237,6 +1274,75 @@ void plasmaSpecies::clampNumberDensity(const label i)
             n.dimensions(),
             speciesMinNumberDensities_[i]
         );
+
+        // ---- POSITIVITY DIAGNOSTIC, measured BEFORE the clamp -------------
+        //
+        // Scharfetter-Gummel and CompleteFlux carry no limiter, so both CAN
+        // produce a negative density in principle: SG's matrix is an M-matrix
+        // and is provably positive, but CFS adds an explicit inhomogeneous
+        // flux Gamma^i that can be negative. Whether that ACTUALLY happens is
+        // an empirical question this reports on, rather than being inferred
+        // from the timestep-floor counter (which is a different thing).
+        //
+        // THE REDUCTIONS ARE UNCONDITIONAL -- a rank whose subdomain happens
+        // to be clean must still take part or the collective deadlocks
+        // (rule 31).
+        // FILE-LOCAL, NOT CLASS MEMBERS -- and deliberately so.
+        //
+        // Adding members to plasmaSpecies.H changes the CLASS LAYOUT, and
+        // plasmaSpecies is included across the tree (plasmaEnergy::required
+        // takes a plasmaSpecies const&). On 2026-09-08 doing exactly that
+        // segfaulted every case: wmake rebuilt the solver but left
+        // libplasmaEnergy compiled against the old layout, so it read garbage.
+        // A DIAGNOSTIC MUST NOT CHANGE A WIDELY-INCLUDED CLASS'S ABI. There is
+        // one plasmaSpecies per process, so file-local state is equivalent
+        // here and costs nothing.
+        static List<scalar> negWorst_;
+        static List<label>  negCount_;
+
+        if (negWorst_.size() != numberDensities_.size())
+        {
+            negWorst_.setSize(numberDensities_.size(), 0.0);
+            negCount_.setSize(numberDensities_.size(), 0);
+        }
+
+        const scalarField& nI = n.primitiveField();
+
+        scalar preMin = GREAT;
+        label nNeg = 0;
+
+        forAll(nI, c)
+        {
+            preMin = Foam::min(preMin, nI[c]);
+            if (nI[c] < 0.0) ++nNeg;
+        }
+
+        reduce(preMin, minOp<scalar>());
+        reduce(nNeg, sumOp<label>());
+
+        if (nNeg > 0)
+        {
+            negCount_[i] += nNeg;
+
+            // Report only on a new worst excursion, so a persistent problem
+            // does not flood the log.
+            if (preMin < negWorst_[i])
+            {
+                negWorst_[i] = preMin;
+
+                WarningInFunction
+                    << "NEGATIVE number density clipped for species '"
+                    << speciesNames_[i] << "': min = " << preMin
+                    << " in " << nNeg << " cell(s), floor is "
+                    << speciesMinNumberDensities_[i] << "." << nl
+                    << "    POSITIVITY IS VIOLATED. The flux scheme in use"
+                       " carries no limiter, so this is possible by"
+                    << nl
+                    << "    construction. Cumulative negative clips for this"
+                       " species: " << negCount_[i] << "." << endl;
+            }
+        }
+
         n = Foam::max(n, nMin);
 
         n.correctBoundaryConditions();

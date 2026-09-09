@@ -154,6 +154,45 @@ electromagneticsModel::electromagneticsModel
 
 // * * * * * * * * * * * * * * Static Member Functions * * * * * * * * * * * //
 
+//- Largest face non-orthogonality angle in the mesh, in degrees: the angle
+//  between the face area vector and the owner->neighbour centre vector.
+//
+//  THE REDUCTION IS UNCONDITIONAL. A rank holding no internal faces must still
+//  take part or the collective deadlocks -- rule 31, and the same defect as the
+//  gAverage behind a local guard in plasmaExternalCircuit.
+static Foam::scalar maxNonOrthogonalityDeg(const Foam::fvMesh& mesh)
+{
+    const Foam::vectorField& Sf = mesh.Sf().primitiveField();
+    const Foam::scalarField& magSf = mesh.magSf().primitiveField();
+    const Foam::vectorField& CC = mesh.C().primitiveField();
+    const Foam::labelUList& own = mesh.owner();
+    const Foam::labelUList& nei = mesh.neighbour();
+
+    Foam::scalar minCos = 1.0;
+
+    forAll(own, facei)
+    {
+        const Foam::vector d(CC[nei[facei]] - CC[own[facei]]);
+        const Foam::scalar denom = magSf[facei]*Foam::mag(d);
+
+        if (denom > Foam::VSMALL)
+        {
+            minCos = Foam::min(minCos, (Sf[facei] & d)/denom);
+        }
+    }
+
+    Foam::reduce(minCos, Foam::minOp<Foam::scalar>());
+
+    const Foam::scalar ang =
+        Foam::acos
+        (
+            Foam::min(Foam::max(minCos, Foam::scalar(-1)), Foam::scalar(1))
+        );
+
+    return ang*180.0/Foam::constant::mathematical::pi;
+}
+
+
 electromagneticsModel::poissonNumerics
 electromagneticsModel::readPoissonNumerics
 (
@@ -208,9 +247,65 @@ electromagneticsModel::readPoissonNumerics
 
     n.scheme  = pick("scheme",  "PoissonScheme", n.scheme);
     n.EScheme = pick("EScheme", "EScheme",       n.EScheme);
-    n.nNonOrthogonalCorrectors =
-        pick("nNonOrthogonalCorrectors", "nNonOrthogonalCorrectors",
-             n.nNonOrthogonalCorrectors);
+    // NON-ORTHOGONAL CORRECTORS: DERIVED FROM THE MESH unless the case states
+    // a number.
+    //
+    // The default was 0, which on a skewed mesh SILENTLY DROPS the
+    // non-orthogonal correction: the Poisson solution is then wrong and
+    // nothing says so. Same class of defect as the one found in the
+    // Scharfetter-Gummel operator on 2026-09-08, where orthogonal deltaCoeffs
+    // left the scheme on a fixed error floor with ZERO convergence under
+    // refinement at 11.3 deg non-orthogonality.
+    //
+    // A corrector count is a property of the MESH, not of the physics, so the
+    // user should not have to supply it. Thresholds are the usual practice; an
+    // explicit entry in the case still wins.
+    {
+        const scalar maxNonOrth = maxNonOrthogonalityDeg(mesh);
+
+        const label autoCorr =
+            (maxNonOrth <  5.0) ? 0
+          : (maxNonOrth < 35.0) ? 2
+          : (maxNonOrth < 60.0) ? 3
+          :                       4;
+
+        const label asked =
+            pick("nNonOrthogonalCorrectors", "nNonOrthogonalCorrectors",
+                 autoCorr);
+
+        // THE MESH-DERIVED VALUE IS A FLOOR, not merely a default.
+        //
+        // A default alone would never fire: every generated case writes the
+        // key, so a stale 0 in a case would keep silently dropping the
+        // correction on a skewed mesh. Too FEW correctors gives a wrong
+        // answer with no symptom; too many only costs time. So the floor is
+        // enforced and the case can still ask for MORE.
+        n.nNonOrthogonalCorrectors = Foam::max(asked, autoCorr);
+
+        Info<< "  Poisson: mesh max non-orthogonality " << maxNonOrth
+            << " deg -> nNonOrthogonalCorrectors "
+            << n.nNonOrthogonalCorrectors
+            << (n.nNonOrthogonalCorrectors == asked
+                  ? (p.found("nNonOrthogonalCorrectors")
+                        ? "  (SET BY CASE)" : "  (DERIVED from the mesh)")
+                  : "  (RAISED from the case value)")
+            << endl;
+
+        if (n.nNonOrthogonalCorrectors > asked)
+        {
+            WarningInFunction
+                << "the case asks for " << asked << " non-orthogonal"
+                   " corrector(s) but this mesh has " << maxNonOrth
+                << " deg of non-orthogonality," << nl
+                << "    which needs at least " << autoCorr
+                << ". Using " << autoCorr << "." << nl
+                << "    Too few correctors does not fail -- it silently"
+                   " returns a wrong potential, which is why this is"
+                << nl
+                << "    raised rather than obeyed. Refine or improve the mesh"
+                   " to remove the cost." << endl;
+        }
+    }
 
     // The segregated Picard loop keeps its own sub-dictionary in both places.
     {

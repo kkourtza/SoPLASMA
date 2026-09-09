@@ -34,6 +34,65 @@ Measured on this case, 322 steps under LMEA:
 
 Note what is *absent*: `maxSpeciesCo` never bound once.
 
+## `simulationType`
+
+Whether this is a real time-marching run or a pseudo-steady solve.
+
+**Default:** `transient`
+
+| value | meaning |
+|---|---|
+| `transient` | Real time-marching. The time axis is physical. What every shipped tutorial does. |
+| `pseudoSteady` | Pseudo-transient continuation toward a stationary state. `deltaT` becomes a **relaxation parameter**, the time axis is **not** physical, and convergence means the fields have stopped changing — not that a transient was resolved. |
+
+Set it in `configuration/config` and pass it through as
+`simulationType $simulationType;`, like the other keys here.
+
+### Why one key instead of several
+
+The settings `pseudoSteady` implies interlock across three files, and getting
+one wrong either aborts the run or — worse — silently destroys its
+convergence. Both were measured (see `doc/steady-mode-spec.md`):
+
+- `onNonConvergence retryStep` retries by *shortening* `deltaT`, which is
+  meaningless once the step is fixed.
+- Manual `relaxationFactors` in `fvSolution` took a converging pseudo-steady
+  case from **9472/9472 converged steps to 0/10**, because SoPLASMA already
+  applies *adaptive* Aitken outer relaxation (`plasmaOuterRelaxation`, observed
+  `omega 0.371`) and fixed factors fight it.
+
+So `pseudoSteady` forces `adjustTimeStep false`, **refuses** manual
+`relaxationFactors`, notes the time scheme if it is not `backward` (BDF2 was
+measured 5.5x faster to the same pseudo-time), and reports all of it at
+start-up. Asking for `adjustTimeStep true` alongside it is a fatal error rather
+than a silent override: the two requests contradict, and guessing which was
+meant is how a run ends up not being the run its author thinks it is.
+
+### `ddtSchemes steadyState` is refused, deliberately
+
+Not offered under either `simulationType`. The `ddt` term **is** the diagonal
+of a segregated species-transport equation. Drop it and any species without an
+implicit loss term has a matrix row with no diagonal at all, so the linear
+solver divides by zero on its first sweep — observed as a `SIGFPE` inside
+`GaussSeidelSmoother::smooth`, a stack that names the linear solver and points
+nowhere near the cause. `simpleFoam` can drop `ddt` because SIMPLE's pressure
+equation and under-relaxation supply the diagonal dominance; nothing here does.
+
+The supported route keeps `ddt`:
+
+```
+simulationType    pseudoSteady;   // configuration/config
+ddtSchemes        backward;
+```
+
+### If you are chasing a steady DC glow
+
+Drive it with `circuit { type currentSource; }`. Near the current-voltage
+characteristic's minimum, voltage is not a monotone function of current, so
+voltage control is ill-posed (Almeida et al 2016). Measured on the same case:
+**6 outer correctors under current control against 150/150 under voltage
+control.**
+
 ## `dischargeCurrent` — Sato's discharge current
 
 **ON BY DEFAULT since 2026-09-03, and the sub-dictionary is optional.** The

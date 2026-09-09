@@ -17,6 +17,7 @@ FoamFile
 
 plasmaTimeControl
 {
+    simulationType                  $simulationType;
     adjustTimeStep                  $adjustTimeStep;
 
     // OFF for the Option 4 gate: the stiff integrator must supply the

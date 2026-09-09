@@ -17,6 +17,11 @@ they still *report* if their `print*` switch is on, but nothing acts on them. A
 plasma case essentially always wants `true`: the stable step spans orders of
 magnitude between the quiescent ramp and a propagating front.
 
+The exception is a pseudo-steady solve, where a fixed step is the *point* — see
+[`simulationType`](plasmaSimulationControls.md#simulationtype), which forces
+this off and makes `adjustTimeStep true` a fatal error rather than a silent
+override.
+
 ## `deltaT`, `endTime`, `writeControl`, `writeInterval`
 
 OpenFOAM's own `controlDict` entries; documented upstream. Two notes specific to

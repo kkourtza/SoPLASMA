@@ -67,6 +67,7 @@ Author
 #include "plasmaExternalCircuit.H"
 #include "plasmaSimulationProfiler.H"
 #include "plasmaStepAudit.H"
+#include "plasmaNewtonSolver.H"
 
 int main(int argc, char *argv[])
 {
@@ -235,6 +236,76 @@ int main(int argc, char *argv[])
 
     //- Create the plasmaTransport model
     plasmaTransport transport(gasMesh(), species);
+
+    //- Genuine Newton-type outer solver, as an alternative to the segregated
+    //  Picard sweep above -- see doc/newton-outer-solver-design.md. A
+    //  NUMERICS switch (`outerCoupling.outerSolver`), not a generator/
+    //  semantic-layer concept: it changes HOW the same physics is solved,
+    //  not WHAT the physics is. Default `picard` reproduces every existing
+    //  case's behaviour exactly (this autoPtr stays unset, and the
+    //  Picard branches below are untouched).
+    //
+    //  Same region-vs-global dict resolution `outerCoupling` itself already
+    //  uses (plasmaTransport.C), read directly here rather than through
+    //  plasmaTimeControl: this selects a SOLVER STRATEGY, not a timestep
+    //  policy, so it does not belong to that class's ownership.
+    autoPtr<plasmaNewtonSolver> newtonSolver;
+    {
+        IOdictionary regionControls
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                gasMesh().time().system(),
+                gasMesh(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+        IOdictionary globalControls
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                gasMesh().time().system(),
+                gasMesh().time(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        );
+        const dictionary& controls =
+            regionControls.found("outerCoupling")
+          ? static_cast<const dictionary&>(regionControls)
+          : static_cast<const dictionary&>(globalControls);
+        const dictionary& oc = controls.subOrEmptyDict("outerCoupling");
+
+        const word outerSolverType
+        (
+            oc.getOrDefault<word>("outerSolver", "picard")
+        );
+
+        if (outerSolverType != "picard" && outerSolverType != "newton")
+        {
+            FatalIOErrorInFunction(oc)
+                << "outerCoupling.outerSolver must be 'picard' or 'newton',"
+                << " got '" << outerSolverType << "'." << nl
+                << exit(FatalIOError);
+        }
+
+        if (outerSolverType == "newton")
+        {
+            newtonSolver = plasmaNewtonSolver::New
+            (
+                gasMesh(),
+                oc.subDict("newtonSolver")
+            );
+
+            Info<< "outerCoupling.outerSolver: newton -- the segregated"
+                << " Picard sweep is REPLACED for this run, not merely"
+                << " preconditioned by it. See"
+                << " doc/newton-outer-solver-design.md." << endl;
+        }
+    }
 
     //- Create the PIMPLE loop control
     pimpleControl pimple(gasMesh());
@@ -409,10 +480,38 @@ int main(int argc, char *argv[])
                 // If an early exit is ever genuinely needed here: set a flag
                 // and DRAIN the loop. Never `break`.
 
+                if (newtonSolver)
+                {
+                    // Genuine Newton outer step, REPLACING the SOLVE
+                    // sequence below -- see doc/newton-outer-solver-design.md.
+                    // The concrete implementation reaches into em/species/
+                    // transport/energy itself (including
+                    // transport.electricalConductivity()/diffusiveChargeSource()
+                    // for the semi-implicit Poisson form, exactly as the
+                    // Picard branch does below).
+                    newtonSolver->solveOuterStep
+                    (
+                        em(), species, transport, energy.get()
+                    );
+
+                    // NOT part of "the solve" -- these are REQUIRED every
+                    // corrector regardless of solver strategy (see the
+                    // Picard branch's own comment on why: idempotent,
+                    // updateChargeDensity() rebuilds sigma from zero and
+                    // updateSurfaceCharge() resets from oldTime() before
+                    // accumulating). Omitting them here made plasmaStepAudit
+                    // correctly FatalError on `updateSurfaceCharge` having
+                    // run zero times in step 1 (rule 29) -- caught before
+                    // this was mistaken for a physics result.
+                    species.updateChargeDensity();
+                    transport.updateSurfaceCharge();
+                }
+                else
+                {
                 // Solve electromagnetics
                 em->solve
                 (
-                    transport.electricalConductivity(), 
+                    transport.electricalConductivity(),
                     transport.diffusiveChargeSource()
                 );
 
@@ -456,6 +555,7 @@ int main(int argc, char *argv[])
                 // its own recurring defect class.
                 species.updateChargeDensity();
                 transport.updateSurfaceCharge();
+                }
             }
         }
         else //Explicit Poisson branch
@@ -496,6 +596,21 @@ int main(int argc, char *argv[])
                 // If an early exit is ever genuinely needed here: set a flag
                 // and DRAIN the loop. Never `break`.
 
+                if (newtonSolver)
+                {
+                    // See the semi-implicit branch above -- same interface,
+                    // same replacement of the solve sequence, same required
+                    // per-corrector updates (rule 29 -- caught by
+                    // plasmaStepAudit when these were first omitted).
+                    newtonSolver->solveOuterStep
+                    (
+                        em(), species, transport, energy.get()
+                    );
+                    species.updateChargeDensity();
+                    transport.updateSurfaceCharge();
+                }
+                else
+                {
                 plasmaSimulationProfiler::start("Electromagnetics");
                 em->solve();
                 plasmaSimulationProfiler::stop("Electromagnetics");
@@ -517,7 +632,7 @@ int main(int argc, char *argv[])
                 plasmaSimulationProfiler::start("Update surface charge");
                 transport.updateSurfaceCharge();
                 plasmaSimulationProfiler::stop("Update surface charge");
-
+                }
 
             }
         }

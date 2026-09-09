@@ -348,7 +348,38 @@ public:
 
             W = (1.0 - r)*wW;
 
-            gRatio = (A > VSMALL) ? (r*wW + GcOverN)/A : 0.0;
+            // gRatio TAKES w_w FROM EQ. (6.6), NOT FROM wW ABOVE.
+            //
+            // Eq. (6.15), which hagelaarEnergyWeight() implements, ends
+            // "where w_w from equation (6.6)" -- the DRIFT-FREE loss speed.
+            // wW above is eq. (6.8), which adds the drift OUTSIDE the max.
+            // Feeding eq. (6.8) here makes gRatio grow without bound in the
+            // field, so max(0, 5/3 - (2/3)gRatio) reaches ZERO and the wall
+            // stops carrying ANY energy away while still absorbing electrons.
+            // MEASURED 2026-09-07 on grubert2009: at r = 0.36 that cliff is at
+            // Dd/A = 8.44, and crossing it took Te,max from 11.6 eV to the
+            // mean-energy clamp. Isolated by splitting r between the two
+            // conditions: r on nEps_e alone reproduced it, r on n_e alone was
+            // indistinguishable from r = 0.
+            //
+            // With eq. (6.6) and no creation this is r/(1+r) -- a CONSTANT,
+            // and exactly the expression Hagelaar substitutes himself on p.39
+            // to check the limit: Gamma_w = r n w_w = (vT/sqrt(pi)) r/(1+r)
+            // into (6.15) with r -> 1 yields 2 Te. Verified: it does, to all
+            // digits. gRatio is then bounded in [0, 1/2] for r in [0, 1], so
+            // eps_w stays in [2 Te, 5/2 Te] and the max() cannot fire on
+            // reflection alone -- which is right, because the text puts that
+            // clamp there for strong wall CREATION (secondary emission at the
+            // cathode), not for reflection.
+            //
+            // IDENTICAL to the old expression at Dd = 0 for every r, and at
+            // r = 0 with no emission for every Dd. It therefore cannot move
+            // any result this framework has already validated: every prior
+            // case ran r = 0 with no anode SEE, and at a cathode the electron
+            // drift is outward so Dd = max(0, uDriftNormal) = 0 anyway.
+            const scalar wW66 = max((A - GcOverN)/(1.0 + r), scalar(0));
+
+            gRatio = (A > VSMALL) ? (r*wW66 + GcOverN)/A : 0.0;
         }
 
         //- eps_w/eps of eq. (6.15), clamped at zero. Static for the same

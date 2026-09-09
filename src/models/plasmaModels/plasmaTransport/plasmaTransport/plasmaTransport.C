@@ -875,9 +875,17 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
 }
 
 
-void plasmaTransport::solve(const bool finalIter)
+void plasmaTransport::refreshChemistryTimestepState()
 {
-    // ── 0. Chemistry source for this outer iteration ──────────────────────
+    // Extracted verbatim from solve()'s own "step 0", 2026-09-09, so the
+    // Newton outer solver (doc/newton-outer-solver-design.md) can trigger
+    // this SAME per-timestep chemistry-state setup before calling
+    // mechanismSourceTerms() directly (via refreshChemistrySources()) --
+    // without it, chemN0_/chemExt_/etc. are never sized for a run that
+    // never calls solve() itself, and mechanismSourceTerms() (specifically
+    // computeChemistrySources(), which reads them) segfaults on an empty
+    // List<scalarField>. Pure extraction: same guard (chemTimeIndex_),
+    // same fields, same call sequence -- solve() below now just calls this.
     //
     // LIE composition, not Strang: the chemistry is integrated over the WHOLE
     // step and handed to the transport equations as a mean rate, which is
@@ -982,6 +990,12 @@ void plasmaTransport::solve(const bool finalIter)
         }
         plasmaSimulationProfiler::stop("Plasma Transport", "chemistry ODE");
     }
+}
+
+
+void plasmaTransport::solve(const bool finalIter)
+{
+    refreshChemistryTimestepState();
 
     // ── 1. Update transport coefficients ──────────────────────────────────────
     plasmaSimulationProfiler::start("Plasma Transport", "correctTransportModels");
@@ -1018,6 +1032,23 @@ void plasmaTransport::solve(const bool finalIter)
         dimensionedScalar("zero", dimensionSet(0, -1, 0, 0, 0, 0, 0), 0.0)
     );
 
+    // GATED ON !rates_, added 2026-09-09. This whole block (through the
+    // explicitSource fill further down) is the LEGACY Townsend-fit source
+    // model -- its constants (E_const = 2.73e7) are calibrated against a
+    // REDUCED field, not the raw Emag (V/m, O(1e4-1e5) in a real discharge)
+    // this fed it: exp(-2.73e7/Emag) underflows to ~1e-234 at real fields.
+    // It used to run UNCONDITIONALLY every step, overwriting alpha_/S_iz_/
+    // k_eff_ with that garbage even when a real mechanism (`rates_`) was
+    // configured and had already computed (or was about to compute) the
+    // correct values -- since explicitSource is only ever ADDED to the
+    // species equations when mechanismSourceTerms() returns false (no
+    // mechanism at all, see the `if (!mechanismSourceTerms(...))` below),
+    // computing it at all when `rates_` exists was pure waste whose only
+    // visible effect was corrupting the diagnostic fields. Confirmed
+    // 2026-09-09: S_iz_ measured ~250 orders of magnitude below the
+    // mechanism table's own value at the same cell, same step.
+    if (!rates_)
+    {
     // constants as plain scalars — no dimensioned temporaries
     const scalar E_const = 2.73e7;
     const scalar E_pow   = 4.3666e26;
@@ -1063,6 +1094,7 @@ void plasmaTransport::solve(const bool finalIter)
         }
         alphaDx_.correctBoundaryConditions();
     }
+    }
 
     plasmaSimulationProfiler::stop("Plasma Transport", "chemistry");
 
@@ -1078,6 +1110,59 @@ void plasmaTransport::solve(const bool finalIter)
 
     for (label i = 0; i < species_.nSpecies(); ++i)
     {
+        // HAND THE NET SOURCE TO THE TRANSPORT MODEL BEFORE BUILDING.
+        //
+        // Only CompleteFlux reads it -- setNetSource() is a no-op virtual on
+        // plasmaTransportModel for everything else, which is why there is no
+        // driftDiffusion cast here (same reason updateFluxes is virtual).
+        //
+        // THE SOURCE IS LAGGED ONE OUTER ITERATION, and it has to be: the
+        // chemistry sources are not assembled until mechanismSourceTerms()
+        // below, so the current-iterate value does not exist yet at this
+        // point. chemP_/chemL_ still hold the previous evaluation, which is
+        // exactly what is wanted, and the lag vanishes as the PIMPLE loop
+        // converges. Liu et al (2014) treat the CFS source explicitly for the
+        // same reason.
+        //
+        // NET means production MINUS loss over the WHOLE mechanism --
+        // ionisation, recombination, attachment, excitation transfers -- not
+        // ionisation alone. Photoionisation and the legacy explicit source are
+        // added to the matrices further down and are NOT included here; they
+        // are small against the chemistry where CFS matters and folding them
+        // in would need the same lag argument made separately.
+        if
+        (
+            i < chemP_.size() && i < chemL_.size()
+         && chemP_[i].size() == mesh_.nCells()
+         && chemL_[i].size() == mesh_.nCells()
+        )
+        {
+            const volScalarField& ni = species_.numberDensity(i);
+
+            volScalarField netSrc
+            (
+                IOobject
+                (
+                    "netSrc", mesh_.time().timeName(), mesh_,
+                    IOobject::NO_READ, IOobject::NO_WRITE
+                ),
+                mesh_,
+                dimensionedScalar(ni.dimensions()/dimTime, Zero),
+                zeroGradientFvPatchScalarField::typeName
+            );
+
+            scalarField& ns = netSrc.primitiveFieldRef();
+            const scalarField& nif = ni.primitiveField();
+
+            forAll(ns, c)
+            {
+                ns[c] = chemP_[i][c] - chemL_[i][c]*nif[c];
+            }
+            netSrc.correctBoundaryConditions();
+
+            transportModels_[i].setNetSource(netSrc);
+        }
+
         eqns[i].reset(transportModels_[i].nEqn().ptr());
     }
     plasmaSimulationProfiler::stop("Plasma Transport", "buildEquations");
@@ -1104,6 +1189,14 @@ void plasmaTransport::solve(const bool finalIter)
         dimensionedScalar("zero", dimensionSet(0, -3, -1, 0, 0, 0, 0), 0.0)
     );
 
+    // GATED ON !rates_ -- see the comment above the alpha_ computation this
+    // reads (aRaw). When a mechanism is configured, S_iz_/k_eff_ are refreshed
+    // from the real per-reaction rates instead (mechanismSourceTerms(), both
+    // its non-stiff tail and the Option 4 diagnostic refresh added alongside
+    // this gate), and explicitSource is never added to any equation (see the
+    // `if (!mechanismSourceTerms(...))` below) -- so there is nothing for
+    // this block to correctly contribute when `rates_` exists.
+    if (!rates_)
     {
         const scalar mu_ref = 2.398;
         const scalar mu_exp = -0.26;
@@ -1129,8 +1222,8 @@ forAll(src, c)
     keff[c] = (aRaw[c] - eta) * vd;                      // net rate, unchanged
 }
 S_iz_.correctBoundaryConditions();
-    }
     k_eff_.correctBoundaryConditions();
+    }
 
     plasmaSimulationProfiler::start("Plasma Transport", "solveEquations");
 
@@ -2168,10 +2261,60 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // With one outer iteration there is no loop to converge: on the validated
     // streamer it overshot the saturated electron density before 1.5 ns and
     // then diverged. `adaptive` inherits the same linearisation.
+    // TEST ONLY, 2026-09-09: bypassed under `outerSolver newton`
+    // (doc/newton-outer-solver-design.md), which forces nOuterCorrectors=1
+    // for a genuinely different reason -- see
+    // plasmaTimeControl::configureOuterCoupling(). The Picard path below is
+    // UNCHANGED: this guard still fires exactly as before whenever
+    // `outerSolver` is `picard` (the default) or unset, so no existing case
+    // is affected. Whether SNES's own repeated residual evaluations (via
+    // GMRES's Jacobian-vector-product finite differencing, at TRANSIENT
+    // perturbed states that do not monotonically approach the solution the
+    // way Picard's outer iterations do) provide the SAME convergent
+    // refinement this guard exists to require is NOT verified -- this
+    // bypass exists to test that question empirically, not to assert the
+    // answer is yes.
+    const bool newtonMode =
+    (
+        IOdictionary
+        (
+            IOobject
+            (
+                "plasmaSimulationControls",
+                mesh_.time().system(),
+                mesh_.time(),
+                IOobject::READ_IF_PRESENT,
+                IOobject::NO_WRITE
+            )
+        ).subOrEmptyDict("outerCoupling").getOrDefault<word>
+        (
+            "outerSolver", "picard"
+        ) == "newton"
+    );
+
     if
     (
         (chemistrySolver_ == csImplicitRate || isAdaptive())
      && chemReactions_ != rxNone
+     && newtonMode
+     && mesh_.solution().subOrEmptyDict("PIMPLE")
+            .getOrDefault<label>("nOuterCorrectors", 1) < 2
+    )
+    {
+        Info<< "plasmaTransport: chemistry/solver `" << cs << "` normally"
+            << " requires nOuterCorrectors > 1 (see the FatalError this"
+            << " would otherwise raise) -- BYPASSED under outerSolver"
+            << " newton, UNVERIFIED. Its claimed temporal order/accuracy"
+            << " has not been checked under Newton mode; treat results" << nl
+            << "    as suspect for anything sensitive to chemistry accuracy"
+            << " until tested directly." << endl;
+    }
+
+    if
+    (
+        (chemistrySolver_ == csImplicitRate || isAdaptive())
+     && chemReactions_ != rxNone
+     && !newtonMode
      && mesh_.solution().subOrEmptyDict("PIMPLE")
             .getOrDefault<label>("nOuterCorrectors", 1) < 2
     )
@@ -4205,6 +4348,54 @@ bool Foam::plasmaTransport::mechanismSourceTerms
 
             *eqns[sp] -= Pf;
             *eqns[sp] += fvm::Sp(Lf, species_.numberDensity(sp));
+        }
+
+        // DIAGNOSTIC REFRESH, added 2026-09-09. This branch (Option 4: the
+        // per-cell stiff integrator, taken whenever chemistrySolver is
+        // adaptive/adaptiveError/implicitRate) used to `return true` here
+        // without ever touching S_iz_/k_eff_/alpha_ -- so for every case using
+        // this solver path, those three fields stayed frozen at whatever the
+        // UNCONDITIONAL legacy Townsend-fit block earlier in solve() last
+        // wrote them to. That fit evaluates exp(-2.73e7/Emag) against a raw
+        // V/m field it was never calibrated for (it wants a reduced field),
+        // underflowing to ~1e-234 at real discharge fields -- so S_iz_ read
+        // as "uniform 0"-adjacent garbage for the whole run, while the
+        // ACTUAL ionisation (chemP_/chemL_ above) was correct all along.
+        // chemP_[eIdx] IS the electron production rate the stiff integrator
+        // just solved with -- dimensionally and physically the same quantity
+        // S_iz_ is defined to hold -- so this refreshes the diagnostic from
+        // it instead of leaving it stale. AMR and the photoionization model
+        // read alpha_/S_iz_ too (see the comment on the non-stiff tail below);
+        // both were reading the same frozen garbage before this.
+        {
+            const label eIdxDiag = species_.electronSpeciesID();
+            const word muNameDiag = "mu_" + species_.speciesNames()[eIdxDiag];
+            scalarField vDriftDiag(mesh_.nCells(), Zero);
+            if (mesh_.foundObject<volScalarField>(muNameDiag))
+            {
+                const scalarField& muDiag =
+                    mesh_.lookupObject<volScalarField>(muNameDiag)
+                        .primitiveField();
+                forAll(vDriftDiag, c)
+                {
+                    vDriftDiag[c] = muDiag[c]*Emag.primitiveField()[c];
+                }
+            }
+
+            scalarField& siz  = S_iz_.primitiveFieldRef();
+            scalarField& keff = k_eff_.primitiveFieldRef();
+            scalarField& a    = alpha_.primitiveFieldRef();
+            forAll(siz, c)
+            {
+                siz[c]  = chemP_[eIdxDiag][c];
+                const scalar n = max(neI[c], SMALL);
+                keff[c] = chemP_[eIdxDiag][c]/n - chemL_[eIdxDiag][c];
+                a[c]    = chemP_[eIdxDiag][c]
+                        / (n*max(vDriftDiag[c], SMALL));
+            }
+            S_iz_.correctBoundaryConditions();
+            k_eff_.correctBoundaryConditions();
+            alpha_.correctBoundaryConditions();
         }
         return true;
     }

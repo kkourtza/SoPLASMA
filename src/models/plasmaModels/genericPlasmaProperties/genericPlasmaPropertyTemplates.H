@@ -52,6 +52,8 @@ Description:
 #include "interpolationTable.H"
 #include "interpolation2DTable.H"
 #include "OSspecific.H"
+#include "plasmaConstants.H"
+#include "coulombHeatingClosure.H"
 #include <fstream>
 #include <string>
 
@@ -813,6 +815,292 @@ public:
         const scalarField& pVar = tVar().boundaryField()[patchi];
 
         pField = amplitude_ * pow(max(pVar, SMALL), exponent_);
+    }
+};
+
+/*---------------------------------------------------------------------------*\
+                  Class CoulombHeatingProperty Declaration
+\*---------------------------------------------------------------------------*/
+
+//- epsilon_eff, the order-of-magnitude estimate of eq. (15) in Eliseev,
+//  Bogdanov & Kudryavtsev, "Slow electron energy balance for hybrid models
+//  of direct-current glow discharges", Phys. Plasmas 24, 093503 (2017):
+//
+//      epsilon_eff = [ 2 nu_ee / (2 nu_ee + (2 me/ma) nu_ea + 1/tau_diff) ]
+//                    * epsilon_s
+//
+//  nu_ee is the electron-electron (Coulomb) collision frequency, eq. (14)
+//  of the same paper, verified 2026-09-08 against the standard NRL Plasma
+//  Formulary value (2.91e-6 n_e[cm^-3] lnLambda / Te[eV]^1.5): the two agree
+//  to 1.7% once eq. (14)'s "(e/k_b) Te[eV]" factor is read as the standard
+//  eV-to-Kelvin conversion (e/k_b ~ 11604 K/eV), i.e. that denominator is
+//  Te IN KELVIN, recovered from the eV number the case actually supplies:
+//
+//      nu_ee = 3.7 n_e[cm^-3] lnLambda / ( (e/k_b) Te[eV] )^1.5
+//
+//  nu_ea is the electron-neutral elastic (momentum-transfer) collision
+//  frequency, recovered from the ALREADY-TABULATED electron mobility via
+//  the standard relation mu_e = e/(me nu_ea) -- NO new cross-section data
+//  is needed. tau_diff = L_diff^2/D_e (eq. 13), with D_e likewise recovered
+//  from mu_e via the Einstein relation D_e = mu_e Te[eV], rather than
+//  looked up as a fourth registered field.
+//
+//  WHAT THIS EVALUATOR RETURNS: epsilon_eff alone, an ENERGY [eV] -- eq.
+//  (12)'s H_secondary = epsilon_eff * S_fast is NOT formed here. In
+//  Eliseev et al., S_fast is the ionisation rate specifically attributable
+//  to the FAST (beam) electron group, computed by their hybrid model's own
+//  Monte Carlo or analytic (Townsend-coefficient) source term -- SoPLASMA
+//  has no such split. The natural, and DELIBERATELY DIFFERENT, substitution
+//  used here is SoPLASMA's own already-computed, mechanism-based total
+//  ionisation source S_iz: "how many new electrons this cell is creating
+//  right now", regardless of which part of the (single, local) EEDF is
+//  doing the ionising. That multiplication happens OUTSIDE this evaluator,
+//  as its own explicit RHS term in the energy equation -- it must NEVER be
+//  routed through the PlossN_/(x n_e x N_gas) path Pelastic_/Pinelastic_
+//  use, because those are per-(n_e.N) RATE COEFFICIENTS and epsilon_eff is
+//  a pure per-electron ENERGY; conflating the two would silently reproduce
+//  the exact class of scaling bug already documented once in this model
+//  (the mu_eps/mu_e factor, see localEnergyEnergyModel.H).
+//
+//  BOUNDED BY CONSTRUCTION, NO IONISATION-DEGREE GATE NEEDED: the ratio
+//  2 nu_ee / (2 nu_ee + positive terms) lies in [0, 1) for any n_e, Te, so
+//  epsilon_eff in is bounded in [0, epsilon_s) regardless of how n_e or Te
+//  behave -- it cannot diverge even at a floored, near-vacuum density; it
+//  simply goes to zero (nu_ee -> 0 as n_e -> 0). The only floor applied
+//  here is on Te, to keep Te^1.5 in eq. (14) well defined.
+//
+//  DIFFUSION LENGTH: `diffusionLength` defaults to GREAT, i.e. NO confining
+//  wall -- the physically correct limit (1/tau_diff -> 0) for a
+//  translationally-symmetric / symmetryPlane-bounded geometry such as a
+//  parallel-plate DC glow. Eliseev et al.'s own usage ties L_diff to a
+//  cylindrical discharge TUBE RADIUS, which does not exist in that
+//  geometry -- copying their specific value would be wrong, not merely
+//  imprecise. Override explicitly for a genuinely confined case.
+template<class Base>
+class CoulombHeatingProperty
+:
+    public Base
+{
+    //- Registered field names this evaluator reads. Defaults match the
+    //  names already used throughout SoPLASMA's species/energy fields.
+    word electronDensityField_;
+    word meanEnergyField_;
+    word electronMobilityField_;
+
+    //- Coulomb logarithm. Near-universal, weakly varying (~10 for the Ar,
+    //  57-107 Pa DC-glow conditions Eliseev et al. 2017 studied).
+    scalar coulombLog_;
+
+    //- First inelastic (excitation) threshold [eV], epsilon_1. GAS-SPECIFIC,
+    //  no safe default.
+    scalar epsilon1_;
+
+    //- Background gas atom/molecule mass [kg], m_a in eq. (10). GAS-SPECIFIC,
+    //  no safe default.
+    scalar backgroundAtomMass_;
+
+    //- Mean energy of secondary electrons, epsilon_s, as a FRACTION of
+    //  epsilon_1. Default 0.5, the uniform-energetic-distribution
+    //  simplification Eliseev et al. 2017 cite (their Ref. 51) for this
+    //  order-of-magnitude formula.
+    scalar secondaryEnergyFraction_;
+
+    //- Characteristic diffusion length to the nearest confining wall [m].
+    //  Default GREAT: no confinement. See the class-level note above.
+    scalar diffusionLength_;
+
+    //- eq. (14)-(15), evaluated once per cell/face value. Forwards to the
+    //  free-standing closure in coulombHeatingClosure.H, which is what
+    //  testCoulombHeating exercises directly against analytic ground
+    //  truth -- kept out of this class so there is exactly one copy of
+    //  the physics or the two would drift.
+    scalar epsilonEff
+    (
+        const scalar ne_SI,     // n_e [m^-3]
+        const scalar meanE_eV,  // mean energy [eV]
+        const scalar muE_SI     // electron mobility [m^2/(V.s)]
+    ) const
+    {
+        return coulombHeatingClosure::epsilonEff
+        (
+            ne_SI, meanE_eV, muE_SI,
+            coulombLog_, epsilon1_, backgroundAtomMass_,
+            secondaryEnergyFraction_, diffusionLength_
+        );
+    }
+
+public:
+
+    //- Constructor
+    CoulombHeatingProperty
+    (
+        const word& modelType,
+        const dictionary& dict,
+        const fvMesh& mesh,
+        const word& propertyName,
+        const dimensionSet& dims
+    )
+    :
+        Base(modelType, dict, mesh, propertyName, dims),
+        electronDensityField_
+        (
+            dict.getOrDefault<word>("electronDensityField", "n_e")
+        ),
+        meanEnergyField_
+        (
+            dict.getOrDefault<word>("meanEnergyField", "meanE")
+        ),
+        electronMobilityField_
+        (
+            dict.getOrDefault<word>("electronMobilityField", "mu_e")
+        ),
+        coulombLog_(dict.getOrDefault<scalar>("coulombLogarithm", 10.0)),
+        epsilon1_(0.0),
+        backgroundAtomMass_(0.0),
+        secondaryEnergyFraction_
+        (
+            dict.getOrDefault<scalar>("secondaryEnergyFraction", 0.5)
+        ),
+        diffusionLength_(dict.getOrDefault<scalar>("diffusionLength", GREAT))
+    {
+        if (!dict.found("firstExcitationThreshold"))
+        {
+            FatalIOErrorInFunction(dict)
+                << "plasmaPropertyEvaluator '" << propertyName
+                << "': coulombHeating requires entry"
+                   " 'firstExcitationThreshold' [eV] -- the gas's first"
+                   " inelastic threshold, epsilon_1 in Eliseev et al. 2017,"
+                   " eq. (15)/(17)." << nl
+                << exit(FatalIOError);
+        }
+        epsilon1_ = dict.get<scalar>("firstExcitationThreshold");
+
+        if (!dict.found("backgroundAtomMass"))
+        {
+            FatalIOErrorInFunction(dict)
+                << "plasmaPropertyEvaluator '" << propertyName
+                << "': coulombHeating requires entry 'backgroundAtomMass'"
+                   " [kg] -- the neutral gas atom/molecule mass, m_a in"
+                   " eq. (10)." << nl
+                << exit(FatalIOError);
+        }
+        backgroundAtomMass_ = dict.get<scalar>("backgroundAtomMass");
+    }
+
+    //- Destructor
+    virtual ~CoulombHeatingProperty() = default;
+
+    bool isUniform() const override { return false; }
+    bool isConstant() const override { return false; }
+
+    dimensionedScalar evaluateScalar() const override
+    {
+        FatalErrorInFunction
+            << "evaluateScalar() called on coulombHeating evaluator '"
+            << this->propertyName() << "' which is not uniform." << nl
+            << exit(FatalError);
+        return dimensionedScalar(this->propertyName(), this->dims_, 0.0);
+    }
+
+    tmp<volScalarField> evaluate() const override
+    {
+        auto tField = tmp<volScalarField>::New
+        (
+            IOobject
+            (
+                this->propertyName(),
+                this->mesh_.time().timeName(),
+                this->mesh_
+            ),
+            this->mesh_,
+            dimensionedScalar(this->propertyName(), this->dims_, 0.0)
+        );
+        correct(tField.ref());
+        return tField;
+    }
+
+    void correct(volScalarField& field) const override
+    {
+        // The tmp<> is HELD in a named variable before dereferencing --
+        // not `const volScalarField& x = detail::getScalarField(...)();`.
+        // getScalarField's magnitude-of-vector branch returns a genuinely
+        // NEW, owned temporary; binding straight through would dangle once
+        // that temporary is destroyed at the end of the full expression.
+        // Same pattern PowerLawProperty already uses; this class did not,
+        // until the compiler's -Wdangling-reference caught it 2026-09-08.
+        tmp<volScalarField> tNe = detail::getScalarField
+        (
+            this->mesh_, electronDensityField_, this->propertyName()
+        );
+        tmp<volScalarField> tMeanE = detail::getScalarField
+        (
+            this->mesh_, meanEnergyField_, this->propertyName()
+        );
+        tmp<volScalarField> tMuE = detail::getScalarField
+        (
+            this->mesh_, electronMobilityField_, this->propertyName()
+        );
+        const volScalarField& ne = tNe();
+        const volScalarField& meanE = tMeanE();
+        const volScalarField& muE = tMuE();
+
+        scalarField& pField = field.primitiveFieldRef();
+        const scalarField& pNe = ne.primitiveField();
+        const scalarField& pMeanE = meanE.primitiveField();
+        const scalarField& pMuE = muE.primitiveField();
+
+        forAll(pField, i)
+        {
+            pField[i] = epsilonEff(pNe[i], pMeanE[i], pMuE[i]);
+        }
+
+        forAll(field.boundaryField(), patchi)
+        {
+            if (!field.boundaryField()[patchi].coupled())
+            {
+                scalarField& bField = field.boundaryFieldRef()[patchi];
+                const scalarField& bNe = ne.boundaryField()[patchi];
+                const scalarField& bMeanE = meanE.boundaryField()[patchi];
+                const scalarField& bMuE = muE.boundaryField()[patchi];
+
+                forAll(bField, i)
+                {
+                    bField[i] = epsilonEff(bNe[i], bMeanE[i], bMuE[i]);
+                }
+            }
+        }
+
+        field.correctBoundaryConditions();
+    }
+
+    void evaluatePatch
+    (
+        scalarField& pField,
+        const label patchi
+    ) const override
+    {
+        // Same tmp<>-holding fix as correct() above.
+        tmp<volScalarField> tNe = detail::getScalarField
+        (
+            this->mesh_, electronDensityField_, this->propertyName()
+        );
+        tmp<volScalarField> tMeanE = detail::getScalarField
+        (
+            this->mesh_, meanEnergyField_, this->propertyName()
+        );
+        tmp<volScalarField> tMuE = detail::getScalarField
+        (
+            this->mesh_, electronMobilityField_, this->propertyName()
+        );
+        const scalarField& bNe = tNe().boundaryField()[patchi];
+        const scalarField& bMeanE = tMeanE().boundaryField()[patchi];
+        const scalarField& bMuE = tMuE().boundaryField()[patchi];
+
+        pField.setSize(bNe.size());
+        forAll(pField, i)
+        {
+            pField[i] = epsilonEff(bNe[i], bMeanE[i], bMuE[i]);
+        }
     }
 };
 

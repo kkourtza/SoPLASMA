@@ -130,6 +130,16 @@ private:
     //  leave it stale.
     bool finalOuterIteration();
 
+    //- Per-timestep chemistry state setup (chemN0_/chemExt_/chemExtPrev_/
+    //  chemExtSlope_/chemExtEps_/... sizing, guarded on chemTimeIndex_,
+    //  plus rates_->correct() and the conditional computeChemistrySources()
+    //  call) -- extracted verbatim from solve()'s own "step 0" 2026-09-09
+    //  so it can also be called from OUTSIDE solve() (the Newton outer
+    //  solver's refreshChemistrySources() wrapper below needs this to have
+    //  run before mechanismSourceTerms() is safe to call standalone -- see
+    //  doc/newton-outer-solver-design.md). solve() itself just calls this.
+    void refreshChemistryTimestepState();
+
     //- Mechanism-driven species sources. Returns false when no mechanism is
     //  configured, so the caller falls back to the legacy hard-coded fits and
     //  existing cases keep running unchanged.
@@ -849,6 +859,66 @@ public:
 
         //- Return total diffusive charge source [C/m^3/s]
         tmp<volScalarField> diffusiveChargeSource() const;
+
+        //- Per-species production/loss rate [1/m3/s], as already computed
+        //  by the Option-4 per-cell stiff chemistry integrator (whenever
+        //  `energySource chemistry` + an adaptive-family `solver` is
+        //  configured -- see [[s_iz-frozen-under-option4-stiff-chemistry]]).
+        //  Exposed so an explicit (fvc::) residual for a species equation
+        //  can read the ALREADY-INTEGRATED chemistry contribution directly,
+        //  without re-deriving or duplicating the stiff integrator itself.
+        //  Valid only after solve() has run at least once this outer
+        //  iteration; empty (zero-sized) under the legacy/non-mechanism path.
+        const scalarField& chemP(const label i) const { return chemP_[i]; }
+        const scalarField& chemL(const label i) const { return chemL_[i]; }
+
+        //- This species' own transport model, so an explicit (fvc::)
+        //  residual can call its mu()/D() (driftDiffusion) to reconstruct
+        //  the SAME convective/diffusive flux nEqn() builds, at an
+        //  arbitrary trial state -- see plasmaTransportModel::mu()/D().
+        const plasmaTransportModel& transportModel(const label i) const
+        {
+            return transportModels_[i];
+        }
+
+        //- Mutable overload, matching plasmaEnergy::model()'s established
+        //  const/non-const pair -- needed to call correct() (refreshing
+        //  mu/D from a newly-written trial density) before reading mu()/D().
+        plasmaTransportModel& transportModel(const label i)
+        {
+            return transportModels_[i];
+        }
+
+        //- Thin public forwarding wrapper for the private mechanismSourceTerms()
+        //  -- refreshes chemP_/chemL_ (see chemP()/chemL() above) for whatever
+        //  the species densities CURRENTLY hold, with NO OTHER side effect:
+        //  unlike solve(), this does not touch plasmaOuterRelaxation (whose
+        //  contribute() hard-aborts if called twice within one corrector --
+        //  a real wiring hazard found while designing the Newton outer
+        //  solver, see doc/newton-outer-solver-design.md), does not solve
+        //  any transport matrix, and does not update fluxes. The function's
+        //  own comment already documents it as idempotent/safe to call
+        //  repeatedly ("recomputing the source each outer iteration is
+        //  idempotent"); this wrapper only makes that safe operation
+        //  reachable from outside the class. Returns false with no
+        //  behaviour if no mechanism is configured (legacy Townsend-fit
+        //  cases), matching mechanismSourceTerms()'s own contract.
+        bool refreshChemistrySources
+        (
+            List<autoPtr<fvScalarMatrix>>& eqns,
+            const volScalarField& ne,
+            const volScalarField& Emag
+        )
+        {
+            // MUST run first: mechanismSourceTerms() (specifically
+            // computeChemistrySources(), for chemistrySolver csODE) reads
+            // chemN0_/chemExt_/... , which only solve() sized -- calling
+            // this standalone without it segfaulted on an empty
+            // List<scalarField> (found via gdb, 2026-09-09). Safe/idempotent
+            // to call every time: guarded internally on chemTimeIndex_.
+            refreshChemistryTimestepState();
+            return mechanismSourceTerms(eqns, ne, Emag);
+        }
 
         virtual bool writeData(Ostream& os) const;
 

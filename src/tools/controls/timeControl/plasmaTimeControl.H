@@ -91,6 +91,35 @@ private:
 
             bool adjustTimeStep_;
 
+            //- WHAT KIND OF SIMULATION THIS IS: `transient` | `pseudoSteady`.
+            //
+            //  The single user-facing switch for steady operation, because the
+            //  settings it implies INTERLOCK: assembling them by hand hits a
+            //  fatal error or, worse, silently destroys convergence. Both
+            //  failures were MEASURED (see doc/steady-mode-spec.md):
+            //
+            //    * `onNonConvergence retryStep` retries by SHORTENING deltaT,
+            //      so it is meaningless once deltaT is fixed -- fatal.
+            //    * manual `relaxationFactors` took a converging pseudo-steady
+            //      run from 9472/9472 converged steps to 0/10, because
+            //      SoPLASMA already runs ADAPTIVE AITKEN outer relaxation
+            //      (`plasmaOuterRelaxation`, observed omega 0.371) and fixed
+            //      factors layered on top fight it.
+            //
+            //  `pseudoSteady` is PSEUDO-TRANSIENT CONTINUATION, not a steady
+            //  solver: the ddt term is retained and IS the matrix diagonal,
+            //  with deltaT demoted to a relaxation parameter. A true
+            //  `ddtSchemes steadyState` cannot work here -- with no ddt and no
+            //  implicit chemistry loss a species row has NO diagonal at all,
+            //  and Gauss-Seidel divides by zero on sweep 1 (MEASURED: SIGFPE
+            //  in GaussSeidelSmoother::smooth on iteration 1). simpleFoam gets
+            //  away with it because SIMPLE's pressure equation and
+            //  under-relaxation supply the diagonal dominance; a segregated
+            //  species equation has no such mechanism.
+            //
+            //  DEFAULT `transient`, so no existing case changes behaviour.
+            word simulationType_;
+
             //- Maximum physical time step allowed
             scalar maxDeltaT_;
 
@@ -793,6 +822,18 @@ public:
         inline bool adjustTimeStep() const
         {
             return adjustTimeStep_;
+        }
+
+        //- `transient` or `pseudoSteady`. See simulationType_.
+        inline const word& simulationType() const
+        {
+            return simulationType_;
+        }
+
+        //- Is this a pseudo-steady (pseudo-transient continuation) run?
+        inline bool pseudoSteady() const
+        {
+            return simulationType_ == "pseudoSteady";
         }
 
         //- Is dielectric relaxation limiting enabled?

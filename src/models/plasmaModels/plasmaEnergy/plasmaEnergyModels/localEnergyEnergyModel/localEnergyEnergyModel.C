@@ -13,6 +13,9 @@
 #include "fvm.H"
 #include "fvc.H"
 #include "IFstream.H"
+#include "ScharfetterGummel.H"
+#include "fvcScharfetterGummel.H"
+#include "CompleteFlux.H"
 
 namespace Foam
 {
@@ -173,6 +176,44 @@ localEnergyEnergyModel::localEnergyEnergyModel
                  IOobject::NO_READ, IOobject::AUTO_WRITE),
         mesh,
         dimensionedScalar("zero", dimless/dimTime, 0.0)
+    ),
+    // Dimensions matching the expression this was always built from,
+    // muEf_*ne*magSqr(E_)/oneVolt (mobility x number-density x
+    // field-squared / volt -- see updateSources()): dims(mobility) +
+    // dims(1/m3) + 2*dims(V/m) - dims(V) = 1/(m3.s), the same dims as
+    // fvm::ddt(nEps_) (nEps_ carries eV as dimensionless-by-convention,
+    // so its dims are 1/m3 like n_e) -- consistent with Psrc_ sitting on
+    // the RHS of that same equation.
+    jouleHeating_
+    (
+        IOobject("jouleHeating", mesh.time().timeName(), mesh,
+                 IOobject::NO_READ, IOobject::NO_WRITE),
+        mesh,
+        dimensionedScalar("zero", dimensionSet(0, -3, -1, 0, 0, 0, 0), 0.0)
+    ),
+    // L = P_loss/n_eps, a rate -- same dims as dSdEps_ above.
+    Lrate_
+    (
+        IOobject("Lrate_lmea", mesh.time().timeName(), mesh,
+                 IOobject::NO_READ, IOobject::NO_WRITE),
+        mesh,
+        dimensionedScalar("zero", dimless/dimTime, 0.0)
+    ),
+    // Psrc_ starts as a copy of jouleHeating_ (same dims), then may be
+    // overridden/added to by updateSources() -- see there.
+    Psrc_
+    (
+        IOobject("Psrc_lmea", mesh.time().timeName(), mesh,
+                 IOobject::NO_READ, IOobject::AUTO_WRITE),
+        mesh,
+        dimensionedScalar("zero", dimensionSet(0, -3, -1, 0, 0, 0, 0), 0.0)
+    ),
+    Lsrc_
+    (
+        IOobject("Lsrc_lmea", mesh.time().timeName(), mesh,
+                 IOobject::NO_READ, IOobject::AUTO_WRITE),
+        mesh,
+        dimensionedScalar("zero", dimless/dimTime, 0.0)
     )
 {
     // `dict` IS energyModelCoeffs -- plasmaEnergy passes that subdict
@@ -308,6 +349,34 @@ localEnergyEnergyModel::localEnergyEnergyModel
                 pl.subDict("inelastic"), mesh,
                 "InelasticPowerLoss", dimensionSet(0, 3, -1, 0, 0, 0, 0)
             );
+        }
+        // OPTIONAL, OFF BY DEFAULT. epsilon_eff [eV] -- dimensionless here,
+        // same convention as meanE_: this model tracks "eV" as documented
+        // numeric convention, not an OpenFOAM dimension. See the header and
+        // genericPlasmaPropertyTemplates.H for what this term is and is
+        // NOT (an energy, not a rate -- never added into PlossN_).
+        if (pl.found("coulombHeating"))
+        {
+            Pcoulomb_ = plasmaPropertyEvaluator::New
+            (
+                pl.subDict("coulombHeating").get<word>("type"),
+                pl.subDict("coulombHeating"), mesh,
+                "CoulombHeatingEpsEff", dimensionSet(0, 0, 0, 0, 0, 0, 0)
+            );
+
+            // NOT silent: `plasmaEnergy`'s own energyModelCoeffs resolution
+            // report (plasmaEnergy.C) only lists its fixed set of leaves
+            // (mobility, diffusivity, powerLoss/elastic, .../inelastic,
+            // etc.) and does not know about this one, so without a report
+            // here a case configuring `coulombHeating` gets NO confirmation
+            // it was actually picked up versus silently ignored.
+            Info<< "plasmaEnergy: Coulomb-heating source term ENABLED"
+                   " (energyModelCoeffs/powerLoss/coulombHeating, type `"
+                << pl.subDict("coulombHeating").get<word>("type") << "`)."
+                << nl
+                << "    H_secondary = epsilon_eff * S_iz, added to the"
+                   " electron energy equation -- Eliseev, Bogdanov &"
+                   " Kudryavtsev, Phys. Plasmas 24, 093503 (2017)." << endl;
         }
     }
 
@@ -1196,10 +1265,209 @@ Foam::scalar Foam::localEnergyEnergyModel::maxEnergyRate() const
 }
 
 
-tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
+const Foam::word& localEnergyEnergyModel::fluxScheme() const
+{
+    if (fluxSchemeResolved_)
+    {
+        return fluxScheme_;
+    }
+    fluxSchemeResolved_ = true;
+
+    // INHERIT FROM THE ELECTRON unless this model is told otherwise.
+    // plasmaSpecies IS the plasmaSpeciesProperties IOdictionary, so this is a
+    // plain subDict walk on a reference already held -- no registry lookup and
+    // no link on plasmaTransport, which would be CIRCULAR: plasmaTransport
+    // already links plasmaEnergy.
+    word inherited("standard");
+
+    const word nm = species_.speciesNames()[specieIndex_];
+
+    if (species_.found("speciesProperties"))
+    {
+        const dictionary& sp = species_.subDict("speciesProperties");
+
+        if (sp.found(nm))
+        {
+            const dictionary& mine = sp.subDict(nm);
+
+            if (mine.found("driftDiffusionCoeffs"))
+            {
+                inherited = mine.subDict("driftDiffusionCoeffs")
+                    .lookupOrDefault<word>("fluxScheme", "standard");
+            }
+        }
+    }
+
+    fluxScheme_ = dict_.lookupOrDefault<word>("fluxScheme", inherited);
+
+    if
+    (
+        fluxScheme_ != "standard"
+     && fluxScheme_ != "ScharfetterGummel"
+     && fluxScheme_ != "CompleteFlux"
+    )
+    {
+        FatalErrorInFunction
+            << "unknown fluxScheme '" << fluxScheme_ << "' for the "
+            << nm << " energy equation." << nl
+            << "Valid options: (standard | ScharfetterGummel | CompleteFlux)"
+            << nl
+            << exit(FatalError);
+    }
+
+    if (!fluxSchemeReported_)
+    {
+        fluxSchemeReported_ = true;
+
+        Info<< "  LMEA energy transport: fluxScheme `" << fluxScheme_
+            << "` (" << (dict_.found("fluxScheme")
+                       ? "SET in energyModelCoeffs"
+                       : "INHERITED from the " + nm + " transport model")
+            << ")." << endl;
+
+        if (fluxScheme_ != inherited)
+        {
+            WarningInFunction
+                << "the energy equation uses fluxScheme `" << fluxScheme_
+                << "` while " << nm << " transport uses `" << inherited
+                << "`." << nl
+                << "    The WALL condition does not follow this override:"
+                   " ddWallFluxMixed reads the scheme from the " << nm << nl
+                << "    driftDiffusion model, so energyDDWallFluxMixed will"
+                   " build its `f` for `" << inherited << "` while the" << nl
+                << "    interior is discretised for `" << fluxScheme_
+                << "`. testWallFlux measures that mismatch at 18.4% of the"
+                << nl
+                << "    imposed flux one way and 99.3% the other. Set them"
+                   " the same unless you mean this." << endl;
+        }
+    }
+
+    return fluxScheme_;
+}
+
+
+void localEnergyEnergyModel::updateSources() const
 {
     const volScalarField& ne = species_.numberDensity(specieIndex_);
 
+    // JOULE HEATING, explicit in phase A: -e Gamma_e . E, which for electrons
+    // drifting against the field is a positive power input. Written from the
+    // drift flux rather than from the full Gamma_e, because the diffusive part
+    // carries E.grad(n_e) -- the sign-indefinite term that makes Hagelaar's
+    // bracket not unconditionally damping.
+    jouleHeating_ == muEf_*ne*magSqr(E_)/oneVolt;
+
+    // LOSS, implicit. P_loss = n_e N (Pelastic + Pinelastic)(eps_bar) is a
+    // genuine sink, so it goes on the diagonal as a rate: L = P_loss/n_eps.
+    // Only the unambiguous sinks are made implicit here -- see the header on
+    // why the full Hagelaar bracket is not adopted in phase A.
+    // Background gas density: a dimensionedScalar here, since the background
+    // is a uniform reservoir rather than a transported field.
+    const volScalarField Ploss(PlossN_*ne*species_.backgroundDensity());
+
+    // Rate form, guarded: below the floor the cell holds no electrons worth
+    // damping and an unbounded L is exactly the anti-damping shape that broke
+    // the Rosenbrock controller.
+    {
+        scalarField& L = Lrate_.primitiveFieldRef();
+        const scalarField& P = Ploss.primitiveField();
+        const scalarField& nE = nEps_.primitiveField();
+
+        forAll(L, c)
+        {
+            L[c] = (nE[c] > VSMALL) ? max(P[c]/nE[c], 0.0) : 0.0;
+        }
+    }
+
+    // ---- WHERE THE SOURCE COMES FROM -----------------------------------
+    //
+    // OPTION 4: when `energySource chemistry` is set, the per-cell stiff
+    // solver has ALREADY integrated n_eps alongside the species and returned
+    // the end-state production and loss RATE. Using them here instead of the
+    // locally built jouleHeating/Lrate is not an optimisation -- applying both
+    // would count the source twice.
+    //
+    // The Newton sensitivity dSdEps_ is dropped in that mode as well: it
+    // exists to linearise a source this equation is no longer evaluating, and
+    // the integrator resolved the nonlinearity properly rather than about a
+    // tangent that was MEASURED going to zero in cold cells.
+    // BY NAME, not by type: plasmaTransport links plasmaEnergy, so depending
+    // on it here would be a circular library dependency. The two fields are
+    // registered by plasmaTransport exactly when it is integrating the energy,
+    // so their presence IS the signal.
+    chemOwnsSource_ =
+        mesh_.foundObject<volScalarField>("chemPeps")
+     && mesh_.foundObject<volScalarField>("chemLeps");
+
+    Psrc_ = jouleHeating_;
+    Lsrc_ = Lrate_;
+
+    if (chemOwnsSource_)
+    {
+        Psrc_.primitiveFieldRef() =
+            mesh_.lookupObject<volScalarField>("chemPeps").primitiveField();
+        Lsrc_.primitiveFieldRef() =
+            mesh_.lookupObject<volScalarField>("chemLeps").primitiveField();
+
+        if (!chemSourceReported_)
+        {
+            chemSourceReported_ = true;
+            Info<< "  LMEA: the electron energy SOURCE comes from the"
+                << " chemistry ODE (energySource chemistry)." << nl
+                << "    Joule and P_loss are integrated per cell with the"
+                << " species and returned as an end-state P/L pair; this"
+                << " model contributes transport only." << endl;
+        }
+    }
+
+    // OPTIONAL, OFF BY DEFAULT. H_secondary = epsilon_eff * S_iz (Eliseev,
+    // Bogdanov & Kudryavtsev, Phys. Plasmas 24, 093503 (2017), eq. 12/15) --
+    // the Coulomb heating a cell's bulk electrons receive from the newly-
+    // created ("secondary") electrons its OWN local ionisation is producing.
+    //
+    // ADDED UNCONDITIONALLY, after the chemOwnsSource branch above, not
+    // folded into it: the chemistry-ODE substep (when engaged) integrates
+    // Joule heating and species losses internally and returns an end-state
+    // P/L pair that knows nothing of this term, so it must be added on top
+    // regardless of which path supplied the rest of Psrc.
+    //
+    // S_iz is looked up BY NAME, not by type, for the same reason chemPeps/
+    // chemLeps are above: plasmaTransport (which registers S_iz) links
+    // plasmaEnergy, so depending on it here would be a circular library
+    // dependency. Guarded on presence: a case with no `coulombHeating`
+    // sub-dictionary in `powerLoss` never constructs Pcoulomb_, and this
+    // term is then exactly zero, unconditionally.
+    if (Pcoulomb_ && mesh_.foundObject<volScalarField>("S_iz"))
+    {
+        // NOT copy-constructed from PlossN_: that field carries PlossN_'s
+        // OWN dimensions ([m^3/s]), which are wrong for epsilon_eff (a
+        // dimensionless-by-convention eV energy). A field labelled with
+        // the wrong dimensionSet is exactly the kind of derived-field
+        // inconsistency worth avoiding even though the raw-array
+        // multiplication below would not itself crash on it.
+        volScalarField epsEff
+        (
+            IOobject
+            (
+                "epsEffCoulomb", mesh_.time().timeName(), mesh_,
+                IOobject::NO_READ, IOobject::NO_WRITE
+            ),
+            mesh_,
+            dimensionedScalar("zero", dimless, 0.0)
+        );
+        Pcoulomb_->correct(epsEff);
+
+        const volScalarField& Siz = mesh_.lookupObject<volScalarField>("S_iz");
+
+        Psrc_.primitiveFieldRef() +=
+            epsEff.primitiveField()*Siz.primitiveField();
+    }
+}
+
+
+tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
+{
     // Energy flux moments of the two-term expansion: the energy drifts and
     // diffuses at 5/3 of the particle rates (Hagelaar & Kroesen Eqs. 10-13).
     // 5/3 ONLY when falling back to the particle coefficients. With the
@@ -1234,7 +1502,19 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
        *species_.em().phiE()
     );
 
-    const volScalarField DEps("DEps", energyFactor*DEf_);
+    // FIELD NAME `D_eps`, NOT `DEps`, AND THE UNDERSCORE IS LOAD-BEARING.
+    //
+    // fvm/fvc::ScharfetterGummel calls fvc::interpolate(D) with NO scheme
+    // name, so OpenFOAM looks the scheme up by the FIELD's name. Cases
+    // declare a catch-all `"interpolate\(D_.*\)" harmonic;` which `DEps`
+    // does not match -- it aborts at start-up with
+    //   Entry 'interpolate(DEps)' not found in interpolationSchemes
+    // exactly as the div/laplacian names above would. `D_eps` matches, so no
+    // case has to declare anything, and it inherits `harmonic`, which is the
+    // right face value for a coefficient that varies by orders across a
+    // sheath (the reason those cases chose harmonic for D_* in the first
+    // place).
+    const volScalarField DEps("D_eps", energyFactor*DEf_);
 
     // TRANSPORT RATE, straight from the operators, at the current iterate.
     //
@@ -1249,97 +1529,75 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
     // div(phiEps,nEps_e) here would abort a case that runs today.
     if (transportEnergy_)
     {
-        energyTransportRate_ =
-        (
-            -fvc::div(phiEps, nEps_, "div(phi_e,n_e)")()
-           + fvc::laplacian(DEps, nEps_, "laplacian(D_e,n_e)")()
-        )().primitiveField();
+        if (fluxScheme() == "ScharfetterGummel")
+        {
+            // SG returns the COMBINED flux, so the rate is minus its
+            // divergence -- the same quantity as -div + lap below, which is
+            // -(div - lap) = -div(total flux).
+            energyTransportRate_ =
+            (
+               -fvc::div(fvc::ScharfetterGummel(nEps_, phiEps, DEps)())()
+            )().primitiveField();
+        }
+        else
+        {
+            energyTransportRate_ =
+            (
+                -fvc::div(phiEps, nEps_, "div(phi_e,n_e)")()
+               + fvc::laplacian(DEps, nEps_, "laplacian(D_e,n_e)")()
+            )().primitiveField();
+        }
     }
     else
     {
         energyTransportRate_.setSize(mesh_.nCells(), Zero);
     }
 
-    // JOULE HEATING, explicit in phase A: -e Gamma_e . E, which for electrons
-    // drifting against the field is a positive power input. Written from the
-    // drift flux rather than from the full Gamma_e, because the diffusive part
-    // carries E.grad(n_e) -- the sign-indefinite term that makes Hagelaar's
-    // bracket not unconditionally damping.
-    const volScalarField jouleHeating
-    (
-        "jouleHeating",
-        muEf_*ne*magSqr(E_)/oneVolt
-    );
+    updateSources();
 
-    // LOSS, implicit. P_loss = n_e N (Pelastic + Pinelastic)(eps_bar) is a
-    // genuine sink, so it goes on the diagonal as a rate: L = P_loss/n_eps.
-    // Only the unambiguous sinks are made implicit here -- see the header on
-    // why the full Hagelaar bracket is not adopted in phase A.
-    // Background gas density: a dimensionedScalar here, since the background
-    // is a uniform reservoir rather than a transported field.
-    const volScalarField Ploss(PlossN_*ne*species_.backgroundDensity());
+    // TRANSPORT ASSEMBLED FIRST, because ScharfetterGummel replaces the
+    // div/laplacian PAIR with a single combined operator and cannot be
+    // written as two terms inside the matrix expression below.
+    //
+    // Sign convention matches driftDiffusion::nEqn(): there the standard
+    // branch does `+= convMat; -= diffMat` and the SG branch does `+= sgMat`,
+    // so sgMat IS (div - laplacian) and substitutes directly.
+    tmp<fvScalarMatrix> tTrans;
 
-    // Rate form, guarded: below the floor the cell holds no electrons worth
-    // damping and an unbounded L is exactly the anti-damping shape that broke
-    // the Rosenbrock controller.
-    volScalarField Lrate
-    (
-        IOobject("Lrate_lmea", mesh_.time().timeName(), mesh_,
-                 IOobject::NO_READ, IOobject::NO_WRITE),
-        mesh_,
-        dimensionedScalar("zero", dimless/dimTime, 0.0)
-    );
-
+    if (!transportEnergy_)
     {
-        scalarField& L = Lrate.primitiveFieldRef();
-        const scalarField& P = Ploss.primitiveField();
-        const scalarField& nE = nEps_.primitiveField();
-
-        forAll(L, c)
-        {
-            L[c] = (nE[c] > VSMALL) ? max(P[c]/nE[c], 0.0) : 0.0;
-        }
+        tTrans = fvm::Sp(dimensionedScalar("z", dimless/dimTime, 0.0), nEps_);
     }
-
-    // ---- WHERE THE SOURCE COMES FROM -----------------------------------
-    //
-    // OPTION 4: when `energySource chemistry` is set, the per-cell stiff
-    // solver has ALREADY integrated n_eps alongside the species and returned
-    // the end-state production and loss RATE. Using them here instead of the
-    // locally built jouleHeating/Lrate is not an optimisation -- applying both
-    // would count the source twice.
-    //
-    // The Newton sensitivity dSdEps_ is dropped in that mode as well: it
-    // exists to linearise a source this equation is no longer evaluating, and
-    // the integrator resolved the nonlinearity properly rather than about a
-    // tangent that was MEASURED going to zero in cold cells.
-    // BY NAME, not by type: plasmaTransport links plasmaEnergy, so depending
-    // on it here would be a circular library dependency. The two fields are
-    // registered by plasmaTransport exactly when it is integrating the energy,
-    // so their presence IS the signal.
-    const bool chemOwnsSource =
-        mesh_.foundObject<volScalarField>("chemPeps")
-     && mesh_.foundObject<volScalarField>("chemLeps");
-
-    volScalarField Psrc(jouleHeating);
-    volScalarField Lsrc(Lrate);
-
-    if (chemOwnsSource)
+    else if (fluxScheme() == "CompleteFlux")
     {
-        Psrc.primitiveFieldRef() =
-            mesh_.lookupObject<volScalarField>("chemPeps").primitiveField();
-        Lsrc.primitiveFieldRef() =
-            mesh_.lookupObject<volScalarField>("chemLeps").primitiveField();
+        // The energy equation's NET source, as its own transport sees it:
+        // the equation below reads  ddt + trans + Sp(Lsrc)nEps == Psrc,
+        // so the net volumetric source is Psrc - Lsrc*nEps at this iterate.
+        // Unlike the species path this needs no lag -- Psrc and Lsrc are
+        // already computed above, in this same call.
+        const volScalarField netEpsSrc
+        (
+            IOobject
+            (
+                "netEpsSrc", mesh_.time().timeName(), mesh_,
+                IOobject::NO_READ, IOobject::NO_WRITE
+            ),
+            Psrc_ - Lsrc_*nEps_
+        );
 
-        if (!chemSourceReported_)
-        {
-            chemSourceReported_ = true;
-            Info<< "  LMEA: the electron energy SOURCE comes from the"
-                << " chemistry ODE (energySource chemistry)." << nl
-                << "    Joule and P_loss are integrated per cell with the"
-                << " species and returned as an end-state P/L pair; this"
-                << " model contributes transport only." << endl;
-        }
+        tTrans = fvm::CompleteFlux(nEps_, phiEps, DEps, netEpsSrc);
+    }
+    else if (fluxScheme() == "ScharfetterGummel")
+    {
+        tTrans = fvm::ScharfetterGummel(nEps_, phiEps, DEps);
+    }
+    else
+    {
+        tTrans =
+        (
+            fvm::div(phiEps, nEps_, "div(phi_e,n_e)")
+          - fvm::laplacian(DEps, nEps_, "laplacian(D_e,n_e)")
+        );
     }
 
     tmp<fvScalarMatrix> tEqn
@@ -1358,19 +1616,14 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
             // the same velocity field and diffuses on the same mesh as the
             // electrons, at 5/3 of the rates. A case should not have to
             // declare schemes for an equation it enabled with one keyword.
-          + (transportEnergy_
-              ? fvm::div(phiEps, nEps_, "div(phi_e,n_e)")
-              : fvm::Sp(dimensionedScalar("z", dimless/dimTime, 0.0), nEps_))
-          - (transportEnergy_
-              ? fvm::laplacian(DEps, nEps_, "laplacian(D_e,n_e)")
-              : fvm::Sp(dimensionedScalar("z", dimless/dimTime, 0.0), nEps_))
-          + fvm::Sp(Lsrc, nEps_)
-          + (chemOwnsSource
+          + tTrans()
+          + fvm::Sp(Lsrc_, nEps_)
+          + (chemOwnsSource_
               ? fvm::Sp(dimensionedScalar("z", dimless/dimTime, 0.0), nEps_)
               : fvm::SuSp(dSdEps_, nEps_))
          ==
-            Psrc
-          + (chemOwnsSource
+            Psrc_
+          + (chemOwnsSource_
               ? 0.0*dSdEps_*nEps_
               : dSdEps_*nEps_)
         )
@@ -1429,8 +1682,23 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
 
         if (transportEnergy_)
         {
-            divT = fvc::div(phiEps, nEps_, "div(phi_e,n_e)");
-            lapT = fvc::laplacian(DEps, nEps_, "laplacian(D_e,n_e)");
+            if (fluxScheme() == "ScharfetterGummel")
+            {
+                // SG does not form div and lap separately -- there is one
+                // exponentially-fitted flux. Report the COMBINED divergence
+                // in `div` and leave `lap` at zero rather than invent a
+                // split, and say so in the print below, so the two numbers
+                // are never read as if they were the standard pair.
+                divT = fvc::div
+                (
+                    fvc::ScharfetterGummel(nEps_, phiEps, DEps)()
+                );
+            }
+            else
+            {
+                divT = fvc::div(phiEps, nEps_, "div(phi_e,n_e)");
+                lapT = fvc::laplacian(DEps, nEps_, "laplacian(D_e,n_e)");
+            }
         }
         const scalarField& diagF = tEqn->diag();
         const scalarField& VF = mesh_.V();
@@ -1483,21 +1751,21 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
             q[1] = ddtT[iW];
             q[2] = divT[iW];
             q[3] = lapT[iW];
-            q[4] = Lsrc[iW]*nEps_[iW];
-            q[5] = chemOwnsSource ? 0.0 : dSdEps_[iW]*nEps_[iW];
-            q[6] = Psrc[iW];
+            q[4] = Lsrc_[iW]*nEps_[iW];
+            q[5] = chemOwnsSource_ ? 0.0 : dSdEps_[iW]*nEps_[iW];
+            q[6] = Psrc_[iW];
             q[7] = diagF[iW]/max(VF[iW], VSMALL);  // per unit volume
             q[8] = neI2[iW];
             q[9] = nEpsEndF ? (*nEpsEndF)[iW] : 0.0;
             q[10] = nEps_[iW];
             // L itself = rate * the state it was normalised BY.
-            q[11] = nEpsEndF ? Lsrc[iW]*(*nEpsEndF)[iW] : 0.0;
+            q[11] = nEpsEndF ? Lsrc_[iW]*(*nEpsEndF)[iW] : 0.0;
 
             // --- MODEL path: evaluated at the meanE FIELD ---
             q[12] = epsW;                       // eps_model = nEps/n_e
             q[13] = muEf_[iW];                  // mu at the field eps
-            q[14] = jouleHeating[iW];           // J_model
-            q[15] = Lrate[iW]*nEps_[iW];        // L_model (absolute power)
+            q[14] = jouleHeating_[iW];          // J_model
+            q[15] = Lrate_[iW]*nEps_[iW];       // L_model (absolute power)
 
             // --- ODE path: evaluated at the integrated end state ---
             q[16] = epsEndF ? (*epsEndF)[iW] : 0.0;
@@ -1512,15 +1780,18 @@ tmp<fvScalarMatrix> localEnergyEnergyModel::eEqn() const
 
         Info<< "    LMEA terms at worst cell (eps " << q[0]
             << " eV, n_e " << q[8] << "):" << nl
-            << "      ddt " << q[1] << "  div " << q[2]
-            << "  lap " << q[3] << nl
+            << "      ddt " << q[1]
+            << (fluxScheme() == "ScharfetterGummel"
+                  ? "  div(SG combined) " : "  div ") << q[2]
+            << (fluxScheme() == "ScharfetterGummel"
+                  ? "  lap (n/a under SG) " : "  lap ") << q[3] << nl
             << "      Sp(L)*nEps " << q[4] << "  SuSp*nEps " << q[5]
             << "  Joule " << q[6] << nl
             << "      diag/V " << q[7]
             << "   (a diag/V near zero is the SIGFPE; transport >> Joule"
                " means the energy is DELIVERED, not generated)" << endl;
 
-        if (chemOwnsSource && q[9] > VSMALL)
+        if (chemOwnsSource_ && q[9] > VSMALL)
         {
             const scalar ratio = q[10]/q[9];
             Info<< "      LOSS-RATE GAP: nEps_end " << q[9]

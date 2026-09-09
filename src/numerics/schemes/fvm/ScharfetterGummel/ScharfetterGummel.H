@@ -64,6 +64,7 @@ References
 #include "fvMatrix.H"
 #include "fvm.H"
 #include "fvc.H"
+#include "correctedSnGrad.H"
 #include "surfaceFields.H"
 #include "volFields.H"
 
@@ -113,7 +114,30 @@ namespace fvm
             return x / (Foam::exp(x) - 1.0);
         };
 
-        surfaceScalarField diffCond = Df * mesh.magSf() * mesh.deltaCoeffs();
+        // NON-ORTHOGONAL DELTA COEFFICIENTS for the implicit part.
+        //
+        // Using mesh.deltaCoeffs() here leaves the scheme with NO
+        // non-orthogonal treatment at all. MEASURED 2026-09-08 on
+        // verification/fluxScheme2Dnonortho, an 11.3 deg sheared mesh: SG and
+        // CFS sat on a FIXED error floor (~1.0e-2) that refinement did not
+        // touch -- order 0.00 over four refinements -- while `standard` with a
+        // corrected laplacian converged on the same mesh with the same
+        // harness. They also "converged" in 2 non-orthogonal correctors
+        // against standard's 15-16, because their matrix had no correction
+        // term for the correctors to act on.
+        //
+        // THE SPLIT THAT MAKES THE FIX WELL-DEFINED. With the Bernoulli
+        // identity B(-z) = B(z) + z the SG face flux factorises exactly:
+        //
+        //   Gamma = coeffP n_P - coeffN n_N
+        //         = phi n_P - Df B(Pe) magSf snGrad(n)
+        //
+        // so SG's diffusive part is an ORDINARY diffusion flux with effective
+        // diffusivity D*B(Pe). It therefore takes the standard non-orthogonal
+        // treatment: nonOrthDeltaCoeffs in the implicit part, plus the
+        // explicit snGrad correction scaled by Df*B(Pe).
+        surfaceScalarField diffCond =
+            Df * mesh.magSf() * mesh.nonOrthDeltaCoeffs();
         const scalarField& diffCondInternal = diffCond.primitiveField();
         const scalarField& convFlux = phi.primitiveField();
 
@@ -141,7 +165,7 @@ forAll(rho.boundaryField(), patchi)
     scalarField patchDiffCond =
           Df.boundaryField()[patchi]
         * mesh.magSf().boundaryField()[patchi]
-        * mesh.deltaCoeffs().boundaryField()[patchi];
+        * mesh.nonOrthDeltaCoeffs().boundaryField()[patchi];
 
     scalarField patchPe = patchPhi / (patchDiffCond + VSMALL);
 
@@ -168,6 +192,66 @@ forAll(rho.boundaryField(), patchi)
         fvm.boundaryCoeffs()[patchi] =           pCoeffB * tBeta();
     }
 }
+
+        // ---- EXPLICIT NON-ORTHOGONAL CORRECTION -------------------------
+        //
+        // The diffusive flux above is -Df*B(Pe)*magSf*snGrad(n). Replacing
+        // snGrad by its corrected form adds
+        //
+        //     dGamma = -Df*B(Pe)*magSf*snGradCorrection(n)
+        //
+        // and since the matrix represents div(Gamma), that explicit piece goes
+        // to the source as  source -= V*div(dGamma).
+        //
+        // APPLIED UNCONDITIONALLY, which is safe and self-disabling: on an
+        // orthogonal mesh the non-orthogonal correction vectors are ZERO, so
+        // the term vanishes identically and the result is unchanged. The only
+        // cost there is one gradient evaluation -- the same cost OpenFOAM's own
+        // corrected laplacian already pays. There is deliberately NO user knob
+        // and no corrector count to set: the correction is either needed by the
+        // mesh or it is identically zero.
+        {
+            surfaceScalarField DeffB
+            (
+                IOobject
+                (
+                    "DeffB", mesh.time().timeName(), mesh,
+                    IOobject::NO_READ, IOobject::NO_WRITE
+                ),
+                Df
+            );
+
+            scalarField& DeffBi = DeffB.primitiveFieldRef();
+            forAll(DeffBi, facei)
+            {
+                DeffBi[facei] *= Bern(Pe[facei]);
+            }
+
+            forAll(DeffB.boundaryField(), patchi)
+            {
+                const scalarField& pPhi = phi.boundaryField()[patchi];
+                const scalarField pdc
+                (
+                    Df.boundaryField()[patchi]
+                  * mesh.magSf().boundaryField()[patchi]
+                  * mesh.nonOrthDeltaCoeffs().boundaryField()[patchi]
+                );
+                scalarField& pD = DeffB.boundaryFieldRef()[patchi];
+                forAll(pD, facei)
+                {
+                    pD[facei] *= Bern(pPhi[facei]/(pdc[facei] + VSMALL));
+                }
+            }
+
+            const surfaceScalarField corrFlux
+            (
+              - DeffB*mesh.magSf()
+               *fv::correctedSnGrad<Type>(mesh).correction(rho)()
+            );
+
+            fvm.source() -=
+                mesh.V()*fvc::div(corrFlux)().primitiveField();
+        }
 
         return tfvm;
     }

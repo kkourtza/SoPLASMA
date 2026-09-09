@@ -53,6 +53,18 @@ npIonRelTolerance                   0.0;
 
 //- Solution Control
 poissonScheme                       semiImplicit;
+// TRANSIENT or PSEUDO-STEADY. `transient` is real time-marching -- what every
+// shipped tutorial does. `pseudoSteady` is PSEUDO-TRANSIENT CONTINUATION for
+// reaching a stationary state: `deltaT` becomes a RELAXATION PARAMETER, the
+// time axis stops being physical, and adjustTimeStep is forced off so the step
+// cannot collapse. It also interlocks several settings across three files, so
+// it is set HERE and enforced in the solver -- see doc/steady-mode-spec.md.
+//
+// `steadyState` is deliberately NOT offered: dropping ddt leaves a segregated
+// species equation with no matrix diagonal, and the linear solver divides by
+// zero on its first sweep.
+simulationType                      transient;
+
 adjustTimeStep                      true;
 limitDielectricRelaxationRatio      false;
 printDielectricRelaxationRatio      true;

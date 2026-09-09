@@ -66,9 +66,6 @@ private:
     singleRegionPoisson(const singleRegionPoisson&) = delete;
     void operator=(const singleRegionPoisson&) = delete;
 
-    //- Update E, Emag, phiE, and reducedE from ePotential
-    void updateDerivedFields();
-
 protected:
 
     //- Numerical scheme for computing E
@@ -117,6 +114,14 @@ public:
             const volScalarField& electricalConductivity,
             const volScalarField& diffusiveChargeSource
         ) override;
+
+        //- Update E, Emag, phiE, and reducedE from ePotential. PROMOTED
+        //  from private 2026-09-09 (pure access-level change, no behaviour
+        //  change) so the Newton outer solver can refresh these derived
+        //  fields after writing a new trial ePotential directly, exactly as
+        //  solve() already does internally -- see
+        //  doc/newton-outer-solver-design.md.
+        void updateDerivedFields();
 
     // Configuration
 

@@ -16,6 +16,7 @@
 
 #include "driftDiffusion.H"
 #include "ScharfetterGummel.H"
+#include "CompleteFlux.H"
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
@@ -200,17 +201,53 @@ driftDiffusion::driftDiffusion
         dimensionedScalar("zero", dimensionSet(0, 0, -1, 0, 0, 0, 0), 0.0)
     )
 {
-    if (fluxScheme_ != "standard" && fluxScheme_ != "ScharfetterGummel")
+    if
+    (
+        fluxScheme_ != "standard"
+     && fluxScheme_ != "ScharfetterGummel"
+     && fluxScheme_ != "CompleteFlux"
+    )
     {
         FatalIOErrorInFunction(dict_)
             << "Species '" << species_.speciesName(specieIndex_)
             << "': unknown fluxScheme '" << fluxScheme_ << "'." << nl
-            << "Valid options: (standard | ScharfetterGummel)" << nl
+            << "Valid options: (standard | ScharfetterGummel | CompleteFlux)"
+            << nl
             << exit(FatalIOError);
     }
 
     constructModels();
 }
+
+void driftDiffusion::setNetSource(const volScalarField& src) const
+{
+    if (fluxScheme_ != "CompleteFlux")
+    {
+        return;   // nothing else reads it
+    }
+
+    if (!netSource_.valid())
+    {
+        netSource_.reset
+        (
+            new volScalarField
+            (
+                IOobject
+                (
+                    "netSource_" + species_.speciesName(specieIndex_),
+                    mesh_.time().timeName(), mesh_,
+                    IOobject::NO_READ, IOobject::NO_WRITE
+                ),
+                src
+            )
+        );
+    }
+    else
+    {
+        netSource_() == src;
+    }
+}
+
 
 void driftDiffusion::splitSGFlux
 (
@@ -298,7 +335,44 @@ tmp<fvScalarMatrix> driftDiffusion::nEqn() const
 
     tmp<fvScalarMatrix> tEqn = fvm::ddt(n);
 
-    if (fluxScheme_ == "ScharfetterGummel")
+    if (fluxScheme_ == "CompleteFlux")
+    {
+        Info << "Discretizing transport with the Complete Flux scheme..."
+             << endl;
+
+        // The SOURCE-AWARE flux. Without a source handed in, CFS is exactly
+        // SG -- so a species whose source was never set degrades gracefully
+        // instead of failing.
+        const volScalarField zeroSrc
+        (
+            IOobject
+            (
+                "zeroSrc", mesh_.time().timeName(), mesh_,
+                IOobject::NO_READ, IOobject::NO_WRITE
+            ),
+            mesh_,
+            dimensionedScalar(n.dimensions()/dimTime, Zero)
+        );
+
+        fvScalarMatrix cfsMat
+        (
+            fvm::CompleteFlux
+            (
+                n, phi, D, netSource_.valid() ? netSource_() : zeroSrc
+            )
+        );
+
+        particleFlux_ = cfsMat.flux();
+
+        // The convective/diffusive SPLIT is reported for diagnostics only and
+        // has no unique definition once the two are combined in one flux, so
+        // the SG split is reused: it is the homogeneous part of exactly this
+        // flux. The inhomogeneous part belongs to neither and is not reported.
+        splitSGFlux(phi, D, n, convectiveFlux_, diffusiveFlux_);
+
+        tEqn.ref() += cfsMat;
+    }
+    else if (fluxScheme_ == "ScharfetterGummel")
     {
         Info << "Discretizing transport with SG scheme..." << endl;
         fvScalarMatrix sgMat(fvm::ScharfetterGummel(n, phi, D));
@@ -344,7 +418,7 @@ void driftDiffusion::updateFluxes
 
     particleFlux_ = nEqnMatrix.flux();
 
-    if (fluxScheme_ == "ScharfetterGummel")
+    if (fluxScheme_ == "ScharfetterGummel" || fluxScheme_ == "CompleteFlux")
     {
         splitSGFlux(phi, D, n, convectiveFlux_, diffusiveFlux_);
     }

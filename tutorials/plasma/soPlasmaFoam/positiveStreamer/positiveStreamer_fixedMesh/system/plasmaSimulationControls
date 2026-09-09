@@ -17,6 +17,7 @@ FoamFile
 
 plasmaTimeControl
 {
+    simulationType                  $simulationType;
     adjustTimeStep                  $adjustTimeStep;
 
     limitDielectricRelaxationRatio  $limitDielectricRelaxationRatio;

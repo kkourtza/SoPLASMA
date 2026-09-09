@@ -77,6 +77,20 @@ private:
     //- Configuration settings
     word fluxScheme_;
 
+    //- NET volumetric source for THIS species, handed in by plasmaTransport
+    //  before nEqn() and used ONLY by the CompleteFlux scheme.
+    //
+    //  LAGGED BY ONE OUTER ITERATION, deliberately. plasmaTransport::solve()
+    //  builds the transport matrices before it assembles the chemistry
+    //  sources, so the current-iterate source does not exist yet at nEqn()
+    //  time. The lag vanishes as the PIMPLE loop converges, and Liu et al
+    //  (2014) treat the CFS source explicitly for the same reason.
+    //
+    //  Empty unless CompleteFlux is selected; nEqn() falls back to a zero
+    //  source if it was never set, which makes CFS degrade gracefully to SG
+    //  rather than reading uninitialised memory.
+    mutable autoPtr<volScalarField> netSource_;
+
     // Cached fluxes
 
         // Cached convective flux surface field (phi = Z*mu*phiE)
@@ -156,6 +170,15 @@ public:
         //- Return diffusive charge source [C/m3/s]
         virtual tmp<volScalarField> diffusiveChargeSource() const override;
 
+        virtual tmp<volScalarField> mu() const override
+        {
+            return mobilityModel_->mu();
+        }
+        virtual tmp<volScalarField> D() const override
+        {
+            return diffusivityModel_->D();
+        }
+
     // Access
 
         //- Return the convective flux surface field
@@ -190,6 +213,10 @@ public:
 
         //- Return the flux scheme
         const word& fluxScheme() const { return fluxScheme_; }
+
+        //- Set the net volumetric source used by CompleteFlux. No-op for the
+        //  other schemes.
+        virtual void setNetSource(const volScalarField& s) const override;
 };
 
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //

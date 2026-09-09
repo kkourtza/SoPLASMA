@@ -39,6 +39,8 @@ BUILD_DIRS=(
   src/applications/utilities/testVibRelax
   src/applications/utilities/testDischargeCurrent
   src/applications/utilities/testAitken
+  src/applications/utilities/testCoulombHeating
+  src/applications/utilities/testFluxScheme
   src/applications/solvers/soPlasmaFoam
   src/applications/solvers/singleRegionElectrostaticFoam
   src/applications/solvers/multiRegionElectrostaticFoam
@@ -48,7 +50,17 @@ BUILD_DIRS=(
 # Applications deliberately NOT built, each with the reason. An entry here is a
 # decision; an application in neither list is an OVERSIGHT, and the coverage
 # check below refuses to let one pass silently.
-SKIP_DIRS=()
+SKIP_DIRS=(
+  # JFNK/PETSc-SNES proof of concept utilities (doc/newton-outer-solver-design.md).
+  # Need PETSC_DIR/PETSC_ARCH from THIS project's own etc/bashrc (built
+  # locally under ThirdParty/petsc-3.24.0), which this script does not
+  # source (only OpenFOAM's own bashrc, line 4) -- adding them to
+  # BUILD_DIRS as-is would fail here even though `wmake` alone (after
+  # sourcing etc/bashrc) builds them fine. Build directly when working on
+  # JFNK: `source etc/bashrc && wmake src/applications/utilities/testSnesJFNK`.
+  src/applications/utilities/testSnesJFNK
+  src/applications/utilities/testSnesJFNK2Field
+)
 
 for d in "${BUILD_DIRS[@]}"; do
   n=$(basename "$d")

@@ -145,6 +145,20 @@ public:
         //- Return the transport equation (Matrix)
         virtual tmp<fvScalarMatrix> nEqn() const = 0;
 
+        //- Hand this species' NET volumetric source to the transport model.
+        //
+        //  VIRTUAL WITH A NO-OP DEFAULT, so plasmaTransport can call it on
+        //  every species without knowing which model or which flux scheme is
+        //  underneath -- the same reason updateFluxes() is virtual here rather
+        //  than reached through a driftDiffusion cast.
+        //
+        //  Only the CompleteFlux scheme reads it: CFS derives its face flux
+        //  from the local two-point problem WITH the source retained, where
+        //  Scharfetter-Gummel sets it to zero. Every other model and scheme
+        //  ignores this.
+        virtual void setNetSource(const volScalarField&) const
+        {}
+
         //- Update the fluxes in place (1/s)
         virtual void updateFluxes
         (
@@ -159,6 +173,35 @@ public:
 
         //- Return diffusive charge source contribution [C/m3/s]
         virtual tmp<volScalarField> diffusiveChargeSource() const = 0;
+
+        //- Particle mobility [driftDiffusion] / diffusivity, for models that
+        //  have one. Default FatalErrors, naming the model, rather than
+        //  silently returning a meaningless field -- for a model with no
+        //  drift/diffusion coefficient (immobile) there is nothing correct
+        //  to return.
+        //
+        //  Added so an explicit (fvc::) residual for the JFNK outer solver
+        //  (doc/newton-outer-solver-design.md) can reconstruct THIS species'
+        //  convective/diffusive flux at an ARBITRARY trial state, exactly
+        //  matching nEqn()'s own formula, without calling nEqn()+.residual()
+        //  itself (confirmed broken in parallel for that specific usage --
+        //  see [[fvmatrix-residual-broken-in-parallel-use-fvc-instead]]).
+        virtual tmp<volScalarField> mu() const
+        {
+            FatalErrorInFunction
+                << "Model '" << modelName_ << "' has no particle mobility"
+                << " (mu()) -- the Newton outer solver does not yet support"
+                << " this transport model." << nl << exit(FatalError);
+            return nullptr;
+        }
+        virtual tmp<volScalarField> D() const
+        {
+            FatalErrorInFunction
+                << "Model '" << modelName_ << "' has no diffusivity"
+                << " (D()) -- the Newton outer solver does not yet support"
+                << " this transport model." << nl << exit(FatalError);
+            return nullptr;
+        }
 
     // Access
 

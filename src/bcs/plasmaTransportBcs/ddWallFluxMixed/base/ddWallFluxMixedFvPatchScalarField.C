@@ -464,7 +464,20 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
     // the two branches' f directly, DON'T: compare each branch's imposed flux
     // against n_p*W under ITS OWN extraction formula, which is what
     // testWallFlux now does.
-    if (scheme == "ScharfetterGummel")
+    // CompleteFlux TAKES THE SG BRANCH, and must.
+    //
+    // CFS = SG (the homogeneous part of the flux) + an explicit,
+    // source-carrying inhomogeneous part. The `f` this condition builds has to
+    // match the HOMOGENEOUS discretisation the interior uses, and for CFS that
+    // is SG exactly. Falling through to the `standard` branch would impose a
+    // face value extracted under the wrong flux formulation -- testWallFlux
+    // measures that mismatch at 18.4% of the imposed flux one way and 99.3%
+    // the other.
+    //
+    // The inhomogeneous part is deliberately NOT represented here. It is an
+    // explicit face flux added to the matrix by the CFS operator, including on
+    // boundary faces, so adding it again in `f` would double-count it.
+    if (scheme == "ScharfetterGummel" || scheme == "CompleteFlux")
     {
         const auto Bern = [](scalar x) -> scalar
         {

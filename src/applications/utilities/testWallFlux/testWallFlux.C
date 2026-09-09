@@ -31,6 +31,7 @@ Description
 
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
 #include <string>
 
 using namespace Foam;
@@ -375,6 +376,73 @@ int main()
         }
         check("gRatio = r/(1+r) for reflection only",
               all, fmt("max |diff| = %.3e", worst));
+
+        // THE DRIFT MUST NOT ENTER gRatio.  Added 2026-09-07 with the fix it
+        // pins.  Eq. (6.15) ends "where w_w from equation (6.6)" -- the
+        // DRIFT-FREE loss speed -- but hagelaarClosure()'s own wW is eq.
+        // (6.8), which adds the drift OUTSIDE the max.  Feeding that wW into
+        // gRatio made it grow without bound in the field, so the max(0,..)
+        // in hagelaarEnergyWeight() reached ZERO and the wall stopped
+        // carrying any energy away while still absorbing electrons.
+        //
+        // Every check above this one evaluates gRatio at Dd = 0, where the
+        // right and wrong forms are IDENTICAL by construction.  That is
+        // exactly how the defect shipped: the bed covered the closure but
+        // never the closure UNDER DRIFT.  These three cover it.
+        {
+            const double r = 0.36;
+            const double want = r/(1.0 + r);
+            double worstDd = 0;
+            bool flat = true;
+            for (double DdOverA = 0.0; DdOverA <= 200.0; DdOverA += 0.5)
+            {
+                const double g = gOf(A, DdOverA*A, 0.0, r);
+                worstDd = std::max(worstDd, std::fabs(g - want));
+                if (!close(g, want)) flat = false;
+            }
+            check("gRatio is INDEPENDENT of the drift, at r = 0.36",
+                  flat, fmt("Dd/A = 0..200, max |g - r/(1+r)| = %.3e",
+                            worstDd));
+
+            // The consequence that matters: reflection ALONE can never reach
+            // the clamp.  gRatio in [0, 1/2] for r in [0,1] puts eps_w/eps in
+            // [4/3, 5/3], so eps_w stays in [2 Te, 5/2 Te] however hard the
+            // field drives.  The clamp is for strong wall CREATION -- what
+            // the text puts it there for -- not for reflection.
+            double minW = 1e300;
+            for (double rr = 0.0; rr <= 0.99; rr += 0.01)
+                for (double DdOverA = 0.0; DdOverA <= 200.0; DdOverA += 1.0)
+                    minW = std::min
+                    (
+                        minW,
+                        wallBC::hagelaarEnergyWeight
+                        (
+                            f0, gOf(A, DdOverA*A, 0.0, rr)
+                        )
+                    );
+            check("eps_w/eps stays >= 4/3 under reflection at ANY drift",
+                  minW >= 4.0/3.0 - 1e-12,
+                  fmt("min over (r 0..0.99) x (Dd/A 0..200) = %.15f", minW));
+
+            // CONVICTION.  Rebuild the wrong form here -- gRatio from eq.
+            // (6.8)'s wW -- and require it to fail, so a refactor that
+            // reintroduces it cannot pass this bed.  MEASURED on grubert2009:
+            // at r = 0.36 the energy sink hits zero at Dd/A = 8.44.
+            double wrongMin = 1e300, cliff = -1.0;
+            for (double DdOverA = 0.0; DdOverA <= 200.0; DdOverA += 0.01)
+            {
+                const double Dd = DdOverA*A;
+                const double wW68 = std::max((A + Dd)/(1.0 + r), Dd);
+                const double gWrong = (r*wW68)/A;
+                const double w = wallBC::hagelaarEnergyWeight(f0, gWrong);
+                wrongMin = std::min(wrongMin, w);
+                if (w <= 0.0 && cliff < 0.0) cliff = DdOverA;
+            }
+            check("...and it CONVICTS gRatio built from eq. (6.8)'s wW",
+                  wrongMin <= 0.0 && cliff > 0.0,
+                  fmt("energy sink reaches ZERO at Dd/A = %.2f (min w = %.3f)",
+                      cliff, wrongMin));
+        }
 
         check("eps_w falls monotonically with reflection",
               wallBC::hagelaarEnergyWeight(f0, gOf(A, 0, 0, 0.2))
