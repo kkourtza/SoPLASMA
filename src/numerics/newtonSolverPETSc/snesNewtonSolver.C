@@ -902,7 +902,8 @@ Foam::snesNewtonSolver::snesNewtonSolver
     petscOptions_(dict.getOrDefault<string>("petscOptions", string::null)),
     rebalanceScales_(dict.getOrDefault<bool>("rebalanceScales", true)),
     chemJacobian_(dict.getOrDefault<bool>("chemJacobian", true)),
-    chemCrossJacobian_(dict.getOrDefault<bool>("chemCrossJacobian", false))
+    chemCrossJacobian_(dict.getOrDefault<bool>("chemCrossJacobian", false)),
+    adaptiveForcing_(dict.getOrDefault<bool>("adaptiveForcing", true))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -1247,6 +1248,8 @@ void Foam::snesNewtonSolver::solveOuterStep
       // no NaN was present, and the SNES norms were falling cleanly (3.5e2 ->
       // 1.3e-9 in 5 iterations) on the steps before it.
       + " -ksp_type fgmres -ksp_gmres_restart 100"
+      // Inexact Newton: see adaptiveForcing_ for the measurement.
+      + (adaptiveForcing_ ? " -snes_ksp_ew" : word(""))
       + " -mat_mffd_type wp"
       // FIELDSPLIT defaults, baked in rather than left to the environment so
       // a long unattended run is reproducible. Schur is the only fieldsplit

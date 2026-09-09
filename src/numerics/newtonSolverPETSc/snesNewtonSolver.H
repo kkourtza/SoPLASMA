@@ -198,6 +198,34 @@ class snesNewtonSolver
     //  Default FALSE until measured on this case.
     bool chemCrossJacobian_;
 
+    //- INEXACT NEWTON with an Eisenstat-Walker adaptive forcing term
+    //  (PETSc `-snes_ksp_ew`): choose each linear solve's tolerance from how
+    //  well the previous Newton step actually reduced ||F||, instead of
+    //  solving every one to a fixed rtol.
+    //
+    //  Early Newton iterates are far from the root, so solving their linear
+    //  systems tightly buys nothing -- the step is going to be superseded. This
+    //  is standard JFNK practice and is what Knoll & Keyes mean by an inexact
+    //  Newton method.
+    //
+    //  MEASURED 2026-09-10 on the grubert2009_ballast400 pre-ignition state,
+    //  first 90 steps, everything else equal:
+    //
+    //      without   mean dt 1.917e-10   KSP failure rate 2.6%
+    //      with      mean dt 3.186e-10   KSP failure rate 0.1%
+    //                        +80%                         13x fewer
+    //
+    //  IT FAILED WHEN FIRST TRIED, and why it failed matters: that test ran
+    //  against a Pmat that was missing both the Schur coupling block and the
+    //  ionisation derivative. An adaptive forcing term reads the quality of the
+    //  Newton steps it is given; with a Jacobian missing the dominant physics
+    //  those steps carry no signal, so adapting to them is worthless. Fixing
+    //  the matrix is what made this option pay.
+    //
+    //  Default TRUE. It is a real behaviour change for every existing case, so
+    //  it is switchable and the measurement above is the justification.
+    bool adaptiveForcing_;
+
     //- Whether the LAST SNES solve converged. Reported through
     //  lastSolveConverged() instead of being turned into a FatalError, so a
     //  step Newton cannot solve is DISCARDED AND RETRIED at a shorter dt via

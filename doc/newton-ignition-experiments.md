@@ -447,6 +447,48 @@ that make the KSP's job easier rather than better-preconditioned:
 * `-snes_linesearch_type bt -snes_linesearch_order 2` — 20% KSP failure rate.
   Stopped early.
 
+### 15. EISENSTAT–WALKER — +80% on dt, and a 13× drop in linear-solve failures
+
+The single largest gain of the night, and it is the option that **failed** in
+the first sweep (4). It failed there because it ran against the BROKEN Pmat: an
+adaptive forcing term chooses the linear tolerance from how well the previous
+Newton step actually reduced `||F||`, so it needs a Jacobian whose steps mean
+something. With the Schur coupling (10) and the ionisation derivative (12) in
+place, it finally has one.
+
+All arms: same restart state, `chemJacobian true` unless stated, first 90 steps.
+
+| arm | mean dt | vs baseline | KSP failure |
+|---|---|---|---|
+| `chemJacobian off` (baseline) | 1.773e-10 | — | 2.2% |
+| `chemJacobian on` | 1.917e-10 | +8% | 2.7% |
+| `-ksp_rtol 1e-3` | 2.015e-10 | +14% | 2.1% |
+| `-mat_mffd_type ds -ksp_rtol 1e-3` | 2.310e-10 | +30% | 1.6% |
+| **`-snes_ksp_ew`** | **3.190e-10** | **+80%** | **0.2%** |
+| `-fieldsplit_transport_ksp_type gmres` (5 its) | 1.856e-10 | +5% | 4.0% |
+| `-fieldsplit_phi_pc_type hypre` (retest) | 1.618e-10 | **−9%** | 2.6% |
+| `-pc_fieldsplit_schur_precondition selfp` (retest) | 1.750e-10 | −1% | 3.2% |
+
+Note that hypre and `selfp`, retested against the CORRECTED Pmat, are still no
+help — so their earlier dismissal stands on better evidence than it did.
+
+**This is the pattern of the whole night:** the preconditioner options were
+never the problem, and were never going to be, while the matrix was missing
+physics. Once the Pmat was right, the one option that adapts to the Jacobian's
+actual quality paid immediately.
+
+### 16. `chemCrossJacobian` — MY OWN IDEA, AND IT HURTS
+
+Recorded prominently because it was a plausible follow-up to (12) and is wrong.
+Approximating ALL of a species' production as first order in `n_e` gives
+
+    mean dt 1.358e-10 against 1.904e-10 with it off   -- MINUS 29%
+
+The approximation is right for electron-impact channels and wrong for
+ion-neutral and recombination ones, and evidently the wrong part dominates.
+Default stays FALSE. Do not turn it on without deriving the real per-reaction
+derivative.
+
 ## Still untested (next, in priority order)
 
 1. **Per-CELL scaling.** `sX` is one scalar per FIELD. An ignited discharge has
