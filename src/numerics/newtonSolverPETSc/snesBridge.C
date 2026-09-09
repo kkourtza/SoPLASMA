@@ -305,7 +305,47 @@ int solveWithSNES
         PC pc;
         KSPGetPC(ksp, &pc);
 
-        if (Pmat && nFieldBlocks > 1)
+        // BOUNDED AND FIELDSPLIT ARE MUTUALLY EXCLUSIVE TODAY, and the
+        // reason is structural rather than a bug of ours.
+        //
+        // SNESVINEWTONRSLS calls SNESVIResetPCandKSP() on every active-set
+        // change, which does KSPReset() + KSPResetFromOptions(); PCReset_FieldSplit
+        // then DESTROYS the user-supplied index sets (ISDestroy(&ilink->is)).
+        // The very next call, PCFieldSplitRestrictIS(), therefore operates on a
+        // fieldsplit with no splits left, and PCSetUp fails with PETSc's
+        // "Unhandled case, must have at least two fields, not 0".
+        //
+        // Note the `FromOptions` in that reset: splits defined by OPTIONS are
+        // regenerated, but option-defined splits require an INTERLACED block
+        // size, and our DOF layout is field-major. The real fix is a
+        // DM-based field decomposition (-pc_fieldsplit_dm_splits, the pattern
+        // in PETSc's own src/snes/tutorials/ex28.c), which lets PETSc rebuild
+        // the splits after any reset. Until that exists, choose explicitly and
+        // say so, rather than letting the run die inside PCSetUp.
+        if (Pmat && nFieldBlocks > 1 && lowerBounds)
+        {
+            static bool warned = false;
+            if (!warned)
+            {
+                warned = true;
+                PetscPrintf
+                (
+                    petscComm,
+                    "snesNewtonSolver: BOUNDED solve requested, so the "
+                    "assembled-Pmat PCFIELDSPLIT preconditioner is disabled "
+                    "and the physics-based shell is used instead.\n"
+                    "    They are mutually exclusive today: the bounded "
+                    "solver resets the KSP on every active-set change, which "
+                    "destroys fieldsplit's index sets. A DM-based field "
+                    "decomposition is the fix.\n"
+                    "    Set `bounded false` in the newtonSolver dict to use "
+                    "fieldsplit, at the cost of the density floor being a "
+                    "post-solve clamp again.\n"
+                );
+            }
+        }
+
+        if (Pmat && nFieldBlocks > 1 && !lowerBounds)
         {
             // PCFIELDSPLIT on the ASSEMBLED Pmat.
             //
