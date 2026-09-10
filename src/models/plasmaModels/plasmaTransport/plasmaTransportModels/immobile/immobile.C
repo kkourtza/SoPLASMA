@@ -80,6 +80,31 @@ void immobile::updateFluxes
         << abort(FatalError);
 }
 
+tmp<volScalarField> immobile::mu() const
+{
+    // Zero, not an error: see immobile.H for why the Newton outer solver
+    // assembles an immobile species through the ordinary drift-diffusion
+    // path with zero coefficients rather than branching on the model type.
+    return volScalarField::New
+    (
+        "mu_" + species_.speciesName(specieIndex_),
+        mesh(),
+        dimensionedScalar(dimensionSet(-1, 0, 2, 0, 0, 1, 0), Zero)
+    );
+}
+
+
+tmp<volScalarField> immobile::D() const
+{
+    return volScalarField::New
+    (
+        "D_" + species_.speciesName(specieIndex_),
+        mesh(),
+        dimensionedScalar(dimensionSet(0, 2, -1, 0, 0, 0, 0), Zero)
+    );
+}
+
+
 tmp<volScalarField> immobile::electricalConductivity() const
 {
     FatalErrorInFunction

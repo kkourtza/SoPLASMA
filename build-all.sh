@@ -5,6 +5,12 @@ source /usr/lib/openfoam/openfoam2412/etc/bashrc >/dev/null 2>&1
 export SoPLASMA=$HOME/soplasma-scratch
 export SoPLASMA_SRC=$HOME/soplasma-scratch/src
 export SoPLASMA_ETC=$HOME/soplasma-scratch/etc
+# The project's OWN bashrc, AFTER OpenFOAM's: it sets PETSC_DIR to the locally
+# built ThirdParty/petsc-3.24.0. Without it the PETSc components cannot be
+# built here at all -- and libplasmaNewtonSolverPETSc then goes STALE silently
+# and segfaults against a changed library ABI, which is exactly what happened
+# on 2026-09-10 after a new virtual was added to plasmaTransportModel.
+source "$SoPLASMA_ETC/bashrc" >/dev/null 2>&1
 cd "$SoPLASMA" || exit 1
 
 # Never rebuild over a library a running solver has mapped. See the script for
@@ -28,6 +34,10 @@ BUILD_DIRS=(
   src/models/plasmaModels/plasmaChemistry
   src/models/plasmaModels/plasmaReactionRates
   src/models/plasmaModels/plasmaTransport
+  # SEPARATE TARGET, and easy to miss: `wmake src/numerics` builds
+  # libplasmaNumerics and NOT libplasmaNewtonSolverPETSc, exiting 0
+  # having left it untouched. It must be named explicitly.
+  src/numerics/newtonSolverPETSc
   src/bcs
   src/tools
   src/applications/utilities/foamPlasmaCreateSpeciesFields
@@ -38,6 +48,7 @@ BUILD_DIRS=(
   src/applications/utilities/testWallFlux
   src/applications/utilities/testVibRelax
   src/applications/utilities/testDischargeCurrent
+  src/applications/utilities/testPoissonSymmetry
   src/applications/utilities/testAitken
   src/applications/utilities/testCoulombHeating
   src/applications/utilities/testFluxScheme

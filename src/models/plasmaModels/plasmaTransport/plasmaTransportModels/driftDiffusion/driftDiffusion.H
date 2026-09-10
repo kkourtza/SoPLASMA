@@ -170,6 +170,11 @@ public:
         //- Return diffusive charge source [C/m3/s]
         virtual tmp<volScalarField> diffusiveChargeSource() const override;
 
+        virtual bool providesTransportCoefficients() const override
+        {
+            return true;
+        }
+
         virtual tmp<volScalarField> mu() const override
         {
             return mobilityModel_->mu();

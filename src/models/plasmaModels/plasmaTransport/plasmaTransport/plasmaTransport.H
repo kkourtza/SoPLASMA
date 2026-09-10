@@ -874,6 +874,39 @@ public:
         //  without re-deriving or duplicating the stiff integrator itself.
         //  Valid only after solve() has run at least once this outer
         //  iteration; empty (zero-sized) under the legacy/non-mechanism path.
+        //- Are chemP()/chemL() safe to call, and sized to this mesh?
+        //
+        //  MUST be checked before chemP()/chemL(): they index chemP_/chemL_
+        //  directly, so on a path that never sizes them -- `chemistry/solver
+        //  explicitSource`, which adds its source straight to the matrix --
+        //  chemP(0) reads an EMPTY List and segfaults. That is how it
+        //  presented on 2026-09-10: a SEGV inside PETSc's residual
+        //  evaluation with no usable stack. Added so a caller can ask
+        //  instead of crash.
+        bool chemistrySourcesAvailable() const
+        {
+            if
+            (
+                chemP_.size() != species_.nSpecies()
+             || chemL_.size() != species_.nSpecies()
+            )
+            {
+                return false;
+            }
+            forAll(chemP_, s)
+            {
+                if
+                (
+                    chemP_[s].size() != mesh_.nCells()
+                 || chemL_[s].size() != mesh_.nCells()
+                )
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         const scalarField& chemP(const label i) const { return chemP_[i]; }
         const scalarField& chemL(const label i) const { return chemL_[i]; }
 

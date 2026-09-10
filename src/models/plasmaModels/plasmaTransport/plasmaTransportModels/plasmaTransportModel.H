@@ -186,6 +186,20 @@ public:
         //  matching nEqn()'s own formula, without calling nEqn()+.residual()
         //  itself (confirmed broken in parallel for that specific usage --
         //  see [[fvmatrix-residual-broken-in-parallel-use-fvc-instead]]).
+        //- Does this model expose mu() and D(), i.e. can a caller that
+        //  assembles the species equation ITSELF (rather than via nEqn())
+        //  get the coefficients it needs? The Newton outer solver needs this.
+        //
+        //  Default FALSE, deliberately: a model that transports but does not
+        //  expose its coefficients must keep hitting the fatal errors below,
+        //  because silently assembling it WITHOUT its transport would drop
+        //  real physics -- the worse failure. `diffusion` is such a model
+        //  today and is correctly still refused.
+        virtual bool providesTransportCoefficients() const
+        {
+            return false;
+        }
+
         virtual tmp<volScalarField> mu() const
         {
             FatalErrorInFunction

@@ -370,6 +370,34 @@ void residualCallback
     // phi_s reconstructed EXACTLY as driftDiffusion::convectivePhi() builds
     // it (Z * interpolate(mu) * phiE) -- same formula, same coefficient
     // fields (mu()/D(), just refreshed at step 3), not a re-derivation.
+    // chemP_/chemL_ ARE NOT SIZED ON EVERY CHEMISTRY PATH, and reading them
+    // unsized is a SEGV inside PETSc's residual evaluation with no usable
+    // stack -- which is exactly how it presented (2026-09-10, on
+    // positiveStreamer_fixedMesh). plasmaTransport's own comment states the
+    // rule: computeChemistrySources() runs only for `solver ode`, while
+    // `adaptive`, `adaptiveError` and `implicitRate` go through
+    // mechanismSourceTerms(); `explicitSource` does NEITHER and adds its
+    // source straight to the matrix, so there is nothing here to read.
+    //
+    // A guard that merely SKIPPED the source would be worse than the crash:
+    // it would silently solve a streamer with no chemistry at all. So this
+    // refuses, and names the fix.
+    if (!transport.chemistrySourcesAvailable())
+    {
+        FatalErrorInFunction
+            << "outerSolver newton: the chemistry production/loss fields"
+            << " chemP/chemL are not available for this case." << nl
+            << "    This solver builds its own species residual and needs"
+            << " them; they are populated by chemistry/solver `ode`,"
+            << " `adaptive`, `adaptiveError` and `implicitRate`, but NOT"
+            << " by `explicitSource`, which adds its source directly to"
+            << " the matrix instead." << nl
+            << "    WHAT TO DO: set chemistry/solver to `adaptiveError`"
+            << " (or another of the above) in the case, or use"
+            << " outerSolver picard." << nl
+            << exit(FatalError);
+    }
+
     for (label s = 0; s < ctx.nSpecies; ++s)
     {
         const volScalarField& ns = species.numberDensity(s);
@@ -1031,13 +1059,25 @@ void Foam::snesNewtonSolver::solveOuterStep
 
     for (label s = 0; s < nSpecies; ++s)
     {
-        if (!isA<driftDiffusion>(transport.transportModel(s)))
+        // The requirement is COEFFICIENTS, not a specific model type: this
+        // solver assembles the species equation itself (fvc::flux + the
+        // case's div/laplacian schemes), so any model that can hand over
+        // mu() and D() works. `immobile` qualifies by returning ZERO for
+        // both, which reduces the same assembly to ddt(n) == sources with
+        // no branching here -- see immobile.H.
+        //
+        // Was `isA<driftDiffusion>` until 2026-09-10, which refused the
+        // positiveStreamer benchmark outright because it PINS
+        // `ionTransport immobile`.
+        if (!transport.transportModel(s).providesTransportCoefficients())
         {
             FatalErrorInFunction
-                << "outerSolver newton (type SNES) supports only"
-                << " driftDiffusion transport so far -- species '"
+                << "outerSolver newton (type SNES) needs a transport model"
+                << " that exposes mu() and D() -- species '"
                 << species.speciesNames()[s] << "' uses '"
-                << transport.transportModel(s).modelName() << "'." << nl
+                << transport.transportModel(s).modelName()
+                << "', which does not." << nl
+                << "    Supported today: driftDiffusion, immobile." << nl
                 << "    See docs/design/newton-outer-solver-design.md."
                 << nl << exit(FatalError);
         }
