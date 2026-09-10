@@ -858,6 +858,89 @@ this solver already writes per step.
 `localEnergyEnergyModel.C`: it is for a DIFFERENT fault. Its own criterion is
 "a diag/V near zero is the SIGFPE"; here it read 3.08e11 and 3.55e11. Not this.
 
+### 25c. THE SIGFPE, RESOLVED: the INNER Schur solve broke down, and why
+
+**Proven, then fixed, then verified.** The chain, every link measured:
+
+```
+log line 1632862:  Linear fieldsplit_transport_ solve did not converge
+                     due to DIVERGED_BREAKDOWN iterations 150
+log line 1632872:  [0]PETSC ERROR: Floating point exception
+```
+
+Ten lines apart, and that breakdown was **the only inner-solve failure in the
+entire run** -- out of ~40,000 inner solves. The `phi` split converged every
+time, including immediately before the fault.
+
+**The mechanism.** The `phi` inner solve took **55, 65, 71, 71, 82, 85**
+iterations on successive applications. The Schur complement
+`S = A_tt - A_tphi * A_phiphi^-1 * A_phit` applies an inner `phi` solve every
+time it is applied, so **S's action was not a fixed linear operator** -- while
+PETSc's default inner KSP is plain GMRES, which assumes it is. GMRES's Arnoldi
+recurrence then divided by a vanishing norm, produced the inf/NaN, and the next
+`MatMult` raised SIGFPE.
+
+**This is the SAME defect as section 3, one level down.** FGMRES replaced GMRES
+at the OUTER level for exactly this reason ("the preconditioner varies between
+Krylov iterations"). The identical reasoning was never applied to the inner
+Schur solve, which sat at PETSc defaults because only
+`-pc_fieldsplit_schur_fact_type full` was ever set.
+
+**The fix needs NO code change** -- case-level `petscOptions`:
+
+```
+-fieldsplit_phi_ksp_type preonly -fieldsplit_phi_pc_type lu
+-fieldsplit_transport_ksp_type fgmres
+```
+
+The first makes the inner solve EXACT, so `S` becomes a genuinely fixed
+operator -- removing the cause rather than tolerating it. The second is the
+section-3 remedy as a safety net.
+
+**Verified, restarting 5 steps before the fault (rule 41 earning its keep):**
+
+| check | result |
+|---|---|
+| rule 42 -- did the knob move? | `phi` solve = **1 iteration x 692,813 applications** (was 55-85, varying) |
+| crash point 1.953936e-06 (`fpe3`) | **PASSED** |
+| crash point 1.954433e-06 (`grubert_steady`) | **PASSED** |
+| SIGFPE / DIVERGED_BREAKDOWN | **0 / 0** |
+| reached `endTime` | **yes** (`End` written) |
+| dt max | **1.157e-10**, ABOVE the 7.47e-11 the unfixed run died at |
+
+**What the Pmat scan contributed, and it was decisive by ELIMINATION.** It
+reported zero non-finite entries and `max|a| ~ 2.4e7` -- stable, and 2.44e7 on
+the very step that crashed. That is what redirected the hunt from the matrix to
+the vector: overflow at `a ~ 1e7` needs a vector element above `~1e301`, so the
+enormous quantity had to be manufactured inside the solve. Without that the
+obvious suspects (negative trial densities under `bounded false`,
+`Te = nEps/n_e` at vanishing `n_e`) would have absorbed the day.
+
+**REMAINING WEAK SPOT, not fixed:** 4 of 3,999 transport solves hit
+`DIVERGED_ITS` at **10,000 iterations**. Soft non-convergence, not breakdown,
+but the Schur complement is badly conditioned and occasionally very expensive.
+A preconditioner for the Schur block is the obvious next gain.
+
+**A correction on the way there.** I reported the energy row
+`d(nEps_e)/d(ePotential)` spiking ~5x on the failing steps and tied it to the
+known-missing `d(Psrc)/dphi`. **Wrong -- I mis-assigned the step.** The log-line
+offsets show the failure comes BEFORE the spiking Pmat report, so the spike
+belongs to the RETRY's assembly, downstream of the failure. The failing step's
+own matrix is entirely ordinary (2.47e7, 2.55e7, 2.49e7 -- electron row, like
+the ~200 healthy steps). `d(Psrc)/dphi` is still a real gap and still a suspect
+for the LINE-SEARCH failures, but on the argument that an incomplete row gives
+a wrong direction at normal magnitudes -- NOT on magnitude evidence.
+
+**Two restart traps found doing this** (both now in rule 41):
+* A run REWRITES the snapshot it restarts from, `uniform/time`'s `deltaT`
+  included, so a second restart from "the same" snapshot starts from a
+  different dt. The FIELDS stay byte-identical, so it is invisible unless the
+  time state is checked.
+* `timePrecision 6` cannot address a directory OpenFOAM wrote with 7 digits --
+  it auto-bumps precision when writing to keep time names unique, then fails to
+  find its own directory on restart. `startFrom latestTime` does NOT help;
+  raising `timePrecision` does.
+
 ### 25b. Explicit vs semi-implicit Poisson on GRUBERT: 110-400x the timestep
 
 Six arms, all restarted from the same `1.940229e-06` snapshot. The Poisson
