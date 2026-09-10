@@ -52,7 +52,7 @@ Set it in `configuration/config` and pass it through as
 
 The settings `pseudoSteady` implies interlock across three files, and getting
 one wrong either aborts the run or — worse — silently destroys its
-convergence. Both were measured (see `doc/steady-mode-spec.md`):
+convergence. Both were measured (see `docs/design/steady-mode-spec.md`):
 
 - `onNonConvergence retryStep` retries by *shortening* `deltaT`, which is
   meaningless once the step is fixed.

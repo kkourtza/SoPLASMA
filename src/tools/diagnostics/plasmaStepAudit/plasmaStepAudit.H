@@ -35,7 +35,7 @@ Description
 
         *** PER-STEP UPDATE DID NOT RUN: updateChargeDensity ***
 
-    See CLAUDE.md rule 27 and doc/case-monitoring-plan.md.
+    See CLAUDE.md rule 27 and docs/design/case-monitoring-plan.md.
 
     Usage: declare what must run once at set-up, record each call, and close
     the step.
@@ -146,7 +146,7 @@ public:
                     << "    converges, and a `break` voids that promise."
                     << nl << nl
                     << "    See CLAUDE.md rule 27 and"
-                    << " doc/case-monitoring-plan.md." << nl
+                    << " docs/design/case-monitoring-plan.md." << nl
                     << exit(FatalError);
             }
         }

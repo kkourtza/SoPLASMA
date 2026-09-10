@@ -78,7 +78,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     }
 
     // ONE CIRCUIT TODAY. Several ballasted electrodes means a netlist, which
-    // is stage 2 of doc/external-circuit-plan.md; refusing is better than
+    // is stage 2 of docs/design/external-circuit-plan.md; refusing is better than
     // driving the first one and silently ignoring the rest.
     if (ballasted.size() > 1)
     {
@@ -87,7 +87,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
             << ballasted << nl
             << "    Only ONE external circuit is supported today. Coupling"
             << " several electrodes through one network is a netlist -- stage"
-            << " 2 of doc/external-circuit-plan.md." << nl
+            << " 2 of docs/design/external-circuit-plan.md." << nl
             << exit(FatalError);
     }
 
@@ -116,7 +116,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
     // ONE TOPOLOGY TODAY, AND UNKNOWN NAMES ARE FATAL.
     //
     // `type` is the extension point for the staged design in
-    // doc/external-circuit-plan.md. Accepting an unrecognised name and
+    // docs/design/external-circuit-plan.md. Accepting an unrecognised name and
     // defaulting to a series resistor would mean a case asking for an RC
     // ballast silently got a resistive one -- the class of failure where the
     // run completes and the answer is for a different circuit.
@@ -128,7 +128,7 @@ Foam::plasmaExternalCircuit::plasmaExternalCircuit(const fvMesh& mesh)
             << "circuit/type is `" << type_
             << "`, which is not implemented." << nl
             << "    Available: seriesResistor, seriesRC, currentSource" << nl
-            << "    Planned (doc/external-circuit-plan.md): seriesRLC,"
+            << "    Planned (docs/design/external-circuit-plan.md): seriesRLC,"
             << " matchedRF." << nl
             << exit(FatalIOError);
     }

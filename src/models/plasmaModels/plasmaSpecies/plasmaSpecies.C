@@ -1225,7 +1225,7 @@ void Foam::plasmaSpecies::verifyChargeDensity(const label everyN) const
             << "      * a charged species missing from chargedSpeciesIDs_"
             << " (there are " << nCharged << ")" << nl
             << "      * a sign or unit error in speciesCharges_" << nl << nl
-            << "    See CLAUDE.md rule 27 and doc/case-monitoring-plan.md."
+            << "    See CLAUDE.md rule 27 and docs/design/case-monitoring-plan.md."
             << nl << exit(FatalError);
     }
 }

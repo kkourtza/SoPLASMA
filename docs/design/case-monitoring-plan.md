@@ -62,7 +62,7 @@ Today's bug becomes:
 
     *** updateChargeDensity() ran 0 times in step 41273 (expected >= 1) ***
         Poisson's source is STALE. Something exited the corrector loop
-        before the update. See doc/case-monitoring-plan.md.
+        before the update. See docs/design/case-monitoring-plan.md.
 
 That is a one-line, self-explaining failure instead of a day.
 

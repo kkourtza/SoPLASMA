@@ -238,7 +238,7 @@ int main(int argc, char *argv[])
     plasmaTransport transport(gasMesh(), species);
 
     //- Genuine Newton-type outer solver, as an alternative to the segregated
-    //  Picard sweep above -- see doc/newton-outer-solver-design.md. A
+    //  Picard sweep above -- see docs/design/newton-outer-solver-design.md. A
     //  NUMERICS switch (`outerCoupling.outerSolver`), not a generator/
     //  semantic-layer concept: it changes HOW the same physics is solved,
     //  not WHAT the physics is. Default `picard` reproduces every existing
@@ -373,7 +373,7 @@ int main(int argc, char *argv[])
             // 4.92% -> ~1%, dt 3.4e-12 -> 7.4e-11 (22x), the ratio reaching
             // 308, and VERIFIED accurate to ~1% in n_e and Emag against the
             // same scheme run at dt <= 2e-12. Full account in
-            // doc/newton-ignition-experiments.md section 23.
+            // docs/design/newton-ignition-experiments.md section 23.
             //
             // SWITCHED, NOT WARNED ABOUT. A warning leaves the user running an
             // inconsistent formulation that merely LOOKS slow, which is the
@@ -427,7 +427,7 @@ int main(int argc, char *argv[])
             Info<< "outerCoupling.outerSolver: newton -- the segregated"
                 << " Picard sweep is REPLACED for this run, not merely"
                 << " preconditioned by it. See"
-                << " doc/newton-outer-solver-design.md." << endl;
+                << " docs/design/newton-outer-solver-design.md." << endl;
         }
     }
 
@@ -704,7 +704,7 @@ int main(int argc, char *argv[])
                 if (useNewton)
                 {
                     // Genuine Newton outer step, REPLACING the SOLVE
-                    // sequence below -- see doc/newton-outer-solver-design.md.
+                    // sequence below -- see docs/design/newton-outer-solver-design.md.
                     // The concrete implementation reaches into em/species/
                     // transport/energy itself (including
                     // transport.electricalConductivity()/diffusiveChargeSource()

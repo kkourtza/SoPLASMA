@@ -25,7 +25,8 @@ Description
       5) A SMALLER diffusion length gives a SMALLER (never larger)
          epsilon_eff -- the direction that matters: getting L_diff wrong
          on the small side silently weakens the very correction this term
-         exists to supply (see doc/coulomb-heating-term-plan.md).
+         exists to supply (design note not written; see
+         docs/design/electron-energy-balance.md for the surrounding physics).
       6) A sweep at Eliseev et al.'s own Fig. 1(a) conditions (Ar, p = 1
          Torr, R = 3.85 cm used as the confinement length, epsilon_1 =
          11.55 eV), reported for visual comparison against the published

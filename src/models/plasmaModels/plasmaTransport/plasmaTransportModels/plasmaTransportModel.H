@@ -181,7 +181,7 @@ public:
         //  to return.
         //
         //  Added so an explicit (fvc::) residual for the JFNK outer solver
-        //  (doc/newton-outer-solver-design.md) can reconstruct THIS species'
+        //  (docs/design/newton-outer-solver-design.md) can reconstruct THIS species'
         //  convective/diffusive flux at an ARBITRARY trial state, exactly
         //  matching nEqn()'s own formula, without calling nEqn()+.residual()
         //  itself (confirmed broken in parallel for that specific usage --

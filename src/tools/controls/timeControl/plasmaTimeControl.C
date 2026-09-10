@@ -128,7 +128,7 @@ void plasmaTimeControl::read()
                    " sweep. `pseudoSteady` is the supported route -- it keeps"
                    " ddt and demotes" << nl
                 << "    deltaT to a relaxation parameter. See"
-                   " doc/steady-mode-spec.md."
+                   " docs/design/steady-mode-spec.md."
                 << exit(FatalError);
         }
 
@@ -847,7 +847,7 @@ void plasmaTimeControl::read()
                " configuration/config" << nl
             << "        ddtSchemes        backward;" << nl
             << "    which keeps ddt and demotes deltaT to a relaxation"
-               " parameter. See doc/steady-mode-spec.md."
+               " parameter. See docs/design/steady-mode-spec.md."
             << exit(FatalError);
     }
 
@@ -2247,7 +2247,7 @@ void plasmaTimeControl::configureOuterCoupling(fvMesh& mesh)
 
     // GENUINE NEWTON, not a Picard corrector count. A converged
     // plasmaNewtonSolver::solveOuterStep() call already IS the fully
-    // coupled nonlinear solution (doc/newton-outer-solver-design.md) --
+    // coupled nonlinear solution (docs/design/newton-outer-solver-design.md) --
     // pimpleControl's own residualControl mechanism has no way to observe
     // that (it reads native fvMatrix::solve() residuals, none of which the
     // Newton path ever produces), so leaving it unconfigured meant PIMPLE

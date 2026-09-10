@@ -137,7 +137,7 @@ private:
     //  so it can also be called from OUTSIDE solve() (the Newton outer
     //  solver's refreshChemistrySources() wrapper below needs this to have
     //  run before mechanismSourceTerms() is safe to call standalone -- see
-    //  doc/newton-outer-solver-design.md). solve() itself just calls this.
+    //  docs/design/newton-outer-solver-design.md). solve() itself just calls this.
     void refreshChemistryTimestepState();
 
     //- Mechanism-driven species sources. Returns false when no mechanism is
@@ -900,7 +900,7 @@ public:
         //  unlike solve(), this does not touch plasmaOuterRelaxation (whose
         //  contribute() hard-aborts if called twice within one corrector --
         //  a real wiring hazard found while designing the Newton outer
-        //  solver, see doc/newton-outer-solver-design.md), does not solve
+        //  solver, see docs/design/newton-outer-solver-design.md), does not solve
         //  any transport matrix, and does not update fluxes. The function's
         //  own comment already documents it as idempotent/safe to call
         //  repeatedly ("recomputing the source each outer iteration is

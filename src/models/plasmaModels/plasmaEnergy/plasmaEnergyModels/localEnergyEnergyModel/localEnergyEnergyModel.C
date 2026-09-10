@@ -406,7 +406,7 @@ localEnergyEnergyModel::localEnergyEnergyModel
     // equilibrium. The comment above stated an intent the test could not
     // implement. Found by review while chasing a JFNK residual defect: the
     // same one-shot seed was firing inside the Newton residual, which is how
-    // it came to light (see doc/newton-outer-solver-design.md).
+    // it came to light (see docs/design/newton-outer-solver-design.md).
     //
     // The test now asks the question directly: is the time we are starting
     // from the EARLIEST one this case has on disk? If we came from a LATER

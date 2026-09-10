@@ -16,7 +16,7 @@ Description
     Runtime-selectable interface for a genuine Newton-type outer solver,
     replacing the segregated Picard sweep (Poisson -> species -> electron
     energy) for cases where that fixed-point iteration cannot converge --
-    see doc/newton-outer-solver-design.md for the full diagnosis (a
+    see docs/design/newton-outer-solver-design.md for the full diagnosis (a
     negative-differential-resistance region of the discharge's own
     current-voltage characteristic) and the JFNK/PETSc-SNES proofs of
     concept this implementation is built on.

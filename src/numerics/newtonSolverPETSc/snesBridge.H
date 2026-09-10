@@ -84,7 +84,7 @@ extern const double snesNoBound;
 // equations, which makes F(u)=0 unreachable -- no Newton method can converge
 // to a state that its own residual does not call a root. Enforcing the same
 // floor as a CONSTRAINT inside the solve is the principled version, and it is
-// what makes a cold start possible at all (see doc/newton-outer-solver-design.md,
+// what makes a cold start possible at all (see docs/design/newton-outer-solver-design.md,
 // defect A).
 // ASSEMBLED PRECONDITIONING MATRIX, in coordinate (COO) form.
 //
@@ -122,7 +122,7 @@ struct SnesPmatCOO
     //  one field, which can be assembled explicitly and handed to AMG, whereas
     //  S_t is (nSpecies+1) x nCells and can only be APPLIED -- which is why it
     //  currently runs on ILU(0) of A11 and grinds. See
-    //  doc/schur-semiimplicit-poisson-preconditioner.md.
+    //  docs/design/schur-semiimplicit-poisson-preconditioner.md.
     bool schurOnPhi = false;
 
     //- OPTIONAL explicitly assembled approximation of the phi Schur

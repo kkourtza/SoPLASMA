@@ -6,7 +6,7 @@ Description
     PROOF OF CONCEPT, step 2: validates the BLOCK/multi-field DOF layout
     and a multi-equation, Gauss-Seidel-style physics-based preconditioner,
     BEFORE wiring in the real Poisson+species+energy physics
-    (doc/newton-outer-solver-design.md). Deliberately kept separate from
+    (docs/design/newton-outer-solver-design.md). Deliberately kept separate from
     the real system's complexity (Scharfetter-Gummel schemes, chemistry
     sources, LMEA transport lookups) so a bug in the BLOCK machinery itself
     cannot be confused with a bug in the real equations' physics -- the
@@ -28,7 +28,7 @@ Description
         R2(phi,phi2) = -D*lap(phi2) + phi^2    - f2
     computed via EXPLICIT fvc:: evaluation, per the fix in testSnesJFNK.C
     (fvm::+.residual() is NOT used for the outer residual anywhere in this
-    project -- see doc/newton-outer-solver-design.md and the
+    project -- see docs/design/newton-outer-solver-design.md and the
     fvmatrix-residual-broken-in-parallel-use-fvc-instead memory).
 
     Preconditioner: ONE block Gauss-Seidel sweep, mirroring the real

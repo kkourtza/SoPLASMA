@@ -108,7 +108,7 @@ but the answer depends entirely on which kind:
 ## Consequence for validation work (unchanged from the original finding)
 
 Any SoPLASMA case resembling a negative glow (Grubert 2009, the planned
-Carlsson/JC-PIC GD benchmark reproduction -- `doc/verification-map.md` item
+Carlsson/JC-PIC GD benchmark reproduction -- `docs/design/verification-map.md` item
 L) may plateau at a Te/density that is wrong regardless of run duration,
 floor settings, or circuit design, UNLESS AND UNTIL either (1) is wired up
 (improves bulk coefficients but not trapping) or a non-local kinetic

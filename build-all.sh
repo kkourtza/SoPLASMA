@@ -51,7 +51,7 @@ BUILD_DIRS=(
 # decision; an application in neither list is an OVERSIGHT, and the coverage
 # check below refuses to let one pass silently.
 SKIP_DIRS=(
-  # JFNK/PETSc-SNES proof of concept utilities (doc/newton-outer-solver-design.md).
+  # JFNK/PETSc-SNES proof of concept utilities (docs/design/newton-outer-solver-design.md).
   # Need PETSC_DIR/PETSC_ARCH from THIS project's own etc/bashrc (built
   # locally under ThirdParty/petsc-3.24.0), which this script does not
   # source (only OpenFOAM's own bashrc, line 4) -- adding them to

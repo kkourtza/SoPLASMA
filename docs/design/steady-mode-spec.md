@@ -1,7 +1,7 @@
 # Steady / pseudo-steady mode for SoPLASMA -- design spec
 
 2026-09-08. Written after measuring what does and does not work. Motivated by
-Almeida et al 2016 (see `doc/stationary-solver-plan.md` and the memory entry):
+Almeida et al 2016 (see `docs/design/stationary-solver-plan.md` and the memory entry):
 a 1D DC glow cannot be reached reliably by voltage-driven time-marching, and a
 stationary solver is "a tool of choice".
 

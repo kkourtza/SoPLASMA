@@ -618,7 +618,7 @@ is a magnitude taking its polarity from it.
 
 Written per step to `postProcessing/externalCircuit/circuit.csv`. Design,
 staging and what remains unverified:
-[`doc/external-circuit-plan.md`](doc/external-circuit-plan.md).
+[`docs/design/external-circuit-plan.md`](docs/design/external-circuit-plan.md).
 
 
 ## One semantic file describes every boundary

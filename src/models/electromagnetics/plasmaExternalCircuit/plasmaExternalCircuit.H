@@ -36,7 +36,7 @@ Description
     -- two expressions for one quantity is how they come to disagree.
 
     THIS IS THE FIRST AND SIMPLEST MODEL OF A CAPABILITY THAT SHOULD GROW:
-    see doc/external-circuit-plan.md for the staged design (RC and RLC
+    see docs/design/external-circuit-plan.md for the staged design (RC and RLC
     ballasts, current sources, matched RF networks, several electrodes on one
     netlist). `type` is the extension point; today it accepts `seriesResistor`
     only, and rejects anything else rather than silently doing something else.

@@ -4,7 +4,7 @@ Application
 
 Description
     PROOF OF CONCEPT for the JFNK outer-solver design
-    (doc/newton-outer-solver-design.md), 2026-09-09. Not yet the real
+    (docs/design/newton-outer-solver-design.md), 2026-09-09. Not yet the real
     3-field system -- validates the CORE mechanism first: can a residual
     evaluated on an OpenFOAM field be driven to zero by PETSc's
     matrix-free SNES, correctly in parallel, with a physics-based
@@ -141,7 +141,7 @@ struct PCContext
 // other OpenFOAM solve() call uses, confirmed correct in parallel via the
 // native-Picard isolation test). Unpreconditioned matrix-free JFNK on this
 // problem converged to a WRONG root in parallel while still satisfying the
-// requested relative residual drop -- see doc/newton-outer-solver-design.md.
+// requested relative residual drop -- see docs/design/newton-outer-solver-design.md.
 // dphi carries the SAME (homogeneous) BC types as phi: a correction must
 // vanish wherever phi itself is fixed by a Dirichlet BC.
 void pcApplyCallback

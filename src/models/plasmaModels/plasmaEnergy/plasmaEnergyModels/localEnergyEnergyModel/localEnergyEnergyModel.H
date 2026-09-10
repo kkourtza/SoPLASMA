@@ -238,7 +238,7 @@ private:
     //  variables to persistent members 2026-09-09 so an explicit (fvc::)
     //  residual can be built from OUTSIDE this class without re-deriving the
     //  chemistry-ODE hand-off (`chemOwnsSource_`) or the optional Coulomb-
-    //  heating term -- see doc/newton-outer-solver-design.md. Pure refactor:
+    //  heating term -- see docs/design/newton-outer-solver-design.md. Pure refactor:
     //  same formulas, same call site within eEqn(), same values.
     //  `mutable` for the same reason energyTransportRate_ is: eEqn() is const.
     mutable volScalarField jouleHeating_;

@@ -3,7 +3,7 @@
 2026-09-08. All six papers read (Bernstein-Holstein 1954 excluded -- paywalled,
 not fetched; the other five plus a bonus Tsendin 2010 review, all now in
 `Literature/non-local-kinetics/`). This follows directly from
-`doc/electron-electron-collisions-gap.md`, which identified non-local kinetic
+`docs/design/electron-electron-collisions-gap.md`, which identified non-local kinetic
 theory as the documented middle ground between SoPLASMA's local fluid
 closure and full PIC for the negative-glow trapping problem.
 

@@ -100,6 +100,6 @@ run.
    are recomputed by the mixed BC anyway, so they were outputs, not inputs --
    but the verification was still incomplete and reported as complete.)
 
-See also `doc/rules-postmortems.md` (A1, A2) -- both are instances of the same
+See also `../Projects/SoEEDF/docs/rules-postmortems.md` (A1, A2) -- both are instances of the same
 rule: a measurement is not evidence until you have shown it measured what you
 think.

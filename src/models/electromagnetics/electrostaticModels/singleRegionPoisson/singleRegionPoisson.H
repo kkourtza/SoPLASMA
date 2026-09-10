@@ -120,7 +120,7 @@ public:
         //  change) so the Newton outer solver can refresh these derived
         //  fields after writing a new trial ePotential directly, exactly as
         //  solve() already does internally -- see
-        //  doc/newton-outer-solver-design.md.
+        //  docs/design/newton-outer-solver-design.md.
         void updateDerivedFields();
 
     // Configuration

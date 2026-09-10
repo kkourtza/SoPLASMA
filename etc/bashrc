@@ -25,7 +25,7 @@ export SoPLASMA_SRC="$SoPLASMA/src"
 export SoPLASMA_THIRD_PARTY="$SoPLASMA/ThirdParty"
 
 # PETSc, built 2026-09-09 for the SNES/Newton outer-solver work (see
-# doc/newton-outer-solver-design.md). Overrides whatever OpenFOAM's own
+# docs/design/newton-outer-solver-design.md). Overrides whatever OpenFOAM's own
 # etc/bashrc set PETSC_DIR to (a nonexistent system path on this apt-style
 # OpenFOAM install) -- source THIS file after OpenFOAM's own bashrc so this
 # wins. Built project-locally rather than under the system OpenFOAM tree

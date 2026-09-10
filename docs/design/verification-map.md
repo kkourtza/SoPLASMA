@@ -171,7 +171,7 @@ wrong forms coincide. A unit bed only covers what it varies.
      diffusion timescale). Reproduce the 211 V case first; do not expect quick
      convergence at 600 V even in principle.
      Also worth noting: NO electron-electron (Coulomb) collision term exists
-     anywhere in SoPLASMA (see doc/electron-electron-collisions-gap.md) --
+     anywhere in SoPLASMA (see docs/design/electron-electron-collisions-gap.md) --
      the mechanism the source names as dominant for de-trapping the cold
      negative-glow population. A SoPLASMA reproduction may therefore plateau
      at the wrong bulk Te/density regardless of run length; comparing against

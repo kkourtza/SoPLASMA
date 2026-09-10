@@ -96,7 +96,7 @@ private:
             //  The single user-facing switch for steady operation, because the
             //  settings it implies INTERLOCK: assembling them by hand hits a
             //  fatal error or, worse, silently destroys convergence. Both
-            //  failures were MEASURED (see doc/steady-mode-spec.md):
+            //  failures were MEASURED (see docs/design/steady-mode-spec.md):
             //
             //    * `onNonConvergence retryStep` retries by SHORTENING deltaT,
             //      so it is meaningless once deltaT is fixed -- fatal.

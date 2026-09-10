@@ -309,7 +309,7 @@ maxSpeciesCo                        100;
 // reaching a stationary state: `deltaT` becomes a RELAXATION PARAMETER, the
 // time axis stops being physical, and adjustTimeStep is forced off so the step
 // cannot collapse. It also interlocks several settings across three files, so
-// it is set HERE and enforced in the solver -- see doc/steady-mode-spec.md.
+// it is set HERE and enforced in the solver -- see docs/design/steady-mode-spec.md.
 //
 // `steadyState` is deliberately NOT offered: dropping ddt leaves a segregated
 // species equation with no matrix diagonal, and the linear solver divides by

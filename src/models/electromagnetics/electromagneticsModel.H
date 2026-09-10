@@ -393,7 +393,7 @@ public:
         //  solver needs and what a Newton residual -- which already carries
         //  rho^{n+1} as an unknown -- must not have, because the charge
         //  relaxation is then counted twice and the coupled system has no
-        //  consistent root (doc/newton-ignition-experiments.md section 23).
+        //  consistent root (docs/design/newton-ignition-experiments.md section 23).
         //
         //  SAFE TO CHANGE MID-RUN, and the reason is specific to this field:
         //  ePotential has NO time derivative. It is recomputed from the charge

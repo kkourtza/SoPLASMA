@@ -887,7 +887,7 @@ void Foam::plasmaTransport::solveGasEnergy(const scalar dt)
 void plasmaTransport::refreshChemistryTimestepState()
 {
     // Extracted verbatim from solve()'s own "step 0", 2026-09-09, so the
-    // Newton outer solver (doc/newton-outer-solver-design.md) can trigger
+    // Newton outer solver (docs/design/newton-outer-solver-design.md) can trigger
     // this SAME per-timestep chemistry-state setup before calling
     // mechanismSourceTerms() directly (via refreshChemistrySources()) --
     // without it, chemN0_/chemExt_/etc. are never sized for a run that
@@ -2306,7 +2306,7 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     // streamer it overshot the saturated electron density before 1.5 ns and
     // then diverged. `adaptive` inherits the same linearisation.
     // TEST ONLY, 2026-09-09: bypassed under `outerSolver newton`
-    // (doc/newton-outer-solver-design.md), which forces nOuterCorrectors=1
+    // (docs/design/newton-outer-solver-design.md), which forces nOuterCorrectors=1
     // for a genuinely different reason -- see
     // plasmaTimeControl::configureOuterCoupling(). The Picard path below is
     // UNCHANGED: this guard still fires exactly as before whenever
