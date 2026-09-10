@@ -1857,6 +1857,126 @@ void Foam::snesNewtonSolver::solveOuterStep
         }
     }
 
+    // NON-FINITE PMAT SCAN, added 2026-09-10.
+    //
+    // A NaN or inf anywhere in the preconditioner matrix does NOT fail
+    // cleanly. It reaches PETSc, and the first MatMult inside
+    // PCApply_FieldSplit_Schur raises SIGFPE -- whose backtrace names only
+    // PETSc internals (MatMult_SeqAIJ / PCApply / KSPFGMRESCycle) and gives no
+    // hint which of the Jacobian blocks assembled above produced it. That is
+    // exactly how grubert_steady died at t=1.954e-6, and finding it took a gdb
+    // run over a 14 ns restart. One pass over the COO arrays costs nothing
+    // measurable against a SNES solve and names the BLOCK, the CELL and the
+    // VALUE instead.
+    //
+    // Deliberately FATAL, not a step rejection: a non-finite Jacobian entry is
+    // a defect in the assembly above, not the physical stiffness that
+    // retryStep exists to absorb. Masking it as a failed step would hide it.
+    {
+        const label nEnt = coo.nEntries();
+        const label* rr = coo.rows();
+        const label* cc = coo.cols();
+        const scalar* vv = coo.vals();
+        const label lStart = coo.globalRow(0, 0);
+
+        // TWO failure modes, not one. A non-finite entry is the obvious one.
+        // The other is an entry that is FINITE BUT ENORMOUS: MatMult computes
+        // sum(a_ij*x_j), so it can raise FE_OVERFLOW -- the same SIGFPE, at
+        // the same place in the same backtrace -- with every input finite.
+        // Checking only isfinite() would report "clean" and leave the crash
+        // unexplained. After the sX/sF scaling these entries should be O(1);
+        // 1e200 is far past anything a scaled Jacobian can legitimately hold
+        // and cannot be multiplied by anything above ~1e108 without
+        // overflowing.
+        const scalar hugeVal = 1e200;
+
+        label nBad = 0;
+        label firstBad = -1;
+        label maxAt = -1;
+        scalar maxAbs = 0;
+
+        for (label e = 0; e < nEnt; ++e)
+        {
+            const scalar av = Foam::mag(vv[e]);
+
+            if (std::isfinite(vv[e]) ? (av > hugeVal) : true)
+            {
+                if (firstBad < 0) { firstBad = e; }
+                ++nBad;
+            }
+
+            // NaN fails every comparison, so it never becomes the max; that is
+            // fine, the non-finite branch above already caught it.
+            if (std::isfinite(vv[e]) && av > maxAbs) { maxAbs = av; maxAt = e; }
+        }
+
+        const label nBadG = returnReduce(nBad, sumOp<label>());
+        const scalar maxAbsG = returnReduce(maxAbs, maxOp<scalar>());
+
+        // Name the block an entry lives in. Row layout is
+        // localStart + field*nCells + cell (blockMatrixCOO::globalRow).
+        const auto blockName = [&](const label f) -> word
+        {
+            if (f == 0) { return word("ePotential"); }
+            if (f >= 1 && f <= nSpecies)
+            {
+                return species.speciesNames()[f - 1];
+            }
+            if (lmea && f == 1 + nSpecies) { return word("nEps_e"); }
+            return word("field" + Foam::name(f));
+        };
+
+        const auto describe = [&](const label e) -> string
+        {
+            if (e < 0 || nCellsLocal <= 0) { return string("<none>"); }
+            const label rLoc = rr[e] - lStart;
+            const label cLoc = cc[e] - lStart;
+            return "d(" + blockName(rLoc/nCellsLocal) + ")/d("
+                 + blockName(cLoc/nCellsLocal) + ") at local cell "
+                 + Foam::name(rLoc % nCellsLocal);
+        };
+
+        if (nBadG > 0)
+        {
+            const bool nonFinite =
+                (firstBad >= 0 && !std::isfinite(vv[firstBad]));
+
+            FatalErrorInFunction
+                << "The Newton preconditioner matrix contains " << nBadG
+                << " unusable entr" << (nBadG == 1 ? "y" : "ies")
+                << " (non-finite, or |value| > " << hugeVal << ")." << nl
+                << "    First on this rank: " << describe(firstBad).c_str()
+                << nl
+                << "      value " << (firstBad >= 0 ? vv[firstBad] : 0)
+                << "   -- " << (nonFinite ? "NON-FINITE" : "finite but huge")
+                << nl
+                << "      (row " << (firstBad >= 0 ? rr[firstBad] : -1)
+                << ", col " << (firstBad >= 0 ? cc[firstBad] : -1)
+                << ", of " << nEnt << " entries; localStart " << lStart
+                << ", nCells " << nCellsLocal << ")" << nl
+                << "    Largest finite |entry| anywhere: " << maxAbsG
+                << "   at " << describe(maxAt).c_str() << nl
+                << nl
+                << "    This is an assembly defect, not physical stiffness."
+                << " Handing it to PETSc" << nl
+                << "    lets the first MatMult inside PCApply raise SIGFPE"
+                << " -- by overflow if the" << nl
+                << "    entries are merely huge -- with a backtrace naming"
+                << " only PETSc internals," << nl
+                << "    so it is refused here instead." << nl
+                << exit(FatalError);
+        }
+
+        // The magnitude TREND is the diagnostic, not just the final value: a
+        // fatal threshold alone cannot distinguish "my entries were fine, the
+        // overflow happened inside PETSc" from "my entries were 1e150 and the
+        // threshold was set too high". Printed every outer step so the
+        // approach to a crash is visible in the log. One line against the
+        // ~550 this solver already writes per step.
+        Info<< "    Pmat: " << nEnt << " entries, max|a| " << maxAbsG
+            << " at " << describe(maxAt).c_str() << endl;
+    }
+
     SnesPmatCOO pmatCOO;
     pmatCOO.n = int(coo.nEntries());
     pmatCOO.rows = coo.rows();

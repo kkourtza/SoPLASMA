@@ -776,6 +776,142 @@ Recorded so none of these is re-run. Every one was a plausible candidate.
 | initial guess outside the basin | linear extrapolation, equal N: ratios 1.00 / 1.01 / 1.01 |
 | "just needs more iterations" | most failing solves need 1,000-53,000 more; a minority need ~33 |
 
+### 25. `grubert_steady` died of a SIGFPE, and it is IN THE PRECONDITIONER MATRIX
+
+The run launched to answer "is steady state now reachable" (the user's step 1)
+**did not get there.** It aborted at `t = 1.954433e-6` — close to, but not the
+same as, Picard's death at `1.971771e-6`. This is a different failure from
+Picard's: dt was **6.9e-11 and set by the PI temporal controller**, so the
+explicit-Poisson gain held right up to the crash. Not a dt collapse.
+
+**Located, by gdb over a 14 ns restart from the `1.940229e-06` snapshot** (the
+snapshot existed because of rule 41 — this is the rule paying for itself):
+
+```
+#0  MatMult_SeqAIJ            <- the arithmetic fault
+#1  MatMult
+#2  PCApply_FieldSplit_Schur
+#3  PCApply
+#4  KSPFGMRESCycle
+#5  KSPSolve_FGMRES
+...
+#10 solveWithSNES
+#11 snesNewtonSolver::solveOuterStep
+```
+
+**This eliminates the whole class of hypotheses I would otherwise have spent
+the day on.** It is NOT in the residual evaluation, so it is not a trial
+iterate driving a density negative, not `Te = nEps/n_e` at a vanishing `n_e`,
+and not a rate-table lookup out of bounds — every one of which was a live
+candidate before the backtrace, and `bounded false` made the first of them
+look likely. `MatMult` only multiplies and adds; it cannot divide. So the
+assembled **preconditioner matrix already carried a non-finite or overflowing
+entry** before PETSc ever touched it.
+
+Two candidate sources remain, and they need different fixes:
+
+1. one of the Jacobian blocks assembled in `solveOuterStep` produces inf/NaN;
+2. the value is manufactured INSIDE the Schur application — `S = A_tt −
+   A_tφ·A_φφ⁻¹·A_φt` — most plausibly the inner `A_φφ⁻¹` solve reaching inf
+   before the `MatMult` by `A_φt`. Note only `-pc_fieldsplit_schur_fact_type
+   full` is set; every inner KSP/PC is at PETSc defaults.
+
+**A permanent scan now discriminates them** (`snesNewtonSolver.C`, immediately
+before the `SnesPmatCOO` handoff): one pass over the COO arrays, reporting the
+BLOCK (`d(rowField)/d(colField)`), the cell and the value, and refusing
+fatally. Deliberately fatal rather than a step rejection — a non-finite
+Jacobian entry is an assembly defect, not the physical stiffness `retryStep`
+exists to absorb, and rejecting the step would have hidden it. Had this scan
+existed, the gdb run would not have been necessary.
+
+**MEASURED, and it eliminates candidate 1.** The fault reproduced (step 241,
+t = 1.9537e-6) with the scan reporting **zero non-finite entries** — the scan
+string verified present in the library that ran, per the build trap below.
+
+Then the magnitude, because `MatMult` can raise `FE_OVERFLOW` with every input
+finite and an isfinite-only test would report "clean" either way:
+
+```
+Pmat: 88710 entries, max|a| 5.1e5 ... 2.7e7 ... 1.3e7
+                     ALWAYS at d(e)/d(ePotential), local cell 3
+```
+
+`max|a| ~ 1e7`, stable, over hundreds of steps. **So the matrix is not the
+problem in either mode.** Overflow at `a ~ 1e7` needs a vector element above
+`~1e301`, so the enormous quantity is the VECTOR, manufactured inside the
+Krylov/Schur solve — candidate 2. An arm with
+`-fieldsplit_phi_ksp_converged_reason` (split names are `phi`/`transport`, NOT
+`0`/`1` — rule 42) is measuring whether an inner solve diverges before the
+fault; through step 11 all 37,396 `phi` and 1,796 `transport` inner solves
+report `CONVERGED_RTOL`.
+
+Incidental, and worth keeping: the largest Jacobian entry in this problem is
+always the electron/potential drift coupling at the same cell. That is the
+block whose absence made the Schur complement inert (section 10).
+
+**A one-line `max|a|` report per outer step is now permanent.** A fatal
+threshold alone cannot distinguish "my entries were fine" from "the threshold
+was set too high" — only the trend can, and it is one line against the ~550
+this solver already writes per step.
+
+**Note on the pre-existing `diag/V` SIGFPE diagnostic** in
+`localEnergyEnergyModel.C`: it is for a DIFFERENT fault. Its own criterion is
+"a diag/V near zero is the SIGFPE"; here it read 3.08e11 and 3.55e11. Not this.
+
+### 25b. Explicit vs semi-implicit Poisson on GRUBERT: 110-400x the timestep
+
+Six arms, all restarted from the same `1.940229e-06` snapshot. The Poisson
+scheme was confirmed **from each run's own log line**, not from the config
+(`"Model: singleRegionPoisson Poisson scheme: ..."`), because these cases set
+it through a `$poissonScheme` variable and rule 42 applies.
+
+| Poisson | case | steps | reached t | final dt |
+|---|---|---|---|---|
+| **explicit** | `grubert_steady` | 261 | 1.954433e-06 | **6.90e-11** |
+| **explicit** | `poisson_std_long` | 214 | 1.953210e-06 | **6.14e-11** |
+| semiImplicit | `newton_sg` | 5639 | 1.947073e-06 | 5.64e-13 |
+| semiImplicit | `newton_cfs` | 5037 | 1.946779e-06 | 4.76e-13 |
+| semiImplicit | `newton_tolBC` | 5396 | 1.947275e-06 | 3.25e-13 |
+| semiImplicit | `extrap_off` | 11433 | 1.949345e-06 | 1.70e-13 |
+
+**An independent reconfirmation of section 23 on a different case** — and much
+larger here (110-400x) than the 22x measured on the streamer. Note the step
+counts: the explicit arms got FURTHER in 214-261 steps than the semi-implicit
+ones did in 5,000-11,400.
+
+**It also explains why only the explicit arms hit the SIGFPE.** The fault is at
+a STATE (t ~ 1.9535-1.9545e-6); the semi-implicit arms simply never advanced
+far enough to reach it. `poisson_std_long` was killed at 1.953210e-06, a few
+hundred steps short. So the FPE is not evidence against explicit Poisson — it
+is a defect the explicit arms are the first to be fast enough to expose.
+
+All six were KILLED, not crashed (zero `FOAM FATAL`, zero PETSc FPE, all
+stopping within 4 s of each other at 11:20:5x).
+
+### 26. Two of my own claims were wrong, both now corrected in the tree
+
+Recorded because both were committed, and both would have misled the next
+reader rather than merely being private mistakes.
+
+| claim | what is actually true |
+|---|---|
+| the legacy Townsend fit is calibrated for a REDUCED field, so it underflows at real discharge fields (comment in `plasmaTransport.C`, twice) | **Raw V/m is exactly what its constants expect**, for air at 1 atm: α = 19 cm⁻¹ at the 30 kV/cm breakdown field, 1.06e3 cm⁻¹ at 100 kV/cm, `mu = 2.398·E^-0.26` → 0.036 m²/V/s at 1e7 V/m, η = 3.4 cm⁻¹. All correct. The fit is gas- and pressure-SPECIFIC, not miscalibrated. The 2026-09-09 measurement that motivated gating it off (S_iz ~250 orders low) stands, but because it was taken in a 100 Pa argon glow — outside the fit's regime — not because of a field normalisation error. `d4db586` |
+| the Newton photoionization refusal (`8c7e572`) was verified | It was keyed on `photoionization_.valid()`, and that autoPtr is **always** valid — a case with no photoionization holds the null object `noPhotoionization`, TypeName `"none"`. The predicate was a constant true, so the guard **refused every case in existence** under Newton. Caught by it refusing `grubert_steady`, a 100 Pa argon glow with no photoionization key at all. `e07d0bb` |
+
+**The lesson, and it is the same one as rule 42:** `8c7e572` verified only that
+the guard FIRES (by stripping a chemistry dict until it did). It never checked
+that the guard stays SILENT when it should — which is the half that was broken.
+A guard has two directions and both are part of the test. Both are now verified
+for the photoionization one: `none` → silent, Newton runs; `nTermHelmholtz` →
+fires at step 0.
+
+**A build trap found the same way:** `wmake` in `src/numerics` builds
+`libplasmaNumerics` and silently does NOT build `libplasmaNewtonSolverPETSc`,
+which has its own `Make/files` one directory down. It exits 0 having done
+nothing to the Newton library. Caught only by checking the library mtime and
+grepping the binary for the new string. **For this library, verify the artefact,
+not the exit code.**
+
 ## Still untested / next, in priority order (as of 2026-09-11 ~03:40)
 
 1. **`maxIt` is state-dependent — resolve it.** Raising `maxIt` 50→200 HURT at
