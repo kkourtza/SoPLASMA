@@ -300,6 +300,50 @@ int main(int argc, char *argv[])
                 oc.subDict("newtonSolver")
             );
 
+            // SEMI-IMPLICIT POISSON IS INCONSISTENT UNDER NEWTON. Warn
+            // loudly rather than let it silently cap the timestep.
+            //
+            // The semi-implicit derivation PREDICTS the new charge density,
+            // rho^{n+1} ~ rho^n - dt*div(sigma*E), and substitutes that into
+            // Gauss's law -- which is what produces the
+            // div((eps + dt*sigma) grad phi) operator. Its whole purpose is to
+            // avoid needing rho^{n+1}, which a SEGREGATED solver does not have.
+            // A Newton residual already HAS rho^{n+1}: it is an unknown of the
+            // coupled system. So `dt*sigma` counts the charge relaxation a
+            // SECOND time, the coupled system has no consistent root, and the
+            // residual acquires a floor whose size is dt*sigma/eps -- the
+            // dielectric relaxation ratio itself.
+            //
+            // MEASURED 2026-09-11 on grubert2009_ballast400: across 3167 steps
+            // in two runs, NO step whose dielectric relaxation ratio exceeded
+            // 0.3278 ever converged. Switching to `explicit`: SNES failures
+            // 4.92% -> 0%, dt 3.4e-12 -> 7.4e-11 (22x), and the ratio reached
+            // 308 with zero failures -- verified accurate to ~1% in n_e and
+            // Emag against the same scheme at dt <= 2e-12. Full account in
+            // doc/newton-ignition-experiments.md, section 23.
+            if (em->PoissonScheme() == "semiImplicit")
+            {
+                WarningInFunction
+                    << "outerSolver `newton` with poissonScheme"
+                    << " `semiImplicit`." << nl
+                    << "    These are INCONSISTENT. The semi-implicit form"
+                    << " predicts rho^{n+1} and folds it into the operator;"
+                    << nl
+                    << "    a Newton residual already carries rho^{n+1} as an"
+                    << " unknown, so the charge relaxation is counted TWICE"
+                    << nl
+                    << "    and the coupled system has no consistent root."
+                    << " The residual then floors out, and dt is capped where"
+                    << nl
+                    << "    dt*sigma/eps ~ 0.33 (measured: no step above 0.3278"
+                    << " ever converged, 3167 steps)." << nl
+                    << "    USE `poissonScheme explicit` WITH NEWTON: the"
+                    << " coupling Newton provides makes the semi-implicit"
+                    << nl
+                    << "    device redundant. Measured 22x larger dt, zero"
+                    << " failures, accurate to ~1%." << endl;
+            }
+
             Info<< "outerCoupling.outerSolver: newton -- the segregated"
                 << " Picard sweep is REPLACED for this run, not merely"
                 << " preconditioned by it. See"

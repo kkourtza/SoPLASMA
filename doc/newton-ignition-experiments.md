@@ -736,9 +736,31 @@ converges to the root of whatever residual it is given, and this residual had no
 root. Six increasingly sophisticated solver diagnostics could not see that,
 because they all presuppose the equation is right.
 
-SAMPLE IS SMALL (19 steps). Being confirmed over a longer run, and the physics
-must be checked against the semiImplicit trajectory rather than merely observing
-that it runs fast.
+**CONFIRMED over a longer run, and THE ACCURACY IS VERIFIED.** 152 steps, 151
+converged, 0 failures, 0 retries, dielectric relaxation ratio reaching 308. It
+also passed t = 1.949675e-06, the wall-flux singularity that killed the
+semiImplicit run, and did so genuinely -- 0 clamp firings, 0 warnings.
+
+The accuracy check that matters: explicit Poisson with dt FREE against explicit
+Poisson with dt capped at 2e-12 (417 steps, 0 failures), compared at a common
+time:
+
+| | dt <= 2e-12 (reference) | dt free (~22x) | difference |
+|---|---|---|---|
+| `n_e` max | 1.581e+17 | 1.572e+17 | **0.57%** |
+| `n_e` min | 6.749e+15 | 6.661e+15 | **1.3%** |
+| `Emag` max | 9.707e+04 | 9.657e+04 | **0.52%** |
+
+**The 22x larger step gives the same answer to ~1%.** The speed is not being
+bought out of the solution.
+
+**And that resolves the trajectory question.** The two EXPLICIT runs agree with
+each other, so the large difference from Picard is NOT a large-dt error -- it is
+that the semi-implicit form modifies the Poisson equation by `O(dt*sigma/eps)`,
+which was **20-60%** in the Picard runs. Explicit Poisson is the true Gauss law;
+the semi-implicit one is the approximation. That strengthens the case, but it
+should still be checked against the PUBLISHED benchmark before being claimed as
+better physics rather than merely different.
 
 ### 24. Eliminated by measurement, in order (all with the knob verified)
 
