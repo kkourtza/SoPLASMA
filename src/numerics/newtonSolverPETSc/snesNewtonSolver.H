@@ -177,6 +177,36 @@ class snesNewtonSolver
     //  Default TRUE; set false to A/B it.
     bool chemJacobian_;
 
+    //- Restrict chemJacobian to the ELECTRON, where P_s/n_s is EXACT.
+    //  Default TRUE.
+    //
+    //  chemJacobian_ above claims P_s/n_s is "exact for the electron and a
+    //  reasonable approximation otherwise". The first half is right:
+    //  P_e = k_iz*n_e*n_gas, so dP_e/dn_e = k_iz*n_gas is literally the
+    //  ionisation frequency. The second half is FALSE, and expensively so: a
+    //  species produced by electron impact on SOMETHING ELSE has
+    //  dP_s/dn_s ~ 0 while P_s/n_s is enormous, because P*dt exceeds that
+    //  species' own density in a step. Applied there it is not an
+    //  approximation of the derivative, it is a different quantity.
+    //
+    //  MEASURED 2026-09-11 on positiveStreamer_LMEA_fast, 18 steps to
+    //  completion, three arms identical but for this:
+    //
+    //      chemJacobian on   SNES 91  Krylov 253  180 s -> 304 s
+    //      chemJacobian off  SNES 84  Krylov 140          214 s
+    //      ELECTRON ONLY     SNES 79  Krylov 130          180 s
+    //
+    //  Electron-only wins on every axis -- fewer Newton steps, HALF the Krylov
+    //  work of all-species, and faster than omitting the term altogether. It
+    //  keeps the ignition physics the term exists for and drops the part that
+    //  was never a derivative.
+    //
+    //  NOT YET CONFIRMED on grubert, where chemJacobian was originally
+    //  justified. The physics argument is general (the term is exact only for
+    //  the electron, and grubert's ions are also electron-impact products), so
+    //  it should carry -- but it is a default change and wants that check.
+    bool chemJacobianElectronOnly_;
+
     //- Include the CROSS-SPECIES chemistry coupling d(chemP_s)/d(n_e) in the
     //  preconditioner, as an off-diagonal (species, electron) block.
     //

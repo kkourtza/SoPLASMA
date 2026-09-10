@@ -970,6 +970,7 @@ Foam::snesNewtonSolver::snesNewtonSolver
     petscOptions_(dict.getOrDefault<string>("petscOptions", string::null)),
     rebalanceScales_(dict.getOrDefault<bool>("rebalanceScales", true)),
     chemJacobian_(dict.getOrDefault<bool>("chemJacobian", true)),
+    chemJacobianElectronOnly_(dict.getOrDefault<bool>("chemJacobianElectronOnly", true)),
     chemCrossJacobian_(dict.getOrDefault<bool>("chemCrossJacobian", false)),
     jouleJacobian_(dict.getOrDefault<bool>("jouleJacobian", false)),
     schurOnPhi_(dict.getOrDefault<bool>("schurOnPhi", false)),
@@ -1971,7 +1972,16 @@ void Foam::snesNewtonSolver::solveOuterStep
             );
             const bool pmatHavePL  = transport.chemistrySourcesAvailable();
             const bool pmatHaveNet = transport.chemNetSourceAvailable();
-            if (chemJacobian_ && (pmatHavePL || pmatHaveNet))
+            // ELECTRON ONLY, optionally: P_s/n_s is EXACT for the electron
+            // (P_e = k_iz*n_e*n_gas, so dP_e/dn_e = k_iz*n_gas is literally
+            // the ionisation frequency) and is the WRONG QUANTITY for a
+            // species produced by electron impact on something else, where
+            // dP_s/dn_s ~ 0 while P_s/n_s is enormous.
+            const bool chemJacHere =
+                chemJacobian_
+             && (!chemJacobianElectronOnly_ || s == species.electronSpeciesID());
+
+            if (chemJacHere && (pmatHavePL || pmatHaveNet))
             {
                 const scalarField& P =
                     pmatHavePL
