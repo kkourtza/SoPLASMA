@@ -983,7 +983,7 @@ Foam::snesNewtonSolver::snesNewtonSolver
         dict.getOrDefault<scalar>("jouleJacobianRatioMax", 10.0)
     ),
     adaptiveForcing_(dict.getOrDefault<bool>("adaptiveForcing", true)),
-    sourceAwareScaling_(dict.getOrDefault<bool>("sourceAwareScaling", false)),
+    scaleDiag_(dict.getOrDefault<bool>("scaleDiag", false)),
     extrapolateGuess_(dict.getOrDefault<bool>("extrapolateGuess", false)),
     extrapolatePotential_(dict.getOrDefault<bool>("extrapolatePotential", true))
 {
@@ -1197,40 +1197,46 @@ void Foam::snesNewtonSolver::solveOuterStep
         {
             sX[1 + s] = safeScale(rmsOf(species.numberDensity(s).primitiveField()));
 
-            // sF is the scale the block's residual is DIVIDED by, so it must
-            // be the size of the LARGEST term in that residual. n/dt is only
-            // the ddt term, and for a species whose chemistry outruns it that
-            // is the wrong yardstick by orders of magnitude.
+            // sF is the residual scale, and n/dt is the ddt term. It is
+            // fair to ask whether a species whose CHEMISTRY outruns ddt is
+            // mis-scaled by it. MEASURED 2026-09-11 on
+            // positiveStreamer_LMEA_fast, rms(chemP) / (rms(n)/dt) per
+            // species:
+            //     e 1.6e-4   N2p 8.8e-12   O2p 1.2e-6   N 0.026
+            //     N2_A3 / N2_B3 / N2_C3 / N2_aP1 / O / O2_a1 / Om : 0.833
+            // The source NEVER exceeds ddt -- it sits at 0.83x it, because a
+            // species produced from nothing has n ~ P*dt by construction, so
+            // n/dt IS the source scale. A `max(ddt, src)` rule is therefore a
+            // NO-OP here, and the `sourceAwareScaling` option that implemented
+            // it was removed rather than shipped unproven.
             //
-            // MEASURED 2026-09-11 on positiveStreamer_LMEA_fast, one Newton
-            // step, |F_scaled| per block:
-            //     charged   n_e 1.9   n_N2p 1.8   n_O2p 1.9
-            //     excited   n_O 523   n_N2_A3 633   n_N2_C3 1304
-            // For n_O: |ddt| 1.06e23 against |chemP| 2.68e24 -- production is
-            // 25x the time derivative, because P*dt exceeds the species' own
-            // density in a single step. Scaling by n/dt therefore left those
-            // blocks ~500x out of balance with the charged ones, and the
-            // Krylov solve inside SNES died with DIVERGED_ITS at 100.
-            //
-            // Including the source makes the yardstick the actual dominant
-            // term. OFF by default: it changes what `rtol` MEANS for every
-            // existing Newton case, so it must be measured per case, not
-            // assumed.
-            scalar fScale = sX[1 + s]/dt.value();
+            // The block imbalance it was meant to explain is real (|F_scaled|
+            // 300-1300 for the excited neutrals against ~2 for the charged
+            // species) but is NOT a scaling error: the residual itself is
+            // large because ddt and P do not cancel at the trial state. That
+            // is an INITIAL GUESS problem -- see extrapolateGuess_.
+            const scalar fScale = sX[1 + s]/dt.value();
 
-            if (sourceAwareScaling_)
+            sF[1 + s] = safeScale(fScale);
+
+            if (scaleDiag_)
             {
+                const scalar ddtScale = sX[1 + s]/dt.value();
+                scalar srcScale = 0;
                 if (transport.chemistrySourcesAvailable())
                 {
-                    fScale = max(fScale, rmsOf(transport.chemP(s)));
+                    srcScale = rmsOf(transport.chemP(s));
                 }
                 else if (transport.chemNetSourceAvailable())
                 {
-                    fScale = max(fScale, rmsOf(transport.chemNetSource(s)));
+                    srcScale = rmsOf(transport.chemNetSource(s));
                 }
+                Info<< "[scale] " << species.speciesNames()[s]
+                    << " ddt=" << ddtScale
+                    << " src=" << srcScale
+                    << " ratio=" << (ddtScale > 0 ? srcScale/ddtScale : 0)
+                    << " sF=" << sF[1 + s] << endl;
             }
-
-            sF[1 + s] = safeScale(fScale);
         }
 
         if (lmea)
