@@ -1025,7 +1025,18 @@ public:
         //  residual does not include it yet, and a positive streamer in air needs
         //  it to propagate, so a case that asks for it must be told rather than
         //  quietly given a different problem.
-        bool hasPhotoionization() const { return photoionization_.valid(); }
+        //
+        //  THE TYPE CHECK IS THE WHOLE TEST, not the autoPtr. photoionization_ is
+        //  ALWAYS valid: a case with no photoionizationProperties gets the null
+        //  object `noPhotoionization`, whose TypeName is "none". Testing
+        //  .valid() alone therefore reported "has photoionization" for every
+        //  case in existence, and the Newton refusal keyed on it turned away
+        //  cases that wanted nothing of the sort (caught 2026-09-10 on
+        //  grubert_steady, a 100 Pa argon glow that had never asked for it).
+        //
+        //  Defined in the .C, not here: photoionizationModel is only
+        //  forward-declared in this header, so ->type() needs the full type.
+        bool hasPhotoionization() const;
 
         inline surfaceScalarField& convectiveFlux(const label i);
         inline const surfaceScalarField& convectiveFlux(const label i) const;

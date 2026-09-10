@@ -409,6 +409,15 @@ plasmaTransport::~plasmaTransport()
 
 // * * * * * * * * * * * * * * Public Member Functions * * * * * * * * * * * //
 
+bool plasmaTransport::hasPhotoionization() const
+{
+    // See the header for why the TYPE, not the autoPtr, is the test:
+    // photoionization_ is always valid, holding the null object
+    // `noPhotoionization` (TypeName "none") when the case asks for nothing.
+    return photoionization_.valid() && photoionization_->type() != "none";
+}
+
+
 void plasmaTransport::correctTransportModels()
 {
 
