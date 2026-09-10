@@ -22,7 +22,7 @@ Description
     was any representation of the CROSS-COUPLING between fields, and PETSc's
     PCFIELDSPLIT -- the thing that can exploit it -- cannot work from a
     matrix-free operator. It needs a genuinely assembled preconditioning
-    matrix. See doc/newton-outer-solver-design.md.
+    matrix. See docs/design/newton-outer-solver-design.md.
 
     WHY NOT petsc4Foam. `petscSolver::buildMat()` is exactly the ldu2csr
     conversion we want and it is exported, but it sizes the matrix to ONE
@@ -165,6 +165,48 @@ public:
         const fvScalarMatrix& m,
         const scalar scaling,
         const scalarField& rowFactor
+    );
+
+    //- PER-CELL scaled variant: the row factor and the COLUMN factor are both
+    //  arrays, so a state scaling that varies cell by cell can be represented.
+    //
+    //  WHY A SEPARATE OVERLOAD rather than generalising the one above. Under a
+    //  per-cell state scaling xhat_j = x_j/sX_j and residual scaling
+    //  Fhat_i = F_i/sF_i, the Jacobian transforms as
+    //      Jhat_ij = J_ij * sX_j / sF_i
+    //  so the entry needs the COLUMN's sX and the ROW's sF -- and the column
+    //  index differs from the row index on every off-diagonal. The scalar
+    //  `scaling` argument of the overload above cannot express that.
+    //
+    //  It is additive because folding sF into rowFactor and sX into a new
+    //  colFactor would CHANGE THE MULTIPLICATION ORDER of the existing path,
+    //  and floating-point multiplication is not associative -- the uniform
+    //  case would stop being bit-identical to what it is today, which is the
+    //  regression gate the per-cell switch is verified against. Leaving the
+    //  original untouched makes "switch off changes nothing" provable rather
+    //  than argued.
+    //
+    //  rowFactor[i] must already carry 1/V_i and 1/sF_i; colFactor carries
+    //  sX_j. No scalar multiplier: everything is in the two.
+    //
+    //  colFactor IS A volScalarField, not a scalarField, and that is
+    //  load-bearing. A processor-interface entry sits at (local row, NEIGHBOUR
+    //  column), so it needs the neighbour's sX -- which lives on another rank.
+    //  A volScalarField already carries its processor-patch values, exchanged
+    //  by correctBoundaryConditions(), so `colFactor.boundaryField()[patchi]`
+    //  IS the neighbour's scaling with no hand-rolled transfer. (lduInterface's
+    //  internalFieldTransfer only handles labels, so the alternative would have
+    //  been a manual processorLduInterface send/receive -- working inside
+    //  OpenFOAM's own structures instead is rule 40.)
+    //
+    //  The CALLER must have called correctBoundaryConditions() on it.
+    void addFvMatrixBlockPerCell
+    (
+        const label rowField,
+        const label colField,
+        const fvScalarMatrix& m,
+        const scalarField& rowFactor,
+        const volScalarField& colFactor
     );
 };
 

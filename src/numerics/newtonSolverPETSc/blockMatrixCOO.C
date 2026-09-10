@@ -231,4 +231,134 @@ void Foam::blockMatrixCOO::addFvMatrixBlock
 }
 
 
+
+void Foam::blockMatrixCOO::addFvMatrixBlockPerCell
+(
+    const label rowField,
+    const label colField,
+    const fvScalarMatrix& m,
+    const scalarField& rowFactor,
+    const volScalarField& colFactor
+)
+{
+    const scalarField& cf = colFactor.primitiveField();
+    // Structurally identical to addFvMatrixBlock -- see the header for why it
+    // is a separate function rather than a generalisation. The ONLY difference
+    // is that every entry also carries colFactor at the COLUMN's cell, which
+    // is what a per-cell state scaling requires and a scalar cannot express.
+    const lduAddressing& addr = m.lduAddr();
+    const labelUList& upp = addr.upperAddr();
+    const labelUList& low = addr.lowerAddr();
+
+    scalarField d(m.diag());
+    {
+        const lduAddressing& a = m.lduAddr();
+        const FieldField<Field, scalar>& intCoeffs = m.internalCoeffs();
+
+        forAll(intCoeffs, patchi)
+        {
+            const labelUList& pa = a.patchAddr(patchi);
+            const scalarField& pc = intCoeffs[patchi];
+
+            forAll(pa, i)
+            {
+                d[pa[i]] += pc[i];
+            }
+        }
+    }
+
+    forAll(d, c)
+    {
+        add
+        (
+            globalRow(rowField, c), globalRow(colField, c),
+            d[c]*rowFactor[c]*cf[c]
+        );
+    }
+
+    const scalarField& uppVal = m.upper();
+    const scalarField& lowVal = (m.hasLower() ? m.lower() : m.upper());
+
+    forAll(upp, f)
+    {
+        // row = owner, col = neighbour: colFactor indexed at the NEIGHBOUR
+        add
+        (
+            globalRow(rowField, low[f]), globalRow(colField, upp[f]),
+            uppVal[f]*rowFactor[low[f]]*cf[upp[f]]
+        );
+
+        // transpose position: col is now the owner
+        add
+        (
+            globalRow(rowField, upp[f]), globalRow(colField, low[f]),
+            lowVal[f]*rowFactor[upp[f]]*cf[low[f]]
+        );
+    }
+
+    // ---- PROCESSOR INTERFACES. Same necessity as in addFvMatrixBlock -- without
+    // these the matrix describes disconnected subdomains -- and the same global-row
+    // transfer. The per-cell difference is the COLUMN factor: the column is a cell
+    // on ANOTHER RANK, so its sX comes from colFactor's processor-patch values,
+    // which correctBoundaryConditions() has already exchanged.
+    if (Pstream::parRun())
+    {
+        const lduInterfacePtrsList interfaces(m.psi().mesh().interfaces());
+
+        labelList globalRowsThisField(nCells_);
+        forAll(globalRowsThisField, c)
+        {
+            globalRowsThisField[c] = globalRow(colField, c);
+        }
+
+        const label startOfRequests = UPstream::nRequests();
+
+        forAll(interfaces, patchi)
+        {
+            if (interfaces.set(patchi))
+            {
+                interfaces[patchi].initInternalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                );
+            }
+        }
+
+        UPstream::waitRequests(startOfRequests);
+
+        const FieldField<Field, scalar>& bouCoeffs = m.boundaryCoeffs();
+
+        forAll(interfaces, patchi)
+        {
+            if (!interfaces.set(patchi)) continue;
+
+            const labelUList& faceCells = addr.patchAddr(patchi);
+
+            const labelField nbrRows
+            (
+                interfaces[patchi].internalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                )
+            );
+
+            const scalarField& bc = bouCoeffs[patchi];
+            // the NEIGHBOUR's per-cell scaling, already exchanged
+            const scalarField& nbrCf = colFactor.boundaryField()[patchi];
+
+            forAll(faceCells, i)
+            {
+                add
+                (
+                    globalRow(rowField, faceCells[i]),
+                    nbrRows[i],
+                    -bc[i]*rowFactor[faceCells[i]]*nbrCf[i]
+                );
+            }
+        }
+    }
+}
+
 // ************************************************************************* //

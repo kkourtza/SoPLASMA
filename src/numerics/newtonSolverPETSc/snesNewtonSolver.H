@@ -14,7 +14,7 @@ Class
 
 Description
     Concrete `plasmaNewtonSolver` implementation using PETSc's matrix-free
-    SNES -- see doc/newton-outer-solver-design.md for the full design and
+    SNES -- see docs/design/newton-outer-solver-design.md for the full design and
     the proofs of concept this is built on.
 
     NEVER includes any PETSc header directly -- petscmath.h and OpenFOAM's
@@ -117,7 +117,7 @@ class snesNewtonSolver
     //- Enforce the species density floor as a CONSTRAINT inside the Newton
     //  solve (PETSc SNESVINEWTONRSLS) instead of as a post-hoc clamp.
     //  DEFAULT true. The clamp is applied outside the equations, which makes
-    //  F(u)=0 unreachable -- see doc/newton-outer-solver-design.md, defect A,
+    //  F(u)=0 unreachable -- see docs/design/newton-outer-solver-design.md, defect A,
     //  and the cold-start guard in solveOuterStep.
     bool bounded_;
 
@@ -248,7 +248,7 @@ class snesNewtonSolver
     //  a SCALAR ELLIPTIC operator on one field -- and
     //  div((eps + dt*sigma) grad .) IS that operator to leading order in dt,
     //  so it can be ASSEMBLED and handed to AMG. See
-    //  doc/schur-semiimplicit-poisson-preconditioner.md for the derivation.
+    //  docs/design/schur-semiimplicit-poisson-preconditioner.md for the derivation.
     //
     //  Default FALSE. Two reasons, not one:
     //   * it inverts a working, measured configuration, and Tier 0 (the inner
@@ -263,6 +263,40 @@ class snesNewtonSolver
     //       -fieldsplit_transport_ksp_convergence_test skip
     //     so every application performs identical arithmetic.
     bool schurOnPhi_;
+
+    //- PER-CELL state/residual scaling instead of one constant per FIELD.
+    //
+    //  sX/sF are one scalar per block, so a block is normalised by ONE number
+    //  however wide its own spread is. A Krylov method minimises the norm of
+    //  the WHOLE vector, so it fits the cells at the top of the range and is
+    //  nearly blind to those at the bottom -- the same argument that justified
+    //  rebalanceScales_ ACROSS blocks, applied one level down, WITHIN one.
+    //
+    //  DEFAULT FALSE, and the expected payoff is smaller than when this was
+    //  first proposed. It was queued on a measured spread of 1e11-5.7e18
+    //  (8 orders) inside the Arp block. Re-measured 2026-09-10 in the regime
+    //  where Newton actually RUNS -- a developed discharge -- the spread is
+    //  1.7e4 for Ar2p, 4.1e3 for Arp, 8.9e2 for electrons: FOUR orders, not
+    //  eight. The 8-order figure belongs to the COLD state, where every
+    //  species sits on its floor and the start-up guard keeps Picard engaged,
+    //  so Newton never sees it.
+    //
+    //  Kept switchable rather than dropped because four orders is still a real
+    //  spread; enabled by nobody until an A/B says it pays.
+    //
+    //  BIT-IDENTITY WHEN OFF is the regression gate, and the implementation is
+    //  shaped around it: the residual and state sites use per-cell arrays
+    //  UNCONDITIONALLY, filled with the uniform value when this is false, so
+    //  the arithmetic is unchanged; the Pmat sites BRANCH, because folding sF
+    //  into the row factor and sX into a column factor reorders the
+    //  multiplication and floating-point multiplication is not associative.
+    bool perCellScaling_;
+
+    //- Floor for the per-cell state scale, as a FRACTION of the block's own
+    //  maximum. Without it a cell at the density floor gets a scale of ~0 and
+    //  its scaled residual explodes -- the mirror of the problem this exists
+    //  to fix. 1e-6 keeps six orders of genuine per-cell range.
+    scalar perCellScaleFloor_;
 
     //- Ceiling on the Psrc/jouleHeating ratio above, so a cell where
     //  jouleHeating is small but nonzero cannot produce a runaway coefficient.

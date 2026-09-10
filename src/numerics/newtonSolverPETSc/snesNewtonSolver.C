@@ -97,12 +97,19 @@ struct ResidualContext
     // (eq. 13) of J. Comput. Phys. 193 (2004) 357-397.
     const Foam::scalarList* sX; // state scale:    x_petsc = x_phys / sX
     const Foam::scalarList* sF; // residual scale: F_petsc = F_phys / sF
+
+    // PER-CELL scales, one array per block. ALWAYS used by the residual and
+    // state paths; filled with the uniform sX/sF value when perCellScaling is
+    // off, which is what makes "switch off changes nothing" bit-exact rather
+    // than merely intended. See perCellScaling_ in the header.
+    const Foam::List<Foam::scalarField>* sXc;
+    const Foam::List<Foam::scalarField>* sFc;
 };
 
 // Block layout, one instance per rank: [ePotential][n_0]..[n_{nSpecies-1}]
 // [nEps_e if hasEnergy] -- flat concatenation, no VecNest, exactly the
 // pattern the 2-field proof of concept validated in both serial and
-// parallel (doc/newton-outer-solver-design.md).
+// parallel (docs/design/newton-outer-solver-design.md).
 void residualCallback
 (
     int n,
@@ -179,7 +186,8 @@ void residualCallback
         volScalarField& ns = species.numberDensity(s);
         scalarField& f = ns.primitiveFieldRef();
         const label off = (1 + s)*nc;
-        for (label c = 0; c < nc; ++c) { f[c] = x[off + c]*sX[1 + s]; }
+        const scalarField& sxSc = (*ctx.sXc)[1 + s];
+        for (label c = 0; c < nc; ++c) { f[c] = x[off + c]*sxSc[c]; }
     }
 
     if (ctx.hasEnergy)
@@ -187,8 +195,8 @@ void residualCallback
         volScalarField& nEps = ctx.lmea->nEpsRef();
         scalarField& f = nEps.primitiveFieldRef();
         const label off = (1 + ctx.nSpecies)*nc;
-        const scalar sxE = sX[1 + ctx.nSpecies];
-        for (label c = 0; c < nc; ++c) { f[c] = x[off + c]*sxE; }
+        const scalarField& sxEc = (*ctx.sXc)[1 + ctx.nSpecies];
+        for (label c = 0; c < nc; ++c) { f[c] = x[off + c]*sxEc[c]; }
     }
 
     // ---- 1b. chargeDensity is DERIVED from the species densities, so it must
@@ -552,6 +560,12 @@ struct PCContext
     // the way out.
     const Foam::scalarList* sX;
     const Foam::scalarList* sF;
+
+    // Per-cell state scales, same arrays the residual callback uses. The PC
+    // maps physical -> petsc, so it must apply the SAME scaling the
+    // residual's inverse mapping does or the preconditioner would solve a
+    // differently-scaled operator than the one being preconditioned.
+    const Foam::List<Foam::scalarField>* sXc;
 };
 
 void pcApplyCallback
@@ -595,7 +609,7 @@ void pcApplyCallback
     // the solve continues unpreconditioned for that application instead of
     // corrupting memory. It is NOT the real answer: the proper route is an
     // assembled Pmat with PCFIELDSPLIT, which SNESVI supports natively via
-    // PCFieldSplitRestrictIS. See doc/newton-outer-solver-design.md.
+    // PCFieldSplitRestrictIS. See docs/design/newton-outer-solver-design.md.
     const label nExpected = (1 + ctx.nSpecies + (ctx.hasEnergy ? 1 : 0))*nc;
     if (label(n) != nExpected)
     {
@@ -608,7 +622,7 @@ void pcApplyCallback
                 << " bounded solver's active set). Falling back to the"
                 << " identity for those applications; the physics-based"
                 << " preconditioner cannot be applied to a restricted"
-                << " vector. See doc/newton-outer-solver-design.md." << endl;
+                << " vector. See docs/design/newton-outer-solver-design.md." << endl;
         }
         for (int i = 0; i < n; ++i) { y[i] = b[i]; }
         return;
@@ -851,15 +865,15 @@ void pcApplyCallback
     {
         const scalarField& f = (*ctx.dSpecies)[s].primitiveField();
         const label off = (1 + s)*nc;
-        const scalar sxS = sX[1 + s];
-        for (label c = 0; c < nc; ++c) { y[off + c] = f[c]/sxS; }
+        const scalarField& sxS = (*ctx.sXc)[1 + s];
+        for (label c = 0; c < nc; ++c) { y[off + c] = f[c]/sxS[c]; }
     }
     if (ctx.hasEnergy)
     {
         const scalarField& f = ctx.dEnergy->primitiveField();
         const label off = (1 + ctx.nSpecies)*nc;
-        const scalar sxE = sX[1 + ctx.nSpecies];
-        for (label c = 0; c < nc; ++c) { y[off + c] = f[c]/sxE; }
+        const scalarField& sxE = (*ctx.sXc)[1 + ctx.nSpecies];
+        for (label c = 0; c < nc; ++c) { y[off + c] = f[c]/sxE[c]; }
     }
 }
 
@@ -911,6 +925,11 @@ Foam::snesNewtonSolver::snesNewtonSolver
     chemCrossJacobian_(dict.getOrDefault<bool>("chemCrossJacobian", false)),
     jouleJacobian_(dict.getOrDefault<bool>("jouleJacobian", false)),
     schurOnPhi_(dict.getOrDefault<bool>("schurOnPhi", false)),
+    perCellScaling_(dict.getOrDefault<bool>("perCellScaling", false)),
+    perCellScaleFloor_
+    (
+        dict.getOrDefault<scalar>("perCellScaleFloor", 1e-6)
+    ),
     jouleJacobianRatioMax_
     (
         dict.getOrDefault<scalar>("jouleJacobianRatioMax", 10.0)
@@ -951,7 +970,7 @@ void Foam::snesNewtonSolver::solveOuterStep
             << " singleRegionPoisson so far -- got '"
             << em.type() << "'." << nl
             << "    multiRegionPoisson (dielectric regions) is not yet"
-            << " supported; see doc/newton-outer-solver-design.md."
+            << " supported; see docs/design/newton-outer-solver-design.md."
             << nl << exit(FatalError);
     }
     singleRegionPoisson& srp = refCast<singleRegionPoisson>(em);
@@ -972,7 +991,7 @@ void Foam::snesNewtonSolver::solveOuterStep
     // This is rule 30's principle: the answer to a mechanism that fails on a
     // bad input is a GUARD that refuses the input, not a parallel mechanism.
     // The real fix is a formulation in which positivity is structural so no
-    // clamp is needed -- see doc/newton-outer-solver-design.md.
+    // clamp is needed -- see docs/design/newton-outer-solver-design.md.
     {
         bool allSpeciesZero = true;
         for (label s = 0; s < nSpecies; ++s)
@@ -1005,7 +1024,7 @@ void Foam::snesNewtonSolver::solveOuterStep
                 << " picard` first, then restart in newton mode from it --"
                 << " `startFrom latestTime` in system/controlDict. The"
                 << " densities must sit above the floor, not on it." << nl
-                << "    See doc/newton-outer-solver-design.md (defect A)."
+                << "    See docs/design/newton-outer-solver-design.md (defect A)."
                 << nl << exit(FatalError);
         }
     }
@@ -1019,7 +1038,7 @@ void Foam::snesNewtonSolver::solveOuterStep
                 << " driftDiffusion transport so far -- species '"
                 << species.speciesNames()[s] << "' uses '"
                 << transport.transportModel(s).modelName() << "'." << nl
-                << "    See doc/newton-outer-solver-design.md."
+                << "    See docs/design/newton-outer-solver-design.md."
                 << nl << exit(FatalError);
         }
     }
@@ -1034,7 +1053,7 @@ void Foam::snesNewtonSolver::solveOuterStep
                 << "outerSolver newton (type SNES) supports only LMEA"
                 << " (localEnergyEnergyModel) so far -- this case's energy"
                 << " model is not LMEA." << nl
-                << "    See doc/newton-outer-solver-design.md."
+                << "    See docs/design/newton-outer-solver-design.md."
                 << nl << exit(FatalError);
         }
         // The underlying object is not actually const -- plasmaEnergy owns
@@ -1126,11 +1145,51 @@ void Foam::snesNewtonSolver::solveOuterStep
         }
     }
 
+    // ---- PER-CELL SCALES. Declared here because the state PACK below already
+    // needs them, and sX is final at this point. sF is NOT -- rebalanceScales_
+    // rescales it further down -- so sFcell is refreshed after that pass.
+    //
+    // When OFF these hold the uniform sX/sF value in every cell, so the
+    // residual and state arithmetic is byte-for-byte what the scalar path did.
+    // That is the regression gate; see perCellScaling_ in the header.
+    //
+    // When ON, a cell's state scale is its own magnitude, floored at a fraction
+    // of the block maximum: xhat ~ 1 everywhere, so a cell orders below the
+    // peak is no longer invisible to a Krylov norm. The floor is not optional --
+    // a cell AT the density floor would otherwise get scale ~0 and its scaled
+    // residual would explode, the same pathology reversed.
+    //
+    // phi keeps a UNIFORM scale even when this is on: it is O(100 V) across the
+    // whole gap and has no spread problem. Only the transported blocks, whose
+    // spread is the reason this exists, go per-cell.
+    List<scalarField> sXcell(nFields);
+    List<scalarField> sFcell(nFields);
+    for (label b = 0; b < nFields; ++b)
+    {
+        sXcell[b].setSize(nCellsLocal, sX[b]);
+        sFcell[b].setSize(nCellsLocal, sF[b]);
+    }
+    if (perCellScaling_)
+    {
+        auto fillFrom = [&](const label b, const scalarField& v)
+        {
+            const scalar mx = max(gMax(mag(v)), VSMALL);
+            const scalar flo = perCellScaleFloor_*mx;
+            forAll(sXcell[b], c) { sXcell[b][c] = max(mag(v[c]), flo); }
+        };
+        for (label sp = 0; sp < nSpecies; ++sp)
+        {
+            fillFrom(1 + sp, species.numberDensity(sp).primitiveField());
+        }
+        if (lmea) { fillFrom(1 + nSpecies, lmea->nEps().primitiveField()); }
+    }
+
     ResidualContext ctx
     {
         &em, &srp, &species, &transport, lmea,
         nCellsLocal, nSpecies, lmea != nullptr,
-        &sX, &sF
+        &sX, &sF,
+        &sXcell, &sFcell
     };
 
     // Persistent PC scratch fields -- constructed ONCE per outer step, each
@@ -1188,7 +1247,8 @@ void Foam::snesNewtonSolver::solveOuterStep
         &em, &srp, &species, &transport, lmea,
         nCellsLocal, nSpecies, lmea != nullptr,
         &dePotential, &dSpecies, dEnergy.get(),
-        &sX, &sF
+        &sX, &sF,
+        &sXcell
     };
 
     // Packed in SCALED state units -- everything PETSc sees is scaled.
@@ -1224,14 +1284,14 @@ void Foam::snesNewtonSolver::solveOuterStep
             const scalarField& nf = ns.primitiveField();
             const scalarField& n0 = ns.oldTime().primitiveField();
             const label off = (1 + s)*nCellsLocal;
-            const scalar sxS = sX[1 + s];
+            const scalarField& sxS = sXcell[1 + s];
             // FLOOR the extrapolation: an undershoot to a negative density
             // breaks the rate-table lookups the residual performs.
             const scalar fl = max(species.speciesMinNumberDensity(s), scalar(0));
             for (label c = 0; c < nCellsLocal; ++c)
             {
                 const scalar e = nf[c] + r*(nf[c] - n0[c]);
-                xBuf[off + c] = max(e, fl)/sxS;
+                xBuf[off + c] = max(e, fl)/sxS[c];
             }
         }
 
@@ -1241,11 +1301,11 @@ void Foam::snesNewtonSolver::solveOuterStep
             const scalarField& nef = ne.primitiveField();
             const scalarField& ne0 = ne.oldTime().primitiveField();
             const label off = (1 + nSpecies)*nCellsLocal;
-            const scalar sxE = sX[1 + nSpecies];
+            const scalarField& sxE = sXcell[1 + nSpecies];
             for (label c = 0; c < nCellsLocal; ++c)
             {
                 const scalar e = nef[c] + r*(nef[c] - ne0[c]);
-                xBuf[off + c] = max(e, scalar(0))/sxE;
+                xBuf[off + c] = max(e, scalar(0))/sxE[c];
             }
         }
     }
@@ -1319,7 +1379,7 @@ void Foam::snesNewtonSolver::solveOuterStep
       // 71, 71, 82, 85 on successive applications) makes S's action a
       // NON-FIXED operator, and the outer Krylov method then breaks down.
       // That is what crashed grubert_steady with a SIGFPE -- see
-      // doc/newton-ignition-experiments.md section 25c. LU on the phi block is
+      // docs/design/newton-ignition-experiments.md section 25c. LU on the phi block is
       // affordable precisely because it is ONE field (2000 rows, nnz 9190,
       // factor fill 3.1 on the reference case).
       // SCALABLE, not exact -- rule 43. An earlier version of this default was
@@ -1442,12 +1502,16 @@ void Foam::snesNewtonSolver::solveOuterStep
         {
             const scalar floorS = species.speciesMinNumberDensity(s);
             const label off = (1 + s)*nCellsLocal;
-            const scalar sxS = sX[1 + s];
-            const double lb =
-                (floorS > 0 ? double(floorS/sxS) : 0.0);
+            const scalarField& sxS = sXcell[1 + s];
             for (label c = 0; c < nCellsLocal; ++c)
             {
-                lowerBounds[off + c] = lb;
+                // INSIDE the loop now: the floor is a PHYSICAL density, so it
+                // must be divided by the same per-cell scale the state is, and
+                // that scale differs per cell. Hoisting it out (as this did
+                // when the scale was one constant per block) would apply one
+                // cell's bound to every cell.
+                lowerBounds[off + c] =
+                    (floorS > 0 ? double(floorS/sxS[c]) : 0.0);
             }
         }
 
@@ -1642,6 +1706,52 @@ void Foam::snesNewtonSolver::solveOuterStep
         }
     }
 
+    // sF was rescaled by rebalanceScales_ above, so its per-cell copy is stale.
+    // The RESIDUAL scale stays per BLOCK even when perCellScaling is on: sF is
+    // already normalised by the measured priming residual, and dividing the
+    // residual per cell as well would rescale the quantity the convergence test
+    // reads, changing what `rtol` means from cell to cell.
+    for (label b = 0; b < nFields; ++b)
+    {
+        sFcell[b] = sF[b];
+    }
+
+    // ---- COLUMN SCALES AS volScalarFields, for the per-cell Pmat path.
+    //
+    // Needed only when perCellScaling is on. A volScalarField rather than a
+    // bare array because a processor-interface entry's COLUMN is a cell on
+    // another rank: correctBoundaryConditions() exchanges the patch values, so
+    // addFvMatrixBlockPerCell can read the neighbour's scale directly. See
+    // blockMatrixCOO.H.
+    //
+    // Only the SPECIES and ENERGY columns are built. phi keeps a uniform scale,
+    // so every block whose COLUMN is phi (the drift-coupling blocks) still uses
+    // the original scalar path unchanged.
+    PtrList<volScalarField> colScale(perCellScaling_ ? nFields : 0);
+    if (perCellScaling_)
+    {
+        for (label b = 1; b < nFields; ++b)
+        {
+            colScale.set
+            (
+                b,
+                new volScalarField
+                (
+                    IOobject
+                    (
+                        "colScale" + Foam::name(b), mesh_.time().timeName(),
+                        mesh_, IOobject::NO_READ, IOobject::NO_WRITE
+                    ),
+                    mesh_,
+                    dimensionedScalar("one", dimless, 1.0),
+                    zeroGradientFvPatchScalarField::typeName
+                )
+            );
+            colScale[b].primitiveFieldRef() = sXcell[b];
+            colScale[b].correctBoundaryConditions();
+        }
+    }
+
     blockMatrixCOO coo(nCellsLocal, nFields);
     {
         // fvm:: matrices are VOLUME-INTEGRATED; the residual is per unit
@@ -1699,7 +1809,20 @@ void Foam::snesNewtonSolver::solveOuterStep
         {
             const scalar q = species.speciesCharge(id).value();
             const scalarField coeff(nCellsLocal, q);
-            coo.addDiagonalBlock(0, 1 + id, coeff, sX[1 + id]/sF[0]);
+            if (perCellScaling_)
+            {
+                // addDiagonalBlock takes a scalar multiplier, so the per-cell
+                // COLUMN scale is folded into the coefficient array instead.
+                // This block is cell-local (no off-diagonals), so there is no
+                // neighbour column to worry about.
+                scalarField cs(coeff);
+                forAll(cs, c) { cs[c] *= sXcell[1 + id][c]; }
+                coo.addDiagonalBlock(0, 1 + id, cs, 1.0/sF[0]);
+            }
+            else
+            {
+                coo.addDiagonalBlock(0, 1 + id, coeff, sX[1 + id]/sF[0]);
+            }
         }
 
             // --- Species diagonal blocks, mirroring pcApplyCallback's operators
@@ -1768,7 +1891,23 @@ void Foam::snesNewtonSolver::solveOuterStep
               + fvm::Sp(chemLField, dn)
               + fvm::Sp(chemPoverN, dn)
             );
-            coo.addFvMatrix(1 + s, sEqn, sX[1 + s]/sF[1 + s], rV);
+            if (perCellScaling_)
+            {
+                // rowFactor carries 1/V and 1/sF; the column factor is the
+                // species' own per-cell state scale. Reduces to the scalar
+                // call below when the scales are uniform -- but NOT bitwise,
+                // which is why this is a branch and not a replacement.
+                scalarField rf(rV);
+                forAll(rf, c) { rf[c] /= sF[1 + s]; }
+                coo.addFvMatrixBlockPerCell
+                (
+                    1 + s, 1 + s, sEqn, rf, colScale[1 + s]
+                );
+            }
+            else
+            {
+                coo.addFvMatrix(1 + s, sEqn, sX[1 + s]/sF[1 + s], rV);
+            }
 
             // --- THE COUPLING d(species residual)/d(ePotential), WITHOUT
             // WHICH THE SCHUR COMPLEMENT IS INERT.
@@ -1797,7 +1936,7 @@ void Foam::snesNewtonSolver::solveOuterStep
             //
             // That is invisible while the coupling is weak and fatal once it
             // is not, which is exactly the observed behaviour (measured
-            // 2026-09-10, doc/newton-ignition-experiments.md): Newton runs
+            // 2026-09-10, docs/design/newton-ignition-experiments.md): Newton runs
             // pre-ignition and stalls with DIVERGED_ITS at ignition, and NO
             // sub-preconditioner helps -- hypre, bjacobi, selfp, 5x the Krylov
             // budget, Eisenstat-Walker, three line searches and both
@@ -1886,7 +2025,16 @@ void Foam::snesNewtonSolver::solveOuterStep
               + fvm::Sp(lmea->Lsrc(), dE)
             );
             const label fE = 1 + nSpecies;
-            coo.addFvMatrix(fE, eEqnP, sX[fE]/sF[fE], rV);
+            if (perCellScaling_)
+            {
+                scalarField rf(rV);
+                forAll(rf, c) { rf[c] /= sF[fE]; }
+                coo.addFvMatrixBlockPerCell(fE, fE, eEqnP, rf, colScale[fE]);
+            }
+            else
+            {
+                coo.addFvMatrix(fE, eEqnP, sX[fE]/sF[fE], rV);
+            }
 
             // --- d(energy residual)/d(ePotential), the same missing coupling
             // as the species block above and for the same reason: the energy
@@ -1984,7 +2132,7 @@ void Foam::snesNewtonSolver::solveOuterStep
             // SWITCHABLE AND MEASURED, following chemJacobian_/chemCrossJacobian_:
             // the second of those was my own idea and turned out to cost 29%, so
             // a plausible-sounding Jacobian block does not get to be a default on
-            // theory alone. See doc/newton-ignition-experiments.md.
+            // theory alone. See docs/design/newton-ignition-experiments.md.
             if (jouleJacobian_)
             {
                 const label eIDj = species.electronSpeciesID();
@@ -2212,7 +2360,7 @@ void Foam::snesNewtonSolver::solveOuterStep
     // transport block is the one eliminated (see SnesPmatCOO::schurOnPhi).
     //
     // div((eps + dt*sigma) grad .) IS S_f to leading order in dt. Derivation in
-    // doc/schur-semiimplicit-poisson-preconditioner.md; in one line,
+    // docs/design/schur-semiimplicit-poisson-preconditioner.md; in one line,
     //     A_ft inv(A_tt) A_tf ~ q * dt * (-div(Z mu n grad .))
     //                         = -dt div(sigma grad .)
     // because sigma = q Z mu n is exactly the electrical conductivity. So the
@@ -2296,8 +2444,8 @@ void Foam::snesNewtonSolver::solveOuterStep
         {
             scalarField& nf = species.numberDensity(s).primitiveFieldRef();
             const label off = (1 + s)*nCellsLocal;
-            const scalar sxS = sX[1 + s];
-            for (label c = 0; c < nCellsLocal; ++c) { nf[c] = xBuf[off + c]*sxS; }
+            const scalarField& sxS = sXcell[1 + s];
+            for (label c = 0; c < nCellsLocal; ++c) { nf[c] = xBuf[off + c]*sxS[c]; }
             species.numberDensity(s).correctBoundaryConditions();
         }
 
@@ -2305,8 +2453,8 @@ void Foam::snesNewtonSolver::solveOuterStep
         {
             scalarField& nef = lmea->nEpsRef().primitiveFieldRef();
             const label off = (1 + nSpecies)*nCellsLocal;
-            const scalar sxE = sX[1 + nSpecies];
-            for (label c = 0; c < nCellsLocal; ++c) { nef[c] = xBuf[off + c]*sxE; }
+            const scalarField& sxE = sXcell[1 + nSpecies];
+            for (label c = 0; c < nCellsLocal; ++c) { nef[c] = xBuf[off + c]*sxE[c]; }
             lmea->nEpsRef().correctBoundaryConditions();
         }
     }
@@ -2317,7 +2465,7 @@ void Foam::snesNewtonSolver::solveOuterStep
     // raw (possibly zero/uniform) initial values with no floor applied,
     // and meanE_/T_ stale at their PRE-solve value (found via all-zero
     // diagnostics after the first successful run, 2026-09-09; see
-    // doc/newton-outer-solver-design.md):
+    // docs/design/newton-outer-solver-design.md):
     //   - species_.clampNumberDensities() (plasmaTransport.C:1309, inside
     //     solve(), which this path never calls) applies minNumberDensity.
     //   - energyModels_[i].correct() a SECOND time (plasmaEnergy.C:171,
