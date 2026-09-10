@@ -1034,19 +1034,32 @@ void plasmaTransport::solve(const bool finalIter)
 
     // GATED ON !rates_, added 2026-09-09. This whole block (through the
     // explicitSource fill further down) is the LEGACY Townsend-fit source
-    // model -- its constants (E_const = 2.73e7) are calibrated against a
-    // REDUCED field, not the raw Emag (V/m, O(1e4-1e5) in a real discharge)
-    // this fed it: exp(-2.73e7/Emag) underflows to ~1e-234 at real fields.
+    // model. Its constants are hard-coded for AIR AT ATMOSPHERIC PRESSURE
+    // with E in raw V/m, and in that regime they are correct -- verified
+    // 2026-09-10 against literature: alpha = 19 cm^-1 at the 30 kV/cm
+    // breakdown field and 1.06e3 cm^-1 at 100 kV/cm, the companion mobility
+    // fit mu = 2.398*E^-0.26 giving 0.036 m^2/V/s at 1e7 V/m, and
+    // eta = 340.75 m^-1 = 3.4 cm^-1. (An earlier version of this comment
+    // claimed the fit wanted a REDUCED field and was miscalibrated for the
+    // raw Emag it is fed. That was WRONG -- raw V/m is exactly what these
+    // constants expect.)
+    //
+    // What it is NOT is gas- or pressure-agnostic: at the O(1e4-1e5) V/m of a
+    // low-pressure glow it underflows to ~0, which is the right answer for
+    // air at 1 atm and a meaningless one for argon at a few Torr.
+    //
     // It used to run UNCONDITIONALLY every step, overwriting alpha_/S_iz_/
-    // k_eff_ with that garbage even when a real mechanism (`rates_`) was
-    // configured and had already computed (or was about to compute) the
-    // correct values -- since explicitSource is only ever ADDED to the
-    // species equations when mechanismSourceTerms() returns false (no
+    // k_eff_ with that out-of-regime value even when a real mechanism
+    // (`rates_`) was configured and had already computed (or was about to
+    // compute) the correct values -- since explicitSource is only ever ADDED
+    // to the species equations when mechanismSourceTerms() returns false (no
     // mechanism at all, see the `if (!mechanismSourceTerms(...))` below),
     // computing it at all when `rates_` exists was pure waste whose only
     // visible effect was corrupting the diagnostic fields. Confirmed
     // 2026-09-09: S_iz_ measured ~250 orders of magnitude below the
-    // mechanism table's own value at the same cell, same step.
+    // mechanism table's own value at the same cell, same step -- that case
+    // being a low-pressure argon glow, i.e. squarely outside this fit's
+    // regime, which is why the gap was so extreme.
     if (!rates_)
     {
     // constants as plain scalars — no dimensioned temporaries
@@ -1056,12 +1069,33 @@ void plasmaTransport::solve(const bool finalIter)
     scalarField& a = alpha_.primitiveFieldRef();
     const scalarField& E = Emag.primitiveField();
 
+    // UNDERFLOW GUARD, added 2026-09-10 on request. exp() returns a hard 0
+    // once its argument drops below about -745, i.e. for E < 2.73e7/745 =
+    // 3.7e4 V/m, and is denormal for roughly a decade above that -- and the
+    // prefactor multiplying it here is O(1e26), so a denormal factor is
+    // neither zero nor meaningful, and denormals are slow on some hardware.
+    // Clamping the argument keeps every intermediate strictly normal, and the
+    // floor on the result keeps alpha strictly positive.
+    //
+    // This changes NO physics anywhere the fit is valid: it is calibrated for
+    // air at atmospheric pressure (see the note above), where alpha is
+    // 1.9e3 m^-1 at the 3e6 V/m breakdown field and 1.1e5 m^-1 at 1e7 V/m.
+    // The guard only engages below 1e5 V/m, where the unguarded fit already
+    // returns < 1e-100 m^-1 -- utterly negligible against the eta = 340.75
+    // m^-1 attachment it is differenced against downstream.
+    const scalar expArgMin = -690.0;   // exp(-690) ~ 1e-300, still normal
+    const scalar alphaFloor = 1e-30;   // m^-1; 1e28 x below the useful range
+
     forAll(a, c)
     {
         const scalar Ec  = max(E[c], 1.0);              // safeEmag inline
         const scalar inv = 1.0/Ec;
-        a[c] = (1.1944e6 + E_pow*inv*inv*inv)            // pow(.,3) -> mult
-             * Foam::exp(-E_const*inv);
+        a[c] = max
+        (
+            (1.1944e6 + E_pow*inv*inv*inv)               // pow(.,3) -> mult
+          * Foam::exp(max(-E_const*inv, expArgMin)),
+            alphaFloor
+        );
         // NOTE: no "- eta" here; α stored plain so AMR can use it
     }
     alpha_.correctBoundaryConditions();
@@ -4357,11 +4391,12 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         // without ever touching S_iz_/k_eff_/alpha_ -- so for every case using
         // this solver path, those three fields stayed frozen at whatever the
         // UNCONDITIONAL legacy Townsend-fit block earlier in solve() last
-        // wrote them to. That fit evaluates exp(-2.73e7/Emag) against a raw
-        // V/m field it was never calibrated for (it wants a reduced field),
-        // underflowing to ~1e-234 at real discharge fields -- so S_iz_ read
-        // as "uniform 0"-adjacent garbage for the whole run, while the
-        // ACTUAL ionisation (chemP_/chemL_ above) was correct all along.
+        // wrote them to. That fit is hard-coded for air at 1 atm (its
+        // constants ARE right for raw V/m in that regime -- see the note at
+        // the fit itself), so in the low-pressure argon glow this was measured
+        // on it underflowed to ~0 and S_iz_ read as "uniform 0"-adjacent
+        // garbage for the whole run, while the ACTUAL ionisation
+        // (chemP_/chemL_ above) was correct all along.
         // chemP_[eIdx] IS the electron production rate the stiff integrator
         // just solved with -- dimensionally and physically the same quantity
         // S_iz_ is defined to hold -- so this refreshes the diagnostic from
