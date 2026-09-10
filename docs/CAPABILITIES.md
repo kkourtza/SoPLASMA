@@ -164,6 +164,7 @@ Python is **`~/ct-env/bin/python`**, not the system python.
 |---|---|
 | **Newton/JFNK outer solver** (`outerSolver newton`, PETSc SNES, matrix-free) | replaces the segregated Picard sweep; runs on the real 5-field system |
 | **Newton in PARALLEL** | verified to 1.96e-09, below SNES rtol 1e-8, by fixed-dt cell-by-cell comparison of final fields. The bug was `ISCreateStride(...,0,...)` using rank 0's rows on every rank; fixed with `MatGetOwnershipRange`. |
+| **Newton on a STREAMER** | `positiveStreamer_LMEA_fast` and `_fixedMesh` run under `outerSolver newton` as of 2026-09-11 (neither did before). See 3c for the four obstacles. |
 | **Newton transport models** | `driftDiffusion` and, since 2026-09-10, `immobile` -- the latter returns ZERO mu()/D() so the existing assembly reduces to ddt(n) == sources with no branching. `diffusion` is still REFUSED (it exposes neither), deliberately: assembling it without its transport would silently drop physics. The guard asks `providesTransportCoefficients()`, not a type. |
 | **Newton chemistry sources** | Needs per-species sources. `ode`/`adaptive`/`adaptiveError`/`implicitRate` populate chemP/chemL; `explicitSource` records a net source instead (added 2026-09-10, into its OWN field -- writing chemP_/chemL_ would have switched on the Co_chem limiter via maxChemStateRate(), changing dt for unrelated cases). Ask `chemistrySourcesAvailable()` / `chemNetSourceAvailable()` BEFORE reading: the accessors index the lists directly and segfault when unsized. |
 
@@ -196,6 +197,58 @@ Python is **`~/ct-env/bin/python`**, not the system python.
   calling the wrong slots, which presents as a startup SEGV that looks like a
   physics bug. Rebuild everything (`./build-all.sh`).
 
+## 3c. Newton on a STREAMER -- what it took (2026-09-11)
+
+`positiveStreamer_LMEA_fast` and `_fixedMesh` now run under `outerSolver
+newton`. Neither did before. Four obstacles, each a CLASS of bug:
+
+* **A COEFFICIENT THAT IS EXACTLY ZERO IS NOT SAFE IF IT IS HARMONICALLY
+  INTERPOLATED.** `immobile` returns zero mu/D so the ordinary drift-diffusion
+  assembly reduces to ddt(n) == sources with no branching anywhere. But the
+  streamer beds interpolate mobility with `harmonic` (2ab/(a+b)) and
+  diffusivity with `Gauss harmonic corrected`, so an identically-zero
+  coefficient is 0/0 on every face. Now 1e-30: harmonic-safe, a normal double,
+  26 orders below a real ion mobility, and invisible to Picard (which reaches
+  mu()/D() only through a caller that assembles the equation itself).
+  **Scharfetter-Gummel divides by D as well** (its Bernoulli argument), so an
+  immobile species must never be assembled with SG.
+* **THE CHEMISTRY JACOBIAN CAN INVERT THE DIAGONAL'S SIGN.** `chemJacobian`
+  approximates `dP_s/dn_s` as `P_s/n_s`: EXACT for the electron
+  (`dP_e/dn_e = k_iz*n_gas` IS the ionisation frequency), the WRONG QUANTITY
+  for a species produced by electron impact on something else, whose true
+  derivative is ~0. Species O at dt = 2.5e-13: `1/dt = +4.0e12` against
+  `-P/n = -1.5e13`, net **-1.1e13**. The transport block goes indefinite and
+  the outer Krylov STAGNATES (5.03e2 -> 4.04e2 over 28 iterations) rather than
+  diverging -- while BOTH sub-solves report themselves converged, which is the
+  tell. Now clamped so the sign cannot invert, and restricted to the electron
+  by default (`chemJacobianElectronOnly`): halves Krylov work on the streamer,
+  measured neutral on grubert.
+* **FIELDS FILLED INSIDE `plasmaTransport::solve()` GO STALE UNDER NEWTON,
+  SILENTLY** -- Newton REPLACES that solve. Two were caught one after the
+  other: `convectiveFlux_` (left `limitSpeciesCo` protecting nothing --
+  `Co_conv (e)` read EXACTLY 0 for 1300+ steps) and `particleFlux_` (feeds
+  `I_cond`, which `plasmaExternalCircuit` REGULATES ON, so the current-driven
+  electrode was inoperative under Newton: `I_cond` fossilised at one Picard
+  value for ~3900 steps while the gas broke down unnoticed).
+  **If a field is populated inside `solve()`, assume Newton never updates it.**
+* **EVERY CASE NEEDS THE `fvSchemes` CATCH-ALLS.** Newton assembles each
+  species equation itself, so it interpolates mu/D and forms a flux for EVERY
+  transported species. A missing entry is a FATAL lookup, not a fallback.
+  `_fixedMesh` had them; `_AMR`, `_LMEA_fast`, `_LMEA_minimal` and `needleDBD`
+  did not and died at the first Newton step. All fixed.
+
+**THE COARSE BED IS THE DEBUGGING TOOL.** Every one of the above was found on
+`positiveStreamer_LMEA_fast` at ~2 s per run, after hours of chasing the same
+bugs on the 1.15M-cell bed at minutes per attempt. That is what it exists for
+-- "COARSE BY DESIGN ... exercises the outer-loop coupling cheaply". It does
+NOT resolve the streamer and must never be quoted for physics.
+
+**PETSc SWALLOWS OpenFOAM'S STACK TRACE.** `PetscInitialize` installs its own
+signal handler and `-no_signal_handler` is read too late to stop it. To locate
+an FPE/SEGV inside a Newton run: `reconstructPar`, then drive it serially under
+`gdb --batch -ex run -ex 'bt 40'`. That found the harmonic division in one
+attempt, after two wrong guesses from reading code.
+
 ## 4. What has been REFUTED or DECIDED AGAINST -- do not re-propose
 
 | thing | verdict, and the measurement |
@@ -209,6 +262,9 @@ Python is **`~/ct-env/bin/python`**, not the system python.
 | **A mesh-symmetrisation utility, or a symmetry CHECK** | rejected with the user. Refinement already cures it (`Ey ~ NY^-1.7`); point-snapping still left 82/1592 volume pairs differing; an unstructured triangular mesh has no mirror symmetry at all, so a check would fire constantly and mean nothing. |
 | **`fvMatrix::residual()` standalone in parallel** | BROKEN -- misreports by ~21 orders of magnitude. Always compute the outer residual by explicit `fvc::`. Independent of PETSc. |
 | **`relativeChange` outer criterion** | REMOVED 2026-09-06. It divides by the field's deviation about its own mean, which collapses for a nearly-uniform field -- exactly `nEps_e` before ignition. |
+| **`sourceAwareScaling`** (scale a species' residual by its chemistry source instead of n/dt) | REFUTED and REMOVED 2026-09-11. `rms(chemP)/(rms(n)/dt)` measured per species: **0.833** for all seven source-dominated species, 1.6e-4 for the electron. The source NEVER exceeds ddt -- a species produced from nothing has n ~ P*dt by construction, so n/dt IS the source scale, and `max(ddt, src)` is a NO-OP. |
+| **`extrapolateGuess` as a cure for block imbalance** | no effect here: 38 vs 40 converged solves over 11 steps. Left at its default; still right for the case it was built for. |
+| **Ion mobility as the cause of Newton's conditioning trouble** | REFUTED. With the chemJacobian sign bug fixed, mobile and immobile arms are IDENTICAL digit for digit (18 steps, 76 KSP solves, 5.1 SNES its/step either way). The earlier apparent advantage of mobile ions WAS the bug. |
 | **ngspice bridge** | decided against |
 | **GMRES (not FGMRES) on the transport split** | `DIVERGED_BREAKDOWN` from a varying operator. FGMRES tolerates it. |
 | **`ROUND*01` schemes for number densities** | `libROUNDSchemes.so` registers EIGHT names; the `01` variants clamp the field to **[0,1]** -- catastrophic for a density of 1e16 m^-3, and "bounded" is exactly what a user reaches for. |
@@ -242,11 +298,18 @@ Python is **`~/ct-env/bin/python`**, not the system python.
 3. **The AP proof / semi-implicit-Poisson paper**, with the benchmark's dt data
    in hand.
 
-Also open, unordered: `grubert_1d_I` (running -- and `I_cond` sat at exactly
--4.5787e-10 A for 3371 steps with `g_dIdV = 0` while V ramped past -281 V,
-which needs one measurement); the negative-`L` chemistry guard (cheap, fold in
-when next touching `plasmaChemistryODE`); the validation-suite regeneration and
-its live BC fork; the second memory-consolidation pass.
+Also open, unordered:
+
+* **`grubert_1d_I`, relaunched COLD 2026-09-11** -- and this is now the FIRST
+  genuine test of current control, because the regulator has never actually
+  worked under Newton (see 3c, `particleFlux_`). Its earlier state was produced
+  by ~3900 steps of UNREGULATED ramping and is not trustworthy as physics.
+* The negative-`L` chemistry guard (cheap; fold in when next touching
+  `plasmaChemistryODE`).
+* The validation-suite regeneration and its live BC fork
+  (`changeDictionary` vs layer 1 disagree on electrode BCs and the far-field
+  `n_e` seed).
+* The second memory-consolidation pass.
 
 **NOT on the list: solve for `log(n)` instead of `n`.** Demoted by the user
 2026-09-10 -- *"remove log(ne) from the deferred list or demote it to last and
