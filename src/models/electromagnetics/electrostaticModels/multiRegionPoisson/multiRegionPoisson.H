@@ -181,6 +181,11 @@ public:
         //- Return the Poisson scheme
         const word& PoissonScheme() const override { return PoissonScheme_; }
 
+        void setPoissonScheme(const word& scheme) override
+        {
+            PoissonScheme_ = scheme;
+        }
+
         //- Return true if regions are monolithically coupled
         bool coupled() const { return coupled_; }
 

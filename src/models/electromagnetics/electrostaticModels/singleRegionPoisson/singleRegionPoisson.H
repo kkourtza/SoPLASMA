@@ -141,6 +141,11 @@ public:
         //- Return the Poisson scheme
         const word& PoissonScheme() const override { return PoissonScheme_; }
 
+        void setPoissonScheme(const word& scheme) override
+        {
+            PoissonScheme_ = scheme;
+        }
+
         //- Return number of non-orthogonal corrector passes
         label nNonOrthCorr() const override { return nNonOrthCorr_; }
 

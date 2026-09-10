@@ -300,48 +300,75 @@ int main(int argc, char *argv[])
                 oc.subDict("newtonSolver")
             );
 
-            // SEMI-IMPLICIT POISSON IS INCONSISTENT UNDER NEWTON. Warn
-            // loudly rather than let it silently cap the timestep.
+            // SEMI-IMPLICIT POISSON IS INCONSISTENT UNDER NEWTON, so the
+            // solver switches it OFF ITSELF rather than leaving a trap.
             //
             // The semi-implicit derivation PREDICTS the new charge density,
-            // rho^{n+1} ~ rho^n - dt*div(sigma*E), and substitutes that into
+            // rho^{n+1} ~ rho^n - dt*div(sigma*E), and substitutes it into
             // Gauss's law -- which is what produces the
             // div((eps + dt*sigma) grad phi) operator. Its whole purpose is to
             // avoid needing rho^{n+1}, which a SEGREGATED solver does not have.
             // A Newton residual already HAS rho^{n+1}: it is an unknown of the
             // coupled system. So `dt*sigma` counts the charge relaxation a
             // SECOND time, the coupled system has no consistent root, and the
-            // residual acquires a floor whose size is dt*sigma/eps -- the
+            // residual floors out at a level set by dt*sigma/eps -- the
             // dielectric relaxation ratio itself.
             //
             // MEASURED 2026-09-11 on grubert2009_ballast400: across 3167 steps
             // in two runs, NO step whose dielectric relaxation ratio exceeded
             // 0.3278 ever converged. Switching to `explicit`: SNES failures
-            // 4.92% -> 0%, dt 3.4e-12 -> 7.4e-11 (22x), and the ratio reached
-            // 308 with zero failures -- verified accurate to ~1% in n_e and
-            // Emag against the same scheme at dt <= 2e-12. Full account in
-            // doc/newton-ignition-experiments.md, section 23.
+            // 4.92% -> ~1%, dt 3.4e-12 -> 7.4e-11 (22x), the ratio reaching
+            // 308, and VERIFIED accurate to ~1% in n_e and Emag against the
+            // same scheme run at dt <= 2e-12. Full account in
+            // doc/newton-ignition-experiments.md section 23.
+            //
+            // SWITCHED, NOT WARNED ABOUT. A warning leaves the user running an
+            // inconsistent formulation that merely LOOKS slow, which is the
+            // worst of the available behaviours. Changing it mid-run is safe
+            // for this field specifically: ePotential has no time derivative,
+            // so there is no history to leave inconsistent -- see
+            // electromagneticsModel::setPoissonScheme.
+            //
+            // `allowSemiImplicitPoisson` is the escape hatch, and it exists for
+            // a real reason: reproducing the inconsistency deliberately is how
+            // the 0.3278 ceiling was measured, and that measurement is the
+            // evidence for the whole finding.
             if (em->PoissonScheme() == "semiImplicit")
             {
-                WarningInFunction
-                    << "outerSolver `newton` with poissonScheme"
-                    << " `semiImplicit`." << nl
-                    << "    These are INCONSISTENT. The semi-implicit form"
-                    << " predicts rho^{n+1} and folds it into the operator;"
-                    << nl
-                    << "    a Newton residual already carries rho^{n+1} as an"
-                    << " unknown, so the charge relaxation is counted TWICE"
-                    << nl
-                    << "    and the coupled system has no consistent root."
-                    << " The residual then floors out, and dt is capped where"
-                    << nl
-                    << "    dt*sigma/eps ~ 0.33 (measured: no step above 0.3278"
-                    << " ever converged, 3167 steps)." << nl
-                    << "    USE `poissonScheme explicit` WITH NEWTON: the"
-                    << " coupling Newton provides makes the semi-implicit"
-                    << nl
-                    << "    device redundant. Measured 22x larger dt, zero"
-                    << " failures, accurate to ~1%." << endl;
+                if (oc.getOrDefault<bool>("allowSemiImplicitPoisson", false))
+                {
+                    WarningInFunction
+                        << "outerSolver `newton` with poissonScheme"
+                        << " `semiImplicit`, kept because"
+                        << " allowSemiImplicitPoisson is set." << nl
+                        << "    THIS COMBINATION IS INCONSISTENT: the charge"
+                        << " relaxation is counted twice and the coupled"
+                        << " system has no" << nl
+                        << "    consistent root. Expect the timestep to be"
+                        << " capped where dt*sigma/eps ~ 0.33 and the residual"
+                        << " to stall." << endl;
+                }
+                else
+                {
+                    em->setPoissonScheme("explicit");
+                    Info<< "outerCoupling.outerSolver newton: poissonScheme"
+                        << " switched semiImplicit -> explicit." << nl
+                        << "    The semi-implicit form predicts rho^{n+1} and"
+                        << " folds it into the operator; a Newton residual"
+                        << nl
+                        << "    already carries rho^{n+1} as an unknown, so"
+                        << " the two together count the charge relaxation"
+                        << nl
+                        << "    TWICE and the coupled system has no consistent"
+                        << " root -- measured to cap deltaT at"
+                        << " dt*sigma/eps ~ 0.33." << nl
+                        << "    Newton supplies that coupling exactly, so the"
+                        << " semi-implicit device is redundant here."
+                        << " Measured: 22x larger" << nl
+                        << "    deltaT, dielectric ratio to 308, accurate to"
+                        << " ~1%. Set outerCoupling/allowSemiImplicitPoisson"
+                        << " to override." << endl;
+                }
             }
 
             Info<< "outerCoupling.outerSolver: newton -- the segregated"

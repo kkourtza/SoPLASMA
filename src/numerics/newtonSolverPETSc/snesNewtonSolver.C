@@ -1924,6 +1924,36 @@ void Foam::snesNewtonSolver::solveOuterStep
     species.clampNumberDensities();
     if (lmea) { lmea->correct(); }
 
+    // REFRESH THE CONVECTIVE FLUXES, or the species Courant limiter is INERT.
+    //
+    // plasmaTransport populates convectiveFlux_ inside its own solve(), from
+    // fvMatrix::flux() -- "Placed AFTER the solve, because fvMatrix::flux() is
+    // only defined once the matrix has been solved". The Newton path REPLACES
+    // that solve and never calls it, so the field kept its zero-initialised
+    // value and `limitSpeciesCo` silently protected nothing.
+    //
+    // MEASURED 2026-09-11 on grubert2009_ballast400: `Co_conv (e)` reported
+    // EXACTLY 0 for entire runs -- a single distinct value across 1300+ steps
+    // -- while `Co_conv (energy)`, which the LMEA model populates because
+    // Newton does call lmea->correct(), read 6-27 on the same steps. That
+    // asymmetry is what exposed it. Harmless on a case whose cap is 1500, and
+    // a silent loss of protection on any case that sets a real one.
+    //
+    // Computed from STATE, not from a matrix: the drift face flux IS
+    // phi_s*n_f with phi_s = Z*mu_f*phiE, which is exactly what the Courant
+    // number needs (convRate ~ 0.5*sum|phi_s|/V, i.e. v/dx). No solved matrix
+    // is required, so this does not resurrect the dependency that put the
+    // original call inside solve().
+    for (const label i : species.mobileSpeciesIDs())
+    {
+        const scalar Z = species.speciesChargeNumber(i);
+        const plasmaTransportModel& m = transport.transportModel(i);
+
+        transport.convectiveFlux(i) =
+            Z*fvc::interpolate(m.mu())*em.phiE()
+           *fvc::interpolate(species.numberDensity(i));
+    }
+
     Info<< "outerSolver newton (SNES): reason " << reason
         << " (positive = converged), iterations " << its << endl;
 

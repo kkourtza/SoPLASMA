@@ -384,6 +384,25 @@ public:
         virtual void setBackgroundDensity(const volScalarField& N) = 0;
 
         virtual const word& PoissonScheme() const = 0;
+
+        //- Change the Poisson discretisation AT RUN TIME.
+        //
+        //  Exists for exactly one caller: soPlasmaFoam forcing `explicit` when
+        //  the Newton outer solver takes over. The semi-implicit form PREDICTS
+        //  rho^{n+1} and folds it into the operator, which is what a SEGREGATED
+        //  solver needs and what a Newton residual -- which already carries
+        //  rho^{n+1} as an unknown -- must not have, because the charge
+        //  relaxation is then counted twice and the coupled system has no
+        //  consistent root (doc/newton-ignition-experiments.md section 23).
+        //
+        //  SAFE TO CHANGE MID-RUN, and the reason is specific to this field:
+        //  ePotential has NO time derivative. It is recomputed from the charge
+        //  density every step, so there is no history that a change of
+        //  discretisation could leave inconsistent -- phi simply jumps by the
+        //  O(dt*sigma/eps) difference between the two operators and is
+        //  thereafter consistent. The same change to a TRANSPORTED field, which
+        //  carries fvm::ddt and an old-time history, would NOT be safe.
+        virtual void setPoissonScheme(const word& scheme) = 0;
         virtual label nNonOrthCorr() const = 0;
         virtual const word& EScheme() const = 0;
 
