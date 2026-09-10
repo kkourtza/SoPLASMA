@@ -633,6 +633,62 @@ is not automatically right for the hard one. **Measure both states before making
 anything a default** — I did not, and got a headline number that does not
 generalise.
 
+### 21. THE VERDICT RUN — Newton did NOT pass the benchmark, and WHY matters
+
+`newton_ignition_fixed`, restarted at t=1.86023e-6, ran **14,301 steps with
+1,534 retries** and stopped at **t = 1.949675e-06** — short of Picard's death
+point at 1.971771e-06.
+
+**But it failed for a completely different reason.** Not convergence:
+
+    wall-flux condition on patch anode for field n_e has become singular.
+    The drift into the wall now exceeds the thermal speed by more than the
+    near-wall diffusive velocity D/delta, so D/delta + uEff <= 0.
+    Present settings on this patch: reflection r = 0.36, fluxScheme `standard`.
+
+That is a **boundary-condition model limit**, and the solver's own error text
+names the remedy: `fluxScheme ScharfetterGummel`, whose denominator
+`D/delta*Bern(Pe) + uAbs` has both terms non-negative for any `r`, so it cannot
+invert — and which is "the better scheme for the drift-dominated cell this
+failure happens in" anyway.
+
+**Newton is NOT immune to the stiffening, only more graceful about it:**
+
+| | Picard | Newton |
+|---|---|---|
+| died at | t = 1.971771e-06 | t = 1.949675e-06 |
+| cause | **dt floor, 150/150 correctors** | **wall-flux BC singular** |
+| dt at death | 1.7986e-14 | **9.74e-14 (5.4× larger)** |
+| dt collapse | **72,000×** | **~2,000×** |
+| `n_e` max | 4.61e+18 | **1.50e+19** |
+
+So Newton's dt collapsed too — a 2,000× collapse is not a triumph — but 36×
+less severely, and it carried the discharge to 3× the electron density before
+stopping on a different failure entirely.
+
+**HONEST READING: this is not "Newton beats Picard".** Newton stopped earlier in
+TIME. What it does establish is that the *solver* is no longer the thing that
+stops the run — a boundary-condition scheme is — and that is a different and
+more tractable blocker.
+
+### 22. `fluxScheme ScharfetterGummel` — UNDER TEST
+
+And a rule-42 lesson on the way in. The first attempt edited `fluxScheme` into
+the **patch dictionaries** of the restart time directory. That is the wrong
+place and the edit was silently stripped at startup: the BC reads the scheme
+from the TRANSPORT MODEL (`ddModel.fluxScheme()`), not from the patch entry. The
+run looked like it was testing SG and was testing nothing.
+
+The real knob is per-species, and this case already parameterises it:
+
+    constant/plasmaSpeciesProperties:  driftDiffusionCoeffs { fluxScheme $driftDiffusionFluxScheme; }
+    configuration/config:              driftDiffusionFluxScheme  standard;   ->  ScharfetterGummel;
+
+Confirmed in force by the run's own species table before trusting it. Note this
+changes the transport DISCRETISATION everywhere, not just at the wall, so it is
+a physics-affecting change and its accuracy needs checking against the existing
+2 ns results — not just "does it survive".
+
 ## Still untested / next, in priority order (as of 2026-09-11 ~03:40)
 
 1. **`maxIt` is state-dependent — resolve it.** Raising `maxIt` 50→200 HURT at
