@@ -46,6 +46,9 @@ divSchemes
     //     Entry 'div(phi_N2p,n_N2p)' not found in divSchemes
     div(phi_e,n_e)                  $electronDriftDivScheme;
 
+
+    // See interpolationSchemes for why this catch-all is required.
+    "div\(phi_.*,n_.*\)"            $electronDriftDivScheme;
     // THE MOBILE IONS. This case needs them mobile: secondary electron
     // emission emits nothing without an ion wall flux, and the SEE coefficient
     // is what makes this a self-sustaining discharge rather than a single
@@ -61,6 +64,7 @@ laplacianSchemes
 {
     laplacian(D_e,n_e)              $electronDiffusionLaplacianScheme;
 
+    "laplacian\(D_.*,n_.*\)"        $electronDiffusionLaplacianScheme;
     laplacian(D_N2p,n_N2p)          $electronDiffusionLaplacianScheme;
     laplacian(D_O2p,n_O2p)          $electronDiffusionLaplacianScheme;
     laplacian(D_Om,n_Om)            $electronDiffusionLaplacianScheme;
@@ -91,6 +95,15 @@ interpolationSchemes
     interpolate(mu_e)               $electronMobilityInterpolationScheme;
     interpolate(D_e)                $electronDiffusivityInterpolationScheme;
 
+
+    // Catch-alls, matching positiveStreamer_fixedMesh. `outerSolver newton`
+    // assembles each species equation ITSELF, so it forms a flux and
+    // interpolates mu/D for EVERY transported species, not just the electron.
+    // Those names are not knowable here, and a missing entry is a FATAL
+    // lookup, not a fallback. Added 2026-09-11.
+    "interpolate\(n_.*\)"           linear;
+    "interpolate\(mu_.*\)"          $electronMobilityInterpolationScheme;
+    "interpolate\(D_.*\)"           $electronDiffusivityInterpolationScheme;
     interpolate(mu_N2p)             $electronMobilityInterpolationScheme;
     interpolate(mu_O2p)             $electronMobilityInterpolationScheme;
     interpolate(mu_Om)              $electronMobilityInterpolationScheme;

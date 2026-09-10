@@ -330,6 +330,17 @@ class snesNewtonSolver
     //
     //  Default TRUE. It is a real behaviour change for every existing case, so
     //  it is switchable and the measurement above is the justification.
+    //- Size each species' residual scale by the LARGEST term in that
+    //  residual (including the chemistry source), not by n/dt alone.
+    //
+    //  Default FALSE: it changes what `rtol` means for every existing
+    //  Newton case, so it is measured per case rather than assumed.
+    //  See the measurement at its use site -- on
+    //  positiveStreamer_LMEA_fast the excited neutrals carried scaled
+    //  residuals of 300-1300 against ~2 for the charged species,
+    //  because their production outruns n/dt by ~25x.
+    bool sourceAwareScaling_;
+
     bool adaptiveForcing_;
 
     //- Start the Newton solve from a LINEAR EXTRAPOLATION of the history

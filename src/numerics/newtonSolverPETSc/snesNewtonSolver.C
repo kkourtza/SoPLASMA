@@ -837,7 +837,14 @@ void pcApplyCallback
                      em.ePotential().mesh(), IOobject::NO_READ, IOobject::NO_WRITE),
             em.ePotential().mesh(), dimensionedScalar(dimless/dimTime, Zero)
         );
-        chemLField.primitiveFieldRef() = transport.chemL(s);
+        // ASK before reading: chemL(s) indexes chemL_ directly, and on the
+        // `explicitSource` path that list is EMPTY -- reading it is an
+        // out-of-bounds access, not an empty field. Zero loss is the right
+        // fallback there because that path genuinely has no loss coefficient.
+        if (transport.chemistrySourcesAvailable())
+        {
+            chemLField.primitiveFieldRef() = transport.chemL(s);
+        }
 
         fvScalarMatrix eqn
         (
@@ -976,6 +983,7 @@ Foam::snesNewtonSolver::snesNewtonSolver
         dict.getOrDefault<scalar>("jouleJacobianRatioMax", 10.0)
     ),
     adaptiveForcing_(dict.getOrDefault<bool>("adaptiveForcing", true)),
+    sourceAwareScaling_(dict.getOrDefault<bool>("sourceAwareScaling", false)),
     extrapolateGuess_(dict.getOrDefault<bool>("extrapolateGuess", false)),
     extrapolatePotential_(dict.getOrDefault<bool>("extrapolatePotential", true))
 {
@@ -1188,7 +1196,41 @@ void Foam::snesNewtonSolver::solveOuterStep
         for (label s = 0; s < nSpecies; ++s)
         {
             sX[1 + s] = safeScale(rmsOf(species.numberDensity(s).primitiveField()));
-            sF[1 + s] = safeScale(sX[1 + s]/dt.value());
+
+            // sF is the scale the block's residual is DIVIDED by, so it must
+            // be the size of the LARGEST term in that residual. n/dt is only
+            // the ddt term, and for a species whose chemistry outruns it that
+            // is the wrong yardstick by orders of magnitude.
+            //
+            // MEASURED 2026-09-11 on positiveStreamer_LMEA_fast, one Newton
+            // step, |F_scaled| per block:
+            //     charged   n_e 1.9   n_N2p 1.8   n_O2p 1.9
+            //     excited   n_O 523   n_N2_A3 633   n_N2_C3 1304
+            // For n_O: |ddt| 1.06e23 against |chemP| 2.68e24 -- production is
+            // 25x the time derivative, because P*dt exceeds the species' own
+            // density in a single step. Scaling by n/dt therefore left those
+            // blocks ~500x out of balance with the charged ones, and the
+            // Krylov solve inside SNES died with DIVERGED_ITS at 100.
+            //
+            // Including the source makes the yardstick the actual dominant
+            // term. OFF by default: it changes what `rtol` MEANS for every
+            // existing Newton case, so it must be measured per case, not
+            // assumed.
+            scalar fScale = sX[1 + s]/dt.value();
+
+            if (sourceAwareScaling_)
+            {
+                if (transport.chemistrySourcesAvailable())
+                {
+                    fScale = max(fScale, rmsOf(transport.chemP(s)));
+                }
+                else if (transport.chemNetSourceAvailable())
+                {
+                    fScale = max(fScale, rmsOf(transport.chemNetSource(s)));
+                }
+            }
+
+            sF[1 + s] = safeScale(fScale);
         }
 
         if (lmea)
@@ -1903,7 +1945,10 @@ void Foam::snesNewtonSolver::solveOuterStep
             // loss term from the PRECONDITIONER until it exists is safe: a
             // preconditioner need only approximate, and it is refreshed on
             // every subsequent step.
-            if (transport.chemL(s).size() == nCellsLocal)
+            // The old probe was `transport.chemL(s).size() == nCellsLocal`,
+            // which is itself an out-of-bounds read when chemL_ is EMPTY
+            // rather than merely unsized -- asking the question crashed.
+            if (transport.chemistrySourcesAvailable())
             {
                 chemLField.primitiveFieldRef() = transport.chemL(s);
             }
@@ -1918,17 +1963,57 @@ void Foam::snesNewtonSolver::solveOuterStep
                          IOobject::NO_READ, IOobject::NO_WRITE),
                 mesh_, dimensionedScalar(dimless/dimTime, Zero)
             );
-            if (chemJacobian_ && transport.chemP(s).size() == nCellsLocal)
+            const bool pmatHavePL  = transport.chemistrySourcesAvailable();
+            const bool pmatHaveNet = transport.chemNetSourceAvailable();
+            if (chemJacobian_ && (pmatHavePL || pmatHaveNet))
             {
-                const scalarField& P = transport.chemP(s);
+                const scalarField& P =
+                    pmatHavePL
+                  ? transport.chemP(s)
+                  : transport.chemNetSource(s);
                 const scalarField& nsf = species.numberDensity(s).primitiveField();
                 const scalar nFloor = max(species.speciesMinNumberDensity(s), SMALL);
+
+                // NEGATIVE: F carries -P, so dF/dn gets -dP/dn. But it is
+                // CLAMPED so it can never outweigh ddt's own 1/dt and flip the
+                // diagonal's SIGN.
+                //
+                // P/n is only a derivative when a species' production is
+                // FIRST ORDER IN ITS OWN DENSITY. For a species produced by
+                // electron impact on the background gas -- every excited
+                // neutral here -- P does not depend on n_s at all, so the true
+                // dP/dn_s is ~0 while P/n_s is enormous, because P*dt exceeds
+                // the species' own density in one step.
+                //
+                // MEASURED 2026-09-11, positiveStreamer_LMEA_fast, species O
+                // at dt = 2.5e-13:
+                //     ddt diagonal   1/dt      = +4.0e12
+                //     -P/n                     = -1.5e13
+                //     net                      = -1.1e13   <- WRONG SIGN
+                // The fieldsplit preconditioner then has an indefinite
+                // transport block, and the outer Krylov STAGNATES rather than
+                // diverging: 5.03e2 -> 4.04e2 in 28 iterations, then
+                // DIVERGED_ITS at 100. A/B over four arms: with this term
+                // unclamped the run did not advance past the handover step at
+                // all (0 outer solves converged); with it off, 13 converged.
+                //
+                // A preconditioner is allowed to be a poor approximation. It
+                // is not allowed to have the wrong sign, so the clamp keeps
+                // the term wherever it is a genuine damping contribution and
+                // drops the part that would invert the diagonal.
+                const scalar dtInv = 1.0/mesh_.time().deltaTValue();
+                const scalarField& cl = chemLField.primitiveField();
 
                 scalarField& pn = chemPoverN.primitiveFieldRef();
                 forAll(pn, c)
                 {
-                    // NEGATIVE: F carries -P, so dF/dn gets -dP/dn.
-                    pn[c] = -P[c]/max(nsf[c], nFloor);
+                    const scalar raw = -P[c]/max(nsf[c], nFloor);
+
+                    // Keep the diagonal strictly positive: 1/dt + chemL + pn
+                    // must stay above a small fraction of 1/dt.
+                    const scalar floorPn = -0.9*(dtInv + cl[c]);
+
+                    pn[c] = max(raw, floorPn);
                 }
             }
 
@@ -2034,11 +2119,14 @@ void Foam::snesNewtonSolver::solveOuterStep
             (
                 chemCrossJacobian_
              && s != species.electronSpeciesID()
-             && transport.chemP(s).size() == nCellsLocal
+             && (pmatHavePL || pmatHaveNet)
             )
             {
                 const label eID = species.electronSpeciesID();
-                const scalarField& P = transport.chemP(s);
+                const scalarField& P =
+                    pmatHavePL
+                  ? transport.chemP(s)
+                  : transport.chemNetSource(s);
                 const scalarField& ne =
                     species.numberDensity(eID).primitiveField();
                 const scalar neFloor =

@@ -28,12 +28,16 @@ gradSchemes
 divSchemes
 {
     div(phi_e,n_e)                  $electronDriftDivScheme;
+
+    // See interpolationSchemes for why this catch-all is required.
+    "div\(phi_.*,n_.*\)"            $electronDriftDivScheme;
 }
 
 laplacianSchemes
 {
     laplacian(D_e,n_e)              $electronDiffusionLaplacianScheme;
 
+    "laplacian\(D_.*,n_.*\)"        $electronDiffusionLaplacianScheme;
     laplacian((epsilon+(deltaT*electricalConductivity)),ePotential)  $ePotentialLaplacianScheme;
     laplacian(epsilon,ePotential)                                    $ePotentialLaplacianScheme;
 
@@ -47,6 +51,15 @@ interpolationSchemes
 
     interpolate(mu_e)               $electronMobilityInterpolationScheme; 
     interpolate(D_e)                $electronDiffusivityInterpolationScheme;
+
+    // Catch-alls, matching positiveStreamer_fixedMesh. `outerSolver newton`
+    // assembles each species equation ITSELF, so it forms a flux and
+    // interpolates mu/D for EVERY transported species, not just the electron.
+    // Those names are not knowable here, and a missing entry is a FATAL
+    // lookup, not a fallback. Added 2026-09-11.
+    "interpolate\(n_.*\)"           linear;
+    "interpolate\(mu_.*\)"          $electronMobilityInterpolationScheme;
+    "interpolate\(D_.*\)"           $electronDiffusivityInterpolationScheme;
 }
 
 snGradSchemes
