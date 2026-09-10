@@ -55,7 +55,16 @@ Some tutorials require additional software not needed by the core toolkit.
 
 ## 4. Python Dependencies
 
-Some utilities and post-processing scripts in the `SoPLASMA` rely on a small set of Python packages. These are optional and only needed if you plan to use the Python-based tools.
+Some utilities and post-processing scripts in the `SoPLASMA` rely on a small set of Python packages. Most are optional and only needed if you plan to use the Python-based tools.
+
+> **`fluidfoam` is an exception: the `positiveStreamer*` tutorials cannot produce a
+> streamer without it.** Their initial condition is a Gaussian ionisation seed applied
+> by `initGaussianSeed.py`, which reads the mesh through `fluidfoam`. Without the
+> package the seed does not apply and the case runs a *quiescent gas in a Laplace
+> field* -- to completion, reporting no error, with the electron density pinned at its
+> background value. Measured 2026-09-11: 2000 steps, 0 fatal errors, no streamer.
+> The `Allrun` scripts now stop rather than continue, but the dependency is listed
+> here because that failure was silent for as long as it existed.
 
 ### Python Packages
 
@@ -66,6 +75,7 @@ Some utilities and post-processing scripts in the `SoPLASMA` rely on a small set
 | **matplotlib** | Plotting and visualization     | 3.10.7         |
 | **pandas**     | Data handling for analysis     | 2.3.3          |
 | **gmsh**       | Mesh generation for specific tutorials | 4.15.0 |
+| **fluidfoam**  | Reads the mesh for the streamer tutorials' Gaussian seed -- **REQUIRED, not optional, for every `positiveStreamer*` case** | 0.2.9 |
 
 These packages are listed in the file: [`docs/getting_started/python_dependencies.txt`](./python_dependencies.txt)
 

@@ -67,7 +67,22 @@ cp etc/changeDictionary system/changeDictionaryDict
 changeDictionary
 
 # -----------------------------------------------------------------------------
-python initGaussianSeed.py
+# THE SEED IS THE CASE. Without it this is a quiescent gas in a Laplace
+# field: it runs to completion, reports no error, and contains no streamer.
+#
+# It used to be `python initGaussianSeed.py` with NO status check, and it
+# failed silently for two reasons at once -- `python` does not exist on a
+# python3-only system, and the script imports `fluidfoam`, which was declared
+# nowhere. Measured 2026-09-11: the case ran 2000 steps, 0 fatal errors, with
+# n_e pinned at its 1e13 background the whole way. A tutorial that quietly
+# solves the wrong problem is worse than one that stops.
+python3 initGaussianSeed.py || {
+    echo "" >&2
+    echo "initGaussianSeed.py FAILED -- refusing to run a streamer case with no streamer." >&2
+    echo "  It needs numpy and fluidfoam:   pip install fluidfoam" >&2
+    echo "  Without the seed the case is a quiescent gas and every result is meaningless." >&2
+    exit 1
+}
 
 runApplication $(getApplication)
 

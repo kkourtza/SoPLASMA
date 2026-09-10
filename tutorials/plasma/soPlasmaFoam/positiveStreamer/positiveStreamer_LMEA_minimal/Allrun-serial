@@ -33,7 +33,18 @@ plasmaCreateSpeciesFields > log.plasmaCreateSpeciesFields 2>&1 \
 cp etc/changeDictionary system/changeDictionaryDict
 changeDictionary > log.changeDictionary 2>&1
 
-python3 initGaussianSeed.py > log.initGaussianSeed 2>&1 || true
+# THE SEED IS THE CASE. `|| true` used to swallow its failure outright, so a
+# missing `fluidfoam` left a quiescent gas in a Laplace field: 2000 steps, 0
+# fatal errors, n_e pinned at its 1e13 background, no streamer anywhere.
+# Measured 2026-09-11. A tutorial that quietly solves the wrong problem is
+# worse than one that stops.
+python3 initGaussianSeed.py > log.initGaussianSeed 2>&1 || {
+    echo "" >&2
+    echo "initGaussianSeed.py FAILED -- refusing to run a streamer case with no streamer." >&2
+    echo "  It needs numpy and fluidfoam:   pip install fluidfoam" >&2
+    echo "  See log.initGaussianSeed. Without the seed every result is meaningless." >&2
+    exit 1
+}
 
 soPlasmaFoam > log.soPlasmaFoam 2>&1
 rc=$?
