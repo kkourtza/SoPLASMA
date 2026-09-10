@@ -778,6 +778,11 @@ protected:
 volScalarField S_iz_;
 
 autoPtr<photoionizationModel> photoionization_;
+
+    //- The case supplied NO `chemistry` dictionary, so sources come from the
+    //  legacy hard-coded Townsend fits applied inside solve(). Recorded so a
+    //  caller that REPLACES solve() can refuse rather than silently drop them.
+    bool legacyTownsend_ = false;
 public:
 
     //- Whether the electron energy is integrated by the chemistry ODE rather
@@ -1008,6 +1013,20 @@ public:
         inline const surfaceScalarField& particleFlux(const label i) const;
         inline PtrList<surfaceScalarField>& particleFlux();
         inline const PtrList<surfaceScalarField>& particleFlux() const;
+        //- True when the case has no `chemistry` dictionary and its ionisation
+        //  therefore comes from the LEGACY Townsend fits applied inside solve().
+        //
+        //  An outer solver that replaces solve() -- the Newton path does -- would
+        //  drop those sources entirely and run an unionised gas without saying so.
+        //  It asks this and refuses instead.
+        bool usingLegacyTownsend() const { return legacyTownsend_; }
+
+        //- True when a photoionization model is active. Same reason: the Newton
+        //  residual does not include it yet, and a positive streamer in air needs
+        //  it to propagate, so a case that asks for it must be told rather than
+        //  quietly given a different problem.
+        bool hasPhotoionization() const { return photoionization_.valid(); }
+
         inline surfaceScalarField& convectiveFlux(const label i);
         inline const surfaceScalarField& convectiveFlux(const label i) const;
         inline PtrList<surfaceScalarField>& convectiveFlux();

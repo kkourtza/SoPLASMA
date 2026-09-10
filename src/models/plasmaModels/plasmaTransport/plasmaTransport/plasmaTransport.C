@@ -2092,6 +2092,7 @@ void Foam::plasmaTransport::readChemistry(const dictionary& dict)
     {
         Info<< "plasmaTransport: no `chemistry` dictionary; using the legacy"
             << " hard-coded Townsend fits" << endl;
+        legacyTownsend_ = true;
         return;
     }
 

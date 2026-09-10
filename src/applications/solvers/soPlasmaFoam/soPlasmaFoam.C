@@ -300,6 +300,59 @@ int main(int argc, char *argv[])
                 oc.subDict("newtonSolver")
             );
 
+            // WHAT THE NEWTON RESIDUAL DOES NOT YET INCLUDE. It is built
+            // from the Poisson, species and electron-energy equations only, so
+            // any source or coupling applied ELSEWHERE -- inside
+            // plasmaTransport::solve(), which this path replaces wholesale --
+            // is simply absent. Absent, not approximated: the run proceeds and
+            // solves a different problem.
+            //
+            // Each of these is refused rather than warned about, because the
+            // resulting answer is not a degraded version of the right one. A
+            // streamer with no photoionization does not propagate; a case whose
+            // only ionisation source is the legacy Townsend fit has NO
+            // ionisation at all under Newton.
+            if (transport.usingLegacyTownsend())
+            {
+                FatalErrorInFunction
+                    << "outerSolver `newton` with the LEGACY Townsend source"
+                    << " model." << nl
+                    << "    This case supplies no `chemistry` dictionary, so"
+                    << " its ionisation comes from the hard-coded Townsend"
+                    << nl
+                    << "    fits applied inside plasmaTransport::solve() --"
+                    << " which the Newton path REPLACES. Those sources would"
+                    << nl
+                    << "    be silently dropped and the run would solve an"
+                    << " unionised gas." << nl << nl
+                    << "    Use a `chemistry` dictionary with a mechanism"
+                    << " (`sourceModel reactions`, or `townsend` for"
+                    << nl
+                    << "    alpha-based rates). BOTH are honoured under Newton:"
+                    << " they build chemP_/chemL_ through" << nl
+                    << "    mechanismSourceTerms(), which the residual"
+                    << " refreshes itself." << nl
+                    << exit(FatalError);
+            }
+
+            if (transport.hasPhotoionization())
+            {
+                FatalErrorInFunction
+                    << "outerSolver `newton` with a photoionization model"
+                    << " active." << nl
+                    << "    The Newton residual does not include the"
+                    << " photoionization source yet, so it would be dropped"
+                    << nl
+                    << "    silently. A positive streamer in air REQUIRES it to"
+                    << " propagate, so the result would not be" << nl
+                    << "    a degraded answer but a different physical problem."
+                    << nl << nl
+                    << "    Run this case with `outerSolver picard`, or set"
+                    << " `photoionizationModel none` if the case does" << nl
+                    << "    not actually need it." << nl
+                    << exit(FatalError);
+            }
+
             // SEMI-IMPLICIT POISSON IS INCONSISTENT UNDER NEWTON, so the
             // solver switches it OFF ITSELF rather than leaving a trap.
             //
