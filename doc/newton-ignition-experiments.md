@@ -689,6 +689,71 @@ changes the transport DISCRETISATION everywhere, not just at the wall, so it is
 a physics-affecting change and its accuracy needs checking against the existing
 2 ns results — not just "does it survive".
 
+### 23. THE SEMI-IMPLICIT POISSON IS INCONSISTENT INSIDE A NEWTON RESIDUAL
+
+**The user's insight, and it is the largest effect measured in this whole log.**
+
+The semi-implicit Poisson exists to relax the dielectric-relaxation constraint.
+Under Newton it was doing the OPPOSITE -- it was the thing enforcing it.
+
+**Why.** The semi-implicit derivation PREDICTS the new charge density,
+rho^{n+1} ~ rho^n - dt*div(sigma*E), and substitutes that into Gauss's law. That
+substitution is what produces the operator
+
+    div( (eps + dt*sigma) grad(phi) ) = -rho^n - dt*(diffusive)
+
+and its whole purpose is to avoid needing rho^{n+1}, which a SEGREGATED solver
+does not have. **A Newton residual already has rho^{n+1}** -- it is an unknown of
+the coupled system, rebuilt from the trial densities at step 1b. So the
+`dt*sigma` term accounts for the charge relaxation a SECOND time. The coupled
+system then has no consistent root, which is exactly a residual floor, and the
+size of the spurious term is `dt*sigma/eps` -- the dielectric relaxation ratio
+itself.
+
+**That predicted the ceiling quantitatively, and the data matched.** Across 3167
+steps in two runs, NO step whose dielectric relaxation ratio exceeded 0.3278
+ever converged. In one run the separation was perfect: 0 of 161 successes at or
+above the lowest failing ratio.
+
+**The fix is to use the plain Poisson residual**, since Newton makes the
+semi-implicit device redundant:
+
+| | semiImplicit | **explicit** |
+|---|---|---|
+| SNES failures | 4.92% | **0% (0 of 19)** |
+| retries | 10 | **0** |
+| dt | ~3.4e-12 | **7.40e-11 (22x)** |
+| max dielectric relaxation ratio | 0.60 | **19.52** |
+
+**Newton now steps over the dielectric relaxation time by ~19x** -- which is the
+claim JFNK was adopted for and had never once demonstrated.
+
+**Why every other hypothesis failed to find this**, and it is worth recording as
+a lesson: the defect was not in the solver, the preconditioner, the Jacobian, the
+initial guess, the tolerances or the chemistry -- all six were eliminated by
+measurement. It was in the EQUATION the residual encoded. A Newton solver
+converges to the root of whatever residual it is given, and this residual had no
+root. Six increasingly sophisticated solver diagnostics could not see that,
+because they all presuppose the equation is right.
+
+SAMPLE IS SMALL (19 steps). Being confirmed over a longer run, and the physics
+must be checked against the semiImplicit trajectory rather than merely observing
+that it runs fast.
+
+### 24. Eliminated by measurement, in order (all with the knob verified)
+
+Recorded so none of these is re-run. Every one was a plausible candidate.
+
+| hypothesis | how it died |
+|---|---|
+| accuracy / `errRtol` limit | 100x relaxation changed dt by 0.98-1.04x; `rejection memory` took over (2 -> 8 -> 43) |
+| adaptive chemistry (`adaptiveError`) | `implicitRate` gave 6.9% failures against 4.5% |
+| F not a function of u | purity check: `||dF|| = 0` exactly |
+| F has hysteresis | F(x), F(x'), F(x): `||dF|| = 0` exactly |
+| matrix-free differencing step | `mffdErr` 1e-5 / 1e-7 / PETSc default: dt ratios 1.00 / 1.00 / 0.99 |
+| initial guess outside the basin | linear extrapolation, equal N: ratios 1.00 / 1.01 / 1.01 |
+| "just needs more iterations" | most failing solves need 1,000-53,000 more; a minority need ~33 |
+
 ## Still untested / next, in priority order (as of 2026-09-11 ~03:40)
 
 1. **`maxIt` is state-dependent — resolve it.** Raising `maxIt` 50→200 HURT at
