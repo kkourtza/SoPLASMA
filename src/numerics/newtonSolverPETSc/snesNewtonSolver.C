@@ -1369,6 +1369,110 @@ void Foam::snesNewtonSolver::solveOuterStep
         List<double> primeF(nLocalTotal, Zero);
         residualCallback(int(nLocalTotal), xBuf.data(), primeF.data(), &ctx);
 
+        // PURITY CHECK: is F a FUNCTION OF u AT ALL?
+        //
+        // A line search cannot increase ||F|| if the direction is a descent
+        // direction and F is a genuine function of u. Measured 2026-09-11 on
+        // grubert2009_ballast400, the gnorm OSCILLATES through the line search
+        // (13.18 -> 13.10 -> 13.23 -> ... -> 16.85 -> ... -> 13.94) and
+        // `Cubic step no good` appears 193 times in 52 steps. That is the
+        // signature of F not being a pure function of u -- the residual
+        // evaluation MUTATES state (updateDerived() writes a clamp back into
+        // nEps_; the chemistry caches; the LFA seed), so re-evaluating at the
+        // same u gives a DIFFERENT F and Newton is chasing a moving target.
+        //
+        // This evaluates F twice at the SAME x and reports the difference. A
+        // non-zero result is a BUG, not a tolerance: it means the Jacobian
+        // PETSc differences is the derivative of something that is not a
+        // function.
+        {
+            List<double> pf2(nLocalTotal, Zero);
+            residualCallback(int(nLocalTotal), xBuf.data(), pf2.data(), &ctx);
+
+            // HYSTERESIS: evaluate somewhere ELSE, then come BACK to x. This
+            // is what a line search does, and it is the form of impurity that
+            // matters -- F can be deterministic for two consecutive calls at
+            // the same x and STILL depend on where it was evaluated before,
+            // if the evaluation mutates internal state (derived fields,
+            // caches, clamps written back into the state).
+            {
+                List<double> xAway(xBuf);
+                for (label i = 0; i < nLocalTotal; ++i)
+                {
+                    xAway[i] = xBuf[i]*1.01 + 1e-3;   // a real excursion
+                }
+                List<double> fAway(nLocalTotal, Zero);
+                residualCallback(int(nLocalTotal), xAway.data(), fAway.data(), &ctx);
+
+                List<double> pf3(nLocalTotal, Zero);
+                residualCallback(int(nLocalTotal), xBuf.data(), pf3.data(), &ctx);
+
+                scalar hsum = 0, hmax = 0; label hworst = -1;
+                for (label b = 0; b < nFields; ++b)
+                {
+                    scalar bd = 0;
+                    for (label c = 0; c < nCellsLocal; ++c)
+                    {
+                        const label i = b*nCellsLocal + c;
+                        const scalar d = mag(pf3[i] - primeF[i]);
+                        hsum += d*d;
+                        bd = max(bd, d);
+                    }
+                    if (bd > hmax) { hmax = bd; hworst = b; }
+                }
+                const scalar hG = returnReduce(hsum, sumOp<scalar>());
+                const scalar hM = returnReduce(hmax, maxOp<scalar>());
+
+                static label hystCount = 0;
+                if (hystCount < 3)
+                {
+                    ++hystCount;
+                    Info<< "  [hysteresis] F(x), F(x'), F(x) again: "
+                        << "||dF|| = " << Foam::sqrt(hG)
+                        << ", worst block = " << hworst
+                        << " (max |dF| = " << hM << ")" << nl
+                        << "    NONZERO means an intervening evaluation"
+                        << " CHANGED F at the same x -- the line search is"
+                        << " chasing a moving target." << endl;
+                }
+            }
+
+            scalar dsum = 0, fsum = 0, dmax = 0;
+            label worstBlock = -1;
+            for (label b = 0; b < nFields; ++b)
+            {
+                scalar bd = 0;
+                for (label c = 0; c < nCellsLocal; ++c)
+                {
+                    const label i = b*nCellsLocal + c;
+                    const scalar d = mag(pf2[i] - primeF[i]);
+                    dsum += d*d;
+                    fsum += sqr(primeF[i]);
+                    bd = max(bd, d);
+                }
+                if (bd > dmax) { dmax = bd; worstBlock = b; }
+            }
+            const scalar dG = returnReduce(dsum, sumOp<scalar>());
+            const scalar fG = returnReduce(fsum, sumOp<scalar>());
+            const scalar mG = returnReduce(dmax, maxOp<scalar>());
+
+            static label purityCount = 0;
+            if (purityCount < 3)
+            {
+                ++purityCount;
+                Info<< "  [purity] F evaluated TWICE at the same x: "
+                    << "||dF|| = " << Foam::sqrt(dG)
+                    << ", ||F|| = " << Foam::sqrt(fG)
+                    << ", relative = "
+                    << Foam::sqrt(dG)/(Foam::sqrt(fG) + VSMALL)
+                    << ", worst block = " << worstBlock
+                    << " (max |dF| = " << mG << ")" << nl
+                    << "    ANY nonzero here means F is NOT a function of u --"
+                    << " the matrix-free Jacobian is differencing noise."
+                    << endl;
+            }
+        }
+
         // REBALANCE sF FROM THE MEASURED RESIDUAL, so every block starts the
         // solve at |F_scaled| ~ 1.
         //
