@@ -93,12 +93,7 @@ grounded_electrode
 // catch-all.
 far
 {
-    kind            openBoundary;
-    // Holds the ambient ionisation level on inflow instead of letting it
-    // drain out -- what `etc/changeDictionary` imposed as
-    // `inletOutlet / inletValue 1e13`. The value is DERIVED from each
-    // species' own initial field, so it cannot drift from it.
-    holdAmbient   yes;
+    kind            openBoundary;   // gas continues outside at ambient
 }
 
 // NOT LISTED, BECAUSE THEY ARE DERIVED FROM THE MESH:

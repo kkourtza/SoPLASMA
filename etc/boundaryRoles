@@ -304,18 +304,23 @@ thinDielectricOnElectrode
 
 openBoundary
 {
-    // AMBIENT INFLOW. `zeroGradient` lets the background DRAIN OUT: the
-    // interior value is copied to the face, so an outflowing region empties
-    // and an inflowing one imports its own depletion. A far boundary into an
-    // ambient medium should hold the AMBIENT value on inflow and impose
-    // nothing on outflow -- `inletOutlet`.
+    // A DOMAIN TRUNCATION, AND THE GAS CONTINUES OUTSIDE IT AT AMBIENT
+    // CONDITIONS. Species therefore get `inletOutlet`, which acts both ways:
+    //   OUTFLOW -- identical to zeroGradient. They drift out freely and no
+    //              diffusive flux is imposed; nothing is trapped.
+    //   INFLOW  -- the face takes the AMBIENT value, because what enters comes
+    //              from OUTSIDE the domain, not from the cell next to it.
     //
-    //     far { kind openBoundary; holdAmbient yes; }
+    // The inflow branch is not hypothetical: in a positive streamer the outer
+    // boundary IS an inflow boundary for electrons, which drift against E and
+    // so move inward across it. Under zeroGradient the boundary imports
+    // whatever the near-boundary cell holds, and in a net-attaching bulk that
+    // is progressively depleted -- so the background drains out of the domain.
     //
-    // The inflow value is DERIVED (G1) from the species' own initial uniform
-    // field, so the ambient level is stated once where it already is stated.
-    // Default no, so nothing existing changes.
-    optional    { holdAmbient no; }
+    // The ambient value is DERIVED from each species' own `minNumberDensity`
+    // (G1): a case already sets the floor TO the background level, precisely so
+    // the bulk cannot attach itself away, and restating the number in a
+    // boundary entry only lets the two drift apart.
     description "An artificial outer boundary: the domain simply ends here.";
 
     // zeroGradient on the potential is a MODELLING CHOICE and not a free one:

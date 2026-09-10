@@ -317,7 +317,6 @@ static void writePatchEntry
     const scalar gammaSEE,     //!< declared secondary yield, or -1 if not given
     const scalar eReflection,  //!< declared electron reflection, or -1
     const scalar gasTconst,    //!< fixed gas T [K], or <=0 to follow T_gas
-    const bool holdAmbient,  //!< hold the ambient value on INFLOW
     const word& fluxName,      //!< this field's own particle flux, or null
     const scalar internalValue //!< the ambient (initial) value
 )
@@ -341,28 +340,34 @@ static void writePatchEntry
     }
     else if (role == prOpen || kind == "neutral")
     {
-        // Neutrals are not absorbed by a wall flux condition: the drift-
-        // diffusion wall flux is built on the charged-particle thermal and
-        // drift fluxes. An open boundary absorbs nothing either.
+        // AN OPEN BOUNDARY IS A DOMAIN TRUNCATION, AND THE GAS CONTINUES
+        // OUTSIDE IT AT AMBIENT CONDITIONS. That is the physical statement, so
+        // it is what the kind MEANS rather than an option on it.
         //
-        // HOLD THE AMBIENT STATE. `zeroGradient` lets the background drain OUT of the
-        // domain: whatever the interior happens to hold is copied to the face,
-        // so an outflowing region empties and an inflowing one imports its own
-        // depletion. A far boundary into an ambient medium should instead hold
-        // the AMBIENT value on inflow and impose nothing on outflow, which is
-        // exactly `inletOutlet`.
+        // `inletOutlet` says exactly that, and it acts in both directions:
+        //   * OUTFLOW  -- identical to zeroGradient. The face takes the
+        //                 interior value, so species drift out freely and no
+        //                 diffusive flux is imposed. Nothing is trapped.
+        //   * INFLOW   -- the face takes the AMBIENT value, because what
+        //                 enters comes from outside the domain, not from the
+        //                 depleted cell adjacent to the face.
         //
-        // Physically motivated rather than a benchmark convention -- unlike
-        // `speciesSurface`, which is why this is a real parameter on the kind
-        // instead of an override of it. The reference streamer problem
-        // (Pasolari & Kourtzanidis arXiv:2607.05137 sec 6.1) uses it to keep
-        // the background ionisation level at the outer boundary.
+        // THE INFLOW BRANCH IS NOT HYPOTHETICAL. In a positive streamer the
+        // outer boundary IS an inflow boundary for electrons: they drift
+        // against E, i.e. toward the anode, hence inward across it. Under
+        // zeroGradient what flows in is whatever the near-boundary cell holds
+        // -- and in a net-ATTACHING bulk that cell is progressively depleted,
+        // so the boundary imports its own depletion and the background drains.
+        // The streamer case states the physics itself: "left free, the
+        // background would attach away".
         //
-        // THE VALUE IS DERIVED (G1): the inflow value is the species' own
-        // initial uniform field, so a case states the ambient level ONCE, in
-        // the place it already states it, rather than repeating a number in a
-        // boundary entry where the two can drift apart.
-        if (holdAmbient && !fluxName.empty())
+        // Neutrals share this branch: they are not absorbed by a wall flux
+        // condition (which is built on the charged thermal and drift fluxes),
+        // and the ambient statement holds for them too.
+        //
+        // Falls back to zeroGradient where there is no particle flux to switch
+        // on -- the electron ENERGY density, which has no `particleFlux_`.
+        if (!fluxName.empty())
         {
             os  << "        type            inletOutlet;" << nl
                 << "        phi             " << fluxName << ";" << nl
@@ -565,6 +570,7 @@ static void writeDerivedField
     const word& fluxFamily,
     const scalar wallTeV,
     const scalar gasTconst,
+    const word& fluxName,      //!< this field's particle flux, or null if immobile
     const HashTable<patchRole>& roles,
     const dictionary& decl
 )
@@ -633,23 +639,6 @@ static void writeDerivedField
                 pd.getOrDefault<scalar>("electronReflection", eReflection);
         }
 
-        // `holdAmbient` on an openBoundary: hold the ambient value on
-        // inflow. Read per patch; absent means the historical zeroGradient.
-        bool holdAmbient = false;
-        if (decl.found(name) && decl.isDict(name))
-        {
-            holdAmbient =
-                decl.subDict(name).getOrDefault<bool>("holdAmbient", false);
-        }
-
-        // This field's own particle flux, derived from its name: `n_e` ->
-        // `particleFlux_e`. Only the transported number densities have one, so
-        // the energy field falls back to zeroGradient.
-        word fluxName;
-        if (fieldName.starts_with("n_"))
-        {
-            fluxName = "particleFlux_" + fieldName.substr(2);
-        }
 
         writePatchEntry
         (
@@ -657,7 +646,7 @@ static void writeDerivedField
             roles.found(name) ? roles[name] : prOpen,
             kind, fluxFamily, wallTeV, material, emission,
             gammaSEE, eReflection, gasTconst,
-            holdAmbient, fluxName, internalValue
+            fluxName, internalValue
         );
     }
 
@@ -828,6 +817,18 @@ int main(int argc, char* argv[])
     // emission, every other charged species gets one without, and a neutral
     // gets none. `n_Om` and `n_O2m` are ions despite being negative.
     HashTable<scalar> charges;
+
+    // THE RESOLVED BULK TRANSPORT MODELS, from plasmaSpecies itself rather
+    // than re-derived here. An IMMOBILE species has no `particleFlux_<sp>`
+    // field, so a boundary condition naming one dies at lookup -- which is
+    // exactly what happened when `openBoundary` started emitting inletOutlet
+    // for every species: `failed lookup of particleFlux_N2p`, the ions of the
+    // streamer case being `ionTransport immobile`.
+    //
+    // Deriving mobility independently here would be a second source of truth
+    // for something the solver already decides (G3), and the two would drift.
+    word ionTr("driftDiffusion");
+    word neutralTr("immobile");
     {
         ITstream& is = speciesDict.lookup("activeSpecies");
         token firstToken(is);
@@ -837,7 +838,7 @@ int main(int argc, char* argv[])
         {
             species = plasmaSpecies::speciesFromMechanism
         (
-            speciesDict, &charges
+            speciesDict, &charges, nullptr, &ionTr, nullptr, &neutralTr
         );
         }
         else
@@ -1063,10 +1064,41 @@ int main(int argc, char* argv[])
             }
         }
 
+        // A PARTICLE FLUX EXISTS ONLY FOR A MOBILE SPECIES. An immobile one
+        // has no transport equation, hence no `particleFlux_<sp>` field, and a
+        // boundary condition naming one dies at lookup -- measured exactly
+        // that way: `failed lookup of particleFlux_N2p`, the streamer case's
+        // ions being `ionTransport immobile`. Its boundary condition is inert
+        // regardless, for want of a spatial operator.
+        //
+        // The per-species `transportModel` wins over the bulk default, which
+        // is how plasmaSpecies resolves it -- taken from there rather than
+        // re-derived, so the two cannot drift (G3).
+        word tModel;
+        {
+            const dictionary& spAll =
+                speciesDict.subDict("speciesProperties");
+            const dictionary* sd = spAll.findDict(s, keyType::REGEX);
+
+            if (sd && sd->found("transportModel"))
+            {
+                tModel = sd->get<word>("transportModel");
+            }
+            else if (kind == "electron") tModel = "driftDiffusion";
+            else if (kind == "ion")      tModel = ionTr;
+            else                         tModel = neutralTr;
+        }
+
+        word fluxName;
+        if (tModel != "immobile" && tModel != "background")
+        {
+            fluxName = "particleFlux_" + s;
+        }
+
         writeDerivedField
         (
             mesh, runTime, fieldName, dimDensity, ambientValue,
-            kind, fluxFamily, wallTeV, gasTconst, roles, decl
+            kind, fluxFamily, wallTeV, gasTconst, fluxName, roles, decl
         );
     }
 
@@ -1098,7 +1130,7 @@ int main(int argc, char* argv[])
             writeDerivedField
             (
                 mesh, runTime, "nEps_e", dimEnergyDensity, 0.0,
-                "energy", fluxFamily, -1.0, gasTconst, roles, decl
+                "energy", fluxFamily, -1.0, gasTconst, word::null, roles, decl
             );
         }
     }
