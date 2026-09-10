@@ -201,10 +201,20 @@ class snesNewtonSolver
     //  keeps the ignition physics the term exists for and drops the part that
     //  was never a derivative.
     //
-    //  NOT YET CONFIRMED on grubert, where chemJacobian was originally
-    //  justified. The physics argument is general (the term is exact only for
-    //  the electron, and grubert's ions are also electron-impact products), so
-    //  it should carry -- but it is a default change and wants that check.
+    //  CONFIRMED NEUTRAL ON GRUBERT, 2026-09-11, which is where chemJacobian
+    //  was originally justified and so where a default change could regress.
+    //  grubert2009_phaseD_newton restarted from its own t=4e-8 state, 50 steps
+    //  each, identical but for this flag:
+    //
+    //      electron only   SNES 250   Krylov 1095   8 s
+    //      all species     SNES 250   Krylov 1080   7 s
+    //
+    //  Same Newton count, 1.4% apart in Krylov work -- no effect either way.
+    //  Grubert carries only e / Arp / Ar2p and its ions are the BULK plasma,
+    //  so P/n stays modest there and the bad approximation never bites. The
+    //  streamer bed, with eight excited neutrals at trace density, is where it
+    //  does. So the default halves Krylov work where it matters and costs
+    //  nothing where it does not.
     bool chemJacobianElectronOnly_;
 
     //- Include the CROSS-SPECIES chemistry coupling d(chemP_s)/d(n_e) in the
