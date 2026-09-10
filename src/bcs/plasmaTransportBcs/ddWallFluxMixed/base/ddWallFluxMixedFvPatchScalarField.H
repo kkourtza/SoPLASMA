@@ -181,6 +181,30 @@ protected:
 
 public:
 
+    //- TOLERATE a singular wall-flux denominator instead of aborting.
+    //
+    //  Set ONLY around a Newton residual evaluation (see snesNewtonSolver).
+    //  A matrix-free Jacobian and a line search MUST evaluate F at trial
+    //  iterates, and some of those are unphysical -- that is how they work. A
+    //  boundary condition that raises FatalError at such a point kills the run
+    //  over a state the solver was about to REJECT.
+    //
+    //  MEASURED 2026-09-10 on grubert2009_ballast400: the run died at
+    //  t = 1.949675e-06 with `wall-flux condition on patch anode has become
+    //  singular`, and the fatal fired INSIDE an unfinished SNES solve, 828
+    //  residual evaluations into the step -- i.e. at a trial iterate, not at an
+    //  accepted solution. Picard never hits it because its states are always
+    //  the output of a solve rather than exploratory.
+    //
+    //  While set, a singular face CLAMPS its valueFraction to a finite value
+    //  and the condition reports once, so the residual stays finite and large
+    //  and the nonlinear solver can back off on its own. The hard error is
+    //  RETAINED for every other caller, because for an accepted state it is a
+    //  genuine and well-diagnosed physical failure.
+    static bool tolerateSingular_;
+
+
+
     //- Runtime type information
     TypeName("ddWallFluxMixed");
 

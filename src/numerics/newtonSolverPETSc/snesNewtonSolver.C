@@ -12,6 +12,7 @@ License
 \*---------------------------------------------------------------------------*/
 
 #include "snesNewtonSolver.H"
+#include "ddWallFluxMixedFvPatchScalarField.H"
 #include "snesBridge.H"
 #include "blockMatrixCOO.H"
 #include "addToRunTimeSelectionTable.H"
@@ -1286,6 +1287,21 @@ void Foam::snesNewtonSolver::solveOuterStep
 
     setPetscOptions(allPetscOptions.c_str());
 
+    // TRIAL-ITERATE TOLERANCE, for the duration of this solve only.
+    //
+    // Newton evaluates F at iterates the line search and the matrix-free
+    // Jacobian propose, and some of those are unphysical. A boundary condition
+    // that raises FatalError at such a point kills the run over a state that
+    // was about to be REJECTED. Measured 2026-09-10: grubert2009_ballast400
+    // died with `wall-flux condition on patch anode has become singular` INSIDE
+    // an unfinished SNES solve, 828 residual evaluations into the step.
+    //
+    // Restored below, so an ACCEPTED state still gets the hard, well-diagnosed
+    // error -- there the failure is real physics and the diagnosis is worth
+    // having.
+    const bool tolSaved = ddWallFluxMixedFvPatchScalarField::tolerateSingular_;
+    ddWallFluxMixedFvPatchScalarField::tolerateSingular_ = true;
+
     // ---- LOWER BOUNDS, in SCALED units (everything PETSc sees is scaled).
     //
     // The species floor is the SAME number clampNumberDensities() applies
@@ -1761,6 +1777,8 @@ void Foam::snesNewtonSolver::solveOuterStep
     //     CONVERGED nEps -- the step-5 correct() during the residual
     //     evaluation used the LAST TRIAL state, not necessarily the final
     //     converged one.
+    ddWallFluxMixedFvPatchScalarField::tolerateSingular_ = tolSaved;
+
     species.clampNumberDensities();
     if (lmea) { lmea->correct(); }
 

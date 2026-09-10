@@ -20,6 +20,8 @@
 namespace Foam
 {
 
+bool ddWallFluxMixedFvPatchScalarField::tolerateSingular_ = false;
+
 defineTypeNameAndDebug(ddWallFluxMixedFvPatchScalarField, 0);
 
 // * * * * * * * * * * * * Protected Member Functions  * * * * * * * * * * * //
@@ -568,7 +570,41 @@ void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
         // sit downstream of a guard or an early return that depends on a LOCAL
         // patch size. See plasmaExternalCircuit for the same defect with a
         // gAverage.
-        if (minDenFrac <= 0)
+        if (minDenFrac <= 0 && tolerateSingular_)
+        {
+            // TRIAL ITERATE (Newton residual evaluation): clamp rather than
+            // abort, so F stays finite and the nonlinear solver rejects this
+            // step itself. See tolerateSingular_ for why this exists.
+            static bool reported = false;
+            if (!reported)
+            {
+                reported = true;
+                WarningInFunction
+                    << "wall-flux condition on patch " << p.name()
+                    << " for field " << this->internalField().name()
+                    << " went singular during a TRIAL residual evaluation"
+                    << " ((D/delta+uEff)/(D/delta) = " << minDenFrac << ")."
+                    << nl
+                    << "    Clamping it so the trial state stays finite and the"
+                    << " outer solver can reject the step." << nl
+                    << "    This is reported ONCE. If the run later fails at an"
+                    << " ACCEPTED state you will get the full diagnosis and its"
+                    << " remedies." << endl;
+            }
+
+            forAll(p, faceI)
+            {
+                const scalar den = D_delta[faceI] + uEff[faceI];
+                if (den <= VSMALL)
+                {
+                    // Fully absorbing is the physically sensible limit of a
+                    // wall the drift is pouring into faster than the closure
+                    // can represent.
+                    f[faceI] = 1.0;
+                }
+            }
+        }
+        else if (minDenFrac <= 0)
         {
             FatalErrorInFunction
                 << "wall-flux condition on patch " << p.name()
