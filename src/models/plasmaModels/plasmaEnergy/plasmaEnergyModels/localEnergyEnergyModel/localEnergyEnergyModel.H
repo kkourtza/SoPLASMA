@@ -433,6 +433,23 @@ public:
         //  factor/tabulated-coefficient logic.
         const volScalarField& muEpsEff() const { return muEpsEff_; }
         const volScalarField& DEpsEff() const { return DEpsEff_; }
+
+        //- PARTICLE mobility at this model's own mean energy -- the mu_e that
+        //  jouleHeating_ is built from (updateSources():
+        //  jouleHeating_ == muEf_*n_e*magSqr(E)/oneVolt), NOT the energy
+        //  mobility muEpsEff() above.
+        //
+        //  Exposed so a Newton preconditioner can assemble d(Psrc)/d(phi),
+        //  the response of Joule heating to the potential. That derivative is
+        //  analytic in this form and is the strongest field-dependence in the
+        //  energy row, but it cannot be reconstructed from muEpsEff() -- the
+        //  energy factor and the eV normalisation differ.
+        const volScalarField& muEff() const { return muEf_; }
+
+        //- The Joule heating term itself, mu_e*n_e*|E|^2/(1 V). Note this is
+        //  NOT necessarily Psrc(): under `energySource chemistry` the ODE
+        //  supplies Psrc from chemPeps and this is only its dominant part.
+        const volScalarField& jouleHeating() const { return jouleHeating_; }
 };
 
 

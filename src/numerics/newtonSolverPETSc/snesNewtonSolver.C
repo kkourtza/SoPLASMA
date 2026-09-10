@@ -28,6 +28,11 @@ License
 #include "driftDiffusion.H"
 #include "plasmaEnergy.H"
 #include "localEnergyEnergyModel.H"
+// For the d(Psrc)/d(phi) convection block: built directly rather than through
+// fvm::div so it needs no per-case fvSchemes entry and cannot inherit a
+// LIMITED scheme. See jouleJacobian_ in solveOuterStep().
+#include "gaussConvectionScheme.H"
+#include "upwind.H"
 
 namespace Foam
 {
@@ -904,6 +909,12 @@ Foam::snesNewtonSolver::snesNewtonSolver
     rebalanceScales_(dict.getOrDefault<bool>("rebalanceScales", true)),
     chemJacobian_(dict.getOrDefault<bool>("chemJacobian", true)),
     chemCrossJacobian_(dict.getOrDefault<bool>("chemCrossJacobian", false)),
+    jouleJacobian_(dict.getOrDefault<bool>("jouleJacobian", false)),
+    schurOnPhi_(dict.getOrDefault<bool>("schurOnPhi", false)),
+    jouleJacobianRatioMax_
+    (
+        dict.getOrDefault<scalar>("jouleJacobianRatioMax", 10.0)
+    ),
     adaptiveForcing_(dict.getOrDefault<bool>("adaptiveForcing", true)),
     extrapolateGuess_(dict.getOrDefault<bool>("extrapolateGuess", false)),
     extrapolatePotential_(dict.getOrDefault<bool>("extrapolatePotential", true))
@@ -1297,6 +1308,72 @@ void Foam::snesNewtonSolver::solveOuterStep
       // Pmat in the survey's measurements (7 KSP iterations against 36 for
       // the block Gauss-Seidel shell). A case may still override any of these.
       + " -pc_fieldsplit_schur_fact_type full"
+      // THE INNER SOLVES, which were left at PETSc's defaults until 2026-09-10
+      // and were costing an order of magnitude. Found with -ksp_view, which is
+      // the only way to see them -- nothing in this solver's own output reports
+      // the inner KSP configuration.
+      //
+      // The A00 (phi) solve is EXACT. Not an optimisation: the Schur complement
+      // applies an inner phi solve every time it is applied, so an ITERATIVE
+      // inner solve taking a varying number of iterations (measured: 55, 65,
+      // 71, 71, 82, 85 on successive applications) makes S's action a
+      // NON-FIXED operator, and the outer Krylov method then breaks down.
+      // That is what crashed grubert_steady with a SIGFPE -- see
+      // doc/newton-ignition-experiments.md section 25c. LU on the phi block is
+      // affordable precisely because it is ONE field (2000 rows, nnz 9190,
+      // factor fill 3.1 on the reference case).
+      // SCALABLE, not exact -- rule 43. An earlier version of this default was
+      // `preonly` + `lu`, justified as affordable at 2000 rows. That is true at
+      // 2000 rows and useless at 1e6: sparse LU is ~O(n^1.5) in 2-D and worse
+      // in 3-D, and this solver exists for large 2-D and eventually 3-D cases.
+      //
+      // The REQUIREMENT is that this solve be a FIXED LINEAR OPERATOR, because
+      // the Schur complement applies it on every application and a varying one
+      // makes S non-fixed, which breaks the outer Krylov method (that is what
+      // raised the SIGFPE of section 25c). FIXEDNESS IS A PROPERTY OF THE
+      // ITERATION, NOT OF EXACTNESS: a FIXED number of AMG cycles with a frozen
+      // setup is both a fixed linear operator and O(n).
+      //
+      // `richardson` with max_it 2 and the convergence test SKIPPED, so it
+      // never exits early and every application performs identical arithmetic.
+      // NOTE that gmres/cg CANNOT be used here at all, however tempting: their
+      // Krylov polynomial depends on the right-hand side, so they are not
+      // linear in b. Richardson and Chebyshev are.
+      //
+      // A small case that wants the exact reference can still ask for it --
+      // case petscOptions are applied LAST and win:
+      //     petscOptions "-fieldsplit_phi_ksp_type preonly -fieldsplit_phi_pc_type lu";
+      + " -fieldsplit_phi_ksp_type richardson"
+        " -fieldsplit_phi_ksp_max_it 2"
+        " -fieldsplit_phi_ksp_convergence_test skip"
+        " -fieldsplit_phi_pc_type hypre"
+      // The Schur (transport) solve: FGMRES for the same varying-PC reason as
+      // the outer level, and three limits that PETSc's defaults get wrong for
+      // this problem.
+      //
+      // rtol 1e-2, NOT the default 1e-5: the OUTER solve runs at rtol 0.3
+      // under Eisenstat-Walker, so an inner solve driven to 1e-5 is four
+      // orders tighter than anything the outer iteration can use. FGMRES
+      // exists to tolerate a variable-quality preconditioner; this is exactly
+      // the licence it grants.
+      //
+      // max_it 200, NOT the default 10000: a solve needing more than this is
+      // better handed to retryStep than ground out. The default let 377 solves
+      // reach 10000 iterations, wasting 3.8 million of them.
+      //
+      // restart 100 to match the outer -ksp_gmres_restart above; the default
+      // 30 meant 333 restarts in a capped solve, which is how GMRES stagnates.
+      //
+      // MEASURED 2026-09-10 against the PETSc defaults, same case, same
+      // window, normalised per unit SIMULATED time (not per step):
+      //   inner iterations/solve  median 230 -> 53, mean 260 -> 59
+      //   worst single solve      7226 -> 166 iterations
+      //   solves hitting the cap  377 -> 2
+      //   total inner Krylov work 9.3x LESS
+      + " -fieldsplit_transport_ksp_type fgmres"
+        " -fieldsplit_transport_ksp_rtol 1e-2"
+        " -fieldsplit_transport_ksp_max_it 200"
+        " -fieldsplit_transport_ksp_gmres_restart 100"
       // Differencing step: PETSc's own default unless a case overrides it.
       // It is deliberately NOT set to a large value by default -- see
       // mffdErr_'s declaration for why that would have papered over a real
@@ -1825,13 +1902,10 @@ void Foam::snesNewtonSolver::solveOuterStep
             // d(F_phi)/d(nEps) is identically zero. The coupling here is
             // genuinely one-way.
             //
-            // STILL MISSING FROM THIS BLOCK, and deliberately so for now:
-            // d(Psrc)/d(phi), the response of JOULE HEATING to the field.
-            // Psrc ~ J.E is a strong and direct dependence on the potential --
-            // arguably stronger than the drift term retained here -- but it is
-            // not a laplacian-shaped operator and needs its own derivation.
-            // Recorded rather than quietly skipped; see
-            // doc/newton-ignition-experiments.md.
+            // d(Psrc)/d(phi) -- JOULE HEATING's response to the field -- is
+            // added below under jouleJacobian_, no longer missing. See there
+            // for the derivation and for why an analytic Joule form is
+            // legitimate even under `energySource chemistry`.
             {
                 volScalarField driftCoeffE
                 (
@@ -1853,6 +1927,160 @@ void Foam::snesNewtonSolver::solveOuterStep
                 );
 
                 coo.addFvMatrixBlock(fE, 0, cEqnE, sX[0]/sF[fE], rV);
+            }
+
+            // d(Psrc)/d(phi): JOULE HEATING's response to the potential.
+            //
+            // DERIVATION. updateSources() builds
+            //     Psrc = jouleHeating = mu_e * n_e * |E|^2 / (1 V) = C |grad phi|^2,
+            //     C = mu_e n_e / (1 V) >= 0
+            // and E = -grad(phi), so
+            //     d(Psrc) = 2 C grad(phi) . grad(dphi) = -2 C E . grad(dphi).
+            // The energy residual carries MINUS Psrc, hence
+            //     d(F_eps)/d(phi) = +2 C E . grad(dphi) = a . grad(dphi),
+            //     a = 2 C E.
+            //
+            // a.grad(dphi) is NOT laplacian-shaped -- that is why it needed its
+            // own derivation rather than a copy of the drift term above. Using
+            // a.grad(u) = div(a u) - u div(a) it becomes a convection operator
+            // plus a zeroth-order term, and phiE = E.Sf is exactly the face flux
+            // the convection operator wants:
+            //     a.Sf = interpolate(2C) * phiE
+            //
+            // ADAPTIVE TO THE USER'S `energySource` CHOICE, WITH NO BRANCH.
+            // Psrc is Joule heating only under `energySource model`; under
+            // `energySource chemistry` the per-cell ODE supplies it from
+            // chemPeps and no closed form for d(chemPeps)/d(phi) exists. Rather
+            // than assume one path, the analytic derivative is scaled by the
+            // model's OWN per-cell ratio
+            //
+            //     s = Psrc / jouleHeating
+            //
+            // and the field-dependence is taken to remain ~|E|^2, giving
+            // d(Psrc)/d(phi) ~ s * d(jouleHeating)/d(phi). This is exact where
+            // it can be and corrected where it cannot:
+            //
+            //   `energySource model`     : Psrc IS jouleHeating, so s == 1
+            //                              identically and the derivative is EXACT.
+            //   `energySource chemistry` : s carries the ODE's actual departure
+            //                              from the bare Joule term, per cell and
+            //                              per step, instead of ignoring it.
+            //
+            // One formula serves both, so nothing has to be kept in sync with
+            // the energy model's source logic -- the ratio reads whatever that
+            // logic produced, including the optional Coulomb-heating term.
+            //
+            // s is clipped: jouleHeating -> 0 wherever E -> 0, and there the
+            // derivative is negligible anyway, so an unclipped ratio would be
+            // pure noise amplification. Outside the clip the term is bounded
+            // rather than dropped, which keeps the block from vanishing exactly
+            // where a sheath makes it interesting.
+            //
+            // AND THIS IS THE PRECONDITIONER MATRIX, not the Jacobian. The
+            // Jacobian action stays matrix-free (mffd), so Pmat only has to
+            // APPROXIMATE dF/dx -- being in the right direction and the right
+            // order of magnitude is all a preconditioner needs.
+            //
+            // SWITCHABLE AND MEASURED, following chemJacobian_/chemCrossJacobian_:
+            // the second of those was my own idea and turned out to cost 29%, so
+            // a plausible-sounding Jacobian block does not get to be a default on
+            // theory alone. See doc/newton-ignition-experiments.md.
+            if (jouleJacobian_)
+            {
+                const label eIDj = species.electronSpeciesID();
+
+                volScalarField jouleCoeff
+                (
+                    IOobject
+                    (
+                        "jouleCoeff_dPsrc_dphi", mesh_.time().timeName(), mesh_,
+                        IOobject::NO_READ, IOobject::NO_WRITE
+                    ),
+                    2.0*lmea->muEff()*species.numberDensity(eIDj)
+                   /dimensionedScalar("oneVolt", dimensionSet(1,2,-3,0,0,-1,0), 1.0)
+                );
+
+                // s = Psrc/jouleHeating, per cell: EXACTLY 1 under
+                // `energySource model`, the ODE's own departure from the bare
+                // Joule term under `energySource chemistry`. See the note above.
+                {
+                    const scalarField& psrcF = lmea->Psrc().primitiveField();
+                    const scalarField& jhF =
+                        lmea->jouleHeating().primitiveField();
+                    scalarField& jc = jouleCoeff.primitiveFieldRef();
+
+                    // Reference scale for "is jouleHeating meaningful here",
+                    // taken from the field itself so it needs no tuning.
+                    const scalar jhRef =
+                        SMALL*gMax(mag(jhF)) + VSMALL;
+
+                    forAll(jc, c)
+                    {
+                        const scalar s =
+                            (mag(jhF[c]) > jhRef ? psrcF[c]/jhF[c] : 1.0);
+
+                        // Bounded, not dropped: keeps the block alive in a
+                        // sheath while refusing a runaway ratio.
+                        jc[c] *= min(max(s, 0.0), jouleJacobianRatioMax_);
+                    }
+                }
+                jouleCoeff.correctBoundaryConditions();
+
+                // a.Sf, with phiE = E.Sf already carrying the field's sign.
+                //
+                // linearInterpolate, NOT fvc::interpolate: this coefficient is
+                // internal to the preconditioner and exists in no case
+                // dictionary, so fvc::interpolate would demand an
+                // `interpolate(jouleCoeff_dPsrc_dphi)` entry in every
+                // fvSchemes in existence (these cases list interpolation
+                // schemes per field with no `default`, so it is a hard
+                // FatalIOError, not a fallback -- observed immediately).
+                // linear is also the right choice on its merits: this is a
+                // convective flux coefficient, where the harmonic scheme used
+                // for DIFFUSIVITIES would be wrong.
+                const surfaceScalarField aFlux
+                (
+                    linearInterpolate(jouleCoeff)*em.phiE()
+                );
+
+                // UPWIND, and built directly rather than via fvm::div, for two
+                // independent reasons.
+                //
+                // 1. fvm::div would look up
+                //    `div((interpolate(jouleCoeff...)*phiE),d_ePotential)` in
+                //    divSchemes. These cases declare div schemes per field with
+                //    no `default`, so that is a hard FatalIOError in every case
+                //    in the tree (observed). An internal preconditioner operator
+                //    must not require a new entry in every user's fvSchemes.
+                //
+                // 2. The declared drift schemes are all `Gauss ROUNDF` -- BOUNDED
+                //    schemes, chosen because a density must stay positive. This
+                //    operator acts on a POTENTIAL CORRECTION, which is signed and
+                //    has no positivity requirement, and a limited scheme is
+                //    state-dependent: its coefficients change with the field it
+                //    is applied to. A preconditioner matrix must be a fixed
+                //    linear operator -- assembling one that is not is precisely
+                //    the defect that caused the SIGFPE this session (section
+                //    25c), one level down.
+                //
+                // Upwind is also the right choice on its merits: it is
+                // diagonally dominant, which is what makes a convection block
+                // useful to a preconditioner in the first place.
+                fvScalarMatrix jEqn
+                (
+                    fv::gaussConvectionScheme<scalar>
+                    (
+                        mesh_,
+                        aFlux,
+                        tmp<surfaceInterpolationScheme<scalar>>
+                        (
+                            new upwind<scalar>(mesh_, aFlux)
+                        )
+                    ).fvmDiv(aFlux, dePotential)
+                  - fvm::Sp(fvc::div(aFlux), dePotential)
+                );
+
+                coo.addFvMatrixBlock(fE, 0, jEqn, sX[0]/sF[fE], rV);
             }
         }
     }
@@ -1977,11 +2205,69 @@ void Foam::snesNewtonSolver::solveOuterStep
             << " at " << describe(maxAt).c_str() << endl;
     }
 
+    // THE SEMI-IMPLICIT POISSON OPERATOR AS THE SCHUR PRECONDITIONER.
+    //
+    // Assembled only when schurOnPhi_ is set, because it preconditions S_f --
+    // the Schur complement on the PHI block -- which exists only when the
+    // transport block is the one eliminated (see SnesPmatCOO::schurOnPhi).
+    //
+    // div((eps + dt*sigma) grad .) IS S_f to leading order in dt. Derivation in
+    // doc/schur-semiimplicit-poisson-preconditioner.md; in one line,
+    //     A_ft inv(A_tt) A_tf ~ q * dt * (-div(Z mu n grad .))
+    //                         = -dt div(sigma grad .)
+    // because sigma = q Z mu n is exactly the electrical conductivity. So the
+    // operator that is INCONSISTENT inside a Newton residual (experiment log
+    // section 23, measured 0.3278 ceiling) is precisely the right object here.
+    // Wrong place, not wrong idea.
+    //
+    // SAME scaling (sX[0]/sF[0]) and same 1/V conversion as the Poisson
+    // diagonal block above: PETSc uses this matrix IN PLACE OF S_f, so it has
+    // to live in the same scaled units as the rest of Pmat or it preconditions
+    // a differently-normalised operator.
+    blockMatrixCOO schurCoo(nCellsLocal, 1);
+    if (schurOnPhi_)
+    {
+        scalarField rVs(nCellsLocal);
+        {
+            const scalarField& Vc = mesh_.V().field();
+            forAll(rVs, c) { rVs[c] = 1.0/Vc[c]; }
+        }
+
+        const volScalarField effEpsSchur
+        (
+            em.epsilon()
+          + mesh_.time().deltaT()*transport.electricalConductivity()
+        );
+
+        // The scheme name is the PLAIN one the drift blocks already use, not
+        // "laplacian((epsilon+(deltaT*electricalConductivity)),ePotential)":
+        // that second name is only declared by cases that actually run the
+        // semi-implicit Poisson, and the Newton path forces the scheme to
+        // explicit, so it is absent exactly where this is needed.
+        fvScalarMatrix sEqn
+        (
+            fvm::laplacian
+            (
+                effEpsSchur, dePotential, "laplacian(epsilon,ePotential)"
+            )
+        );
+
+        schurCoo.addFvMatrix(0, sEqn, sX[0]/sF[0], rVs);
+    }
+
     SnesPmatCOO pmatCOO;
     pmatCOO.n = int(coo.nEntries());
     pmatCOO.rows = coo.rows();
     pmatCOO.cols = coo.cols();
     pmatCOO.vals = coo.vals();
+    pmatCOO.schurOnPhi = schurOnPhi_;
+    if (schurOnPhi_)
+    {
+        pmatCOO.nSchur = int(schurCoo.nEntries());
+        pmatCOO.schurRows = schurCoo.rows();
+        pmatCOO.schurCols = schurCoo.cols();
+        pmatCOO.schurVals = schurCoo.vals();
+    }
 
     int its = 0;
     const int reason = solveWithSNES

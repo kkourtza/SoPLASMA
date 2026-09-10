@@ -242,6 +242,9 @@ int solveWithSNES
     //   MatMFFDComputeJacobian exists precisely to do that -- all it does is
     //   call MatAssemblyBegin/End on the operator.
     Mat Pmat = nullptr;
+    // Optional assembled approximation of the phi Schur complement
+    // (the semi-implicit Poisson operator). Owned here, destroyed below.
+    Mat schurPre = nullptr;
     {
         Mat Jmf;
         MatCreateSNESMF(snes, &Jmf);
@@ -361,14 +364,80 @@ int solveWithSNES
             // interlaced, so the block-size-based helper does not describe it.
             const PetscInt nc = nLocal/nFieldBlocks;
 
+            // GLOBAL ROW INDICES, OFFSET BY THIS RANK'S OWNERSHIP START.
+            //
+            // A PETSc IS describing the rows of a parallel Mat is expressed in
+            // GLOBAL indices. These strides used to start at 0 on every rank:
+            //     ISCreateStride(comm, nc, 0, 1, &isPhi);
+            // which is correct in SERIAL, where rstart == 0, and wrong on every
+            // rank but the first in parallel -- each one claimed rank 0's rows.
+            //
+            // MEASURED 2026-09-10, the first time this solver was ever run
+            // decomposed (4 ranks, grubert):
+            //     [2] PETSc has generated inconsistent data
+            //     [2] Number of entries found in complement 2475 does not
+            //         match expected 1980
+            // 2475 = 5 fields x 495 local cells (ALL local DOFs) and
+            // 1980 = 4 x 495 (the transport split), i.e. PETSc found the split
+            // complement to be every local row instead of the transport block,
+            // because neither IS pointed at rows this rank owns.
+            //
+            // This is exactly the class of defect that only a parallel run can
+            // expose, and it sat undetected because the Newton path had never
+            // been run decomposed.
+            PetscInt rstart = 0;
+            MatGetOwnershipRange(Pmat, &rstart, nullptr);
+
             IS isPhi, isTransport;
-            ISCreateStride(petscComm, nc, 0, 1, &isPhi);
-            ISCreateStride(petscComm, nLocal - nc, nc, 1, &isTransport);
+            ISCreateStride(petscComm, nc, rstart, 1, &isPhi);
+            ISCreateStride(petscComm, nLocal - nc, rstart + nc, 1, &isTransport);
 
             PCSetType(pc, PCFIELDSPLIT);
-            PCFieldSplitSetIS(pc, "phi", isPhi);
-            PCFieldSplitSetIS(pc, "transport", isTransport);
+
+            // REGISTRATION ORDER SELECTS THE SCHUR COMPLEMENT. PETSc eliminates
+            // split 0 and forms S on split 1; there is no option for this, so
+            // the order here IS the choice. See SnesPmatCOO::schurOnPhi.
+            if (pmat->schurOnPhi)
+            {
+                PCFieldSplitSetIS(pc, "transport", isTransport);
+                PCFieldSplitSetIS(pc, "phi", isPhi);
+            }
+            else
+            {
+                PCFieldSplitSetIS(pc, "phi", isPhi);
+                PCFieldSplitSetIS(pc, "transport", isTransport);
+            }
             PCFieldSplitSetType(pc, PC_COMPOSITE_SCHUR);
+
+            // An explicitly assembled approximation of S_f, if one was handed
+            // in -- the semi-implicit Poisson operator div((eps+dt*sigma)grad).
+            // Only meaningful with the phi block second, i.e. schurOnPhi.
+            if (pmat->schurOnPhi && pmat->nSchur > 0)
+            {
+                MatCreate(petscComm, &schurPre);
+                MatSetSizes(schurPre, nc, nc, PETSC_DETERMINE, PETSC_DETERMINE);
+                MatSetType(schurPre, MATAIJ);
+                MatSetUp(schurPre);
+
+                MatSetPreallocationCOO
+                (
+                    schurPre,
+                    pmat->nSchur,
+                    const_cast<PetscInt*>(pmat->schurRows),
+                    const_cast<PetscInt*>(pmat->schurCols)
+                );
+                MatSetValuesCOO
+                (
+                    schurPre,
+                    pmat->schurVals,
+                    INSERT_VALUES
+                );
+
+                PCFieldSplitSetSchurPre
+                (
+                    pc, PC_FIELDSPLIT_SCHUR_PRE_USER, schurPre
+                );
+            }
 
             ISDestroy(&isPhi);
             ISDestroy(&isTransport);
@@ -419,6 +488,7 @@ int solveWithSNES
     // false` the same run is clean.
     SNESDestroy(&snes);
     if (Pmat) MatDestroy(&Pmat);
+    if (schurPre) MatDestroy(&schurPre);
     VecDestroy(&x);
     VecDestroy(&F);
     if (xl) VecDestroy(&xl);

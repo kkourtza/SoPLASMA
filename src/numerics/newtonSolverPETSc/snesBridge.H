@@ -108,6 +108,41 @@ struct SnesPmatCOO
     const int* rows = nullptr;
     const int* cols = nullptr;
     const double* vals = nullptr;
+
+    //- WHICH BLOCK THE SCHUR COMPLEMENT ACTS ON. PETSc's fieldsplit eliminates
+    //  split 0 and forms the Schur complement on split 1, and the choice is
+    //  made purely by REGISTRATION ORDER -- there is no runtime option for it.
+    //
+    //  false (default, historic): register phi first, so
+    //      S_t = A_tt - A_tf inv(A_ff) A_ft   acts on the TRANSPORT block.
+    //  true: register transport first, so
+    //      S_f = A_ff - A_ft inv(A_tt) A_tf   acts on the PHI block.
+    //
+    //  The second is worth having because S_f is a SCALAR ELLIPTIC operator on
+    //  one field, which can be assembled explicitly and handed to AMG, whereas
+    //  S_t is (nSpecies+1) x nCells and can only be APPLIED -- which is why it
+    //  currently runs on ILU(0) of A11 and grinds. See
+    //  doc/schur-semiimplicit-poisson-preconditioner.md.
+    bool schurOnPhi = false;
+
+    //- OPTIONAL explicitly assembled approximation of the phi Schur
+    //  complement, supplied to PETSc as PC_FIELDSPLIT_SCHUR_PRE_USER.
+    //
+    //  The point of the exercise: the SEMI-IMPLICIT POISSON operator
+    //  div((eps + dt*sigma) grad .) IS S_f to leading order in dt -- an
+    //  identity, derived in the design note above, because
+    //  A_ft inv(A_tt) A_tf ~ q * dt * (-div(Z mu n grad .)) = -dt div(sigma grad .)
+    //  and sigma = q Z mu n is exactly the conductivity. So the operator that
+    //  is INCONSISTENT inside a Newton residual (experiment log section 23) is
+    //  precisely the right object in the preconditioner.
+    //
+    //  Indices are LOCAL TO THE PHI SPLIT (0 .. nCells-1), not global rows.
+    //  nSchur == 0 means "not supplied", and PETSc's default (a11) is used.
+    //  Only meaningful when schurOnPhi is true.
+    int nSchur = 0;
+    const int* schurRows = nullptr;
+    const int* schurCols = nullptr;
+    const double* schurVals = nullptr;
 };
 
 int solveWithSNES

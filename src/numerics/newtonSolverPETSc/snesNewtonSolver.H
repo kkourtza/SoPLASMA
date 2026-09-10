@@ -198,6 +198,78 @@ class snesNewtonSolver
     //  Default FALSE until measured on this case.
     bool chemCrossJacobian_;
 
+    //- Include d(Psrc)/d(phi) -- JOULE HEATING's response to the potential --
+    //  in the energy row of the preconditioner.
+    //
+    //  The last missing block in the (energy, phi) coupling. That row already
+    //  carries the energy DRIFT term's field derivative, but Psrc ~ J.E is a
+    //  direct and typically stronger dependence on the potential. It is not
+    //  laplacian-shaped -- it linearises to a convection operator,
+    //  a.grad(dphi) with a = 2*mu_e*n_e*E/(1 V) -- which is why it was
+    //  deferred rather than copied from the drift term.
+    //
+    //  ADAPTIVE to `energySource`, with no branch: the analytic Joule
+    //  derivative is scaled by the energy model's own per-cell ratio
+    //  Psrc/jouleHeating, which is identically 1 under `energySource model`
+    //  (making the derivative EXACT) and carries the ODE's actual departure
+    //  from the bare Joule term under `energySource chemistry`.
+    //
+    //  DEFAULT FALSE -- MEASURED, and it did NOT win. Equal start, equal
+    //  endTime, both arms reaching it, on grubert (`energySource chemistry`,
+    //  so the ratio-corrected path rather than the exact one):
+    //
+    //      mean dt          3.461e-11  vs  3.307e-11   (+4.7% for ON)
+    //      SNES iters total       1710  vs        1517  (+12.7% WORSE for ON)
+    //      failures/retries          8  vs           9
+    //
+    //  The timestep gain does not pay for the extra Newton iterations. Kept
+    //  because the term is real and because this case exercises only the
+    //  APPROXIMATE path: under `energySource model` the derivative is EXACT
+    //  (the ratio is identically 1), and it may well pay there. That is
+    //  untested -- do not assume it either way.
+    //
+    //  Same discipline as chemCrossJacobian_, and the same outcome: a
+    //  plausible, correctly-derived Jacobian block that measurement declined.
+    bool jouleJacobian_;
+
+    //- Form the Schur complement on the PHI block instead of the transport
+    //  block, and precondition it with the SEMI-IMPLICIT POISSON operator.
+    //
+    //  PETSc's fieldsplit eliminates split 0 and forms S on split 1, chosen
+    //  purely by registration order. The historic order (phi first) gives
+    //      S_t = A_tt - A_tf inv(A_ff) A_ft
+    //  which is (nSpecies+1) x nCells, can only be APPLIED, and therefore runs
+    //  on PETSc's `a11` default -- ILU(0) of A_tt. MEASURED on grubert_long:
+    //  167 inner solves per outer step, median 230 Krylov iterations each,
+    //  2.6% grinding to the iteration cap.
+    //
+    //  Reversing the order gives
+    //      S_f = A_ff - A_ft inv(A_tt) A_tf
+    //  a SCALAR ELLIPTIC operator on one field -- and
+    //  div((eps + dt*sigma) grad .) IS that operator to leading order in dt,
+    //  so it can be ASSEMBLED and handed to AMG. See
+    //  doc/schur-semiimplicit-poisson-preconditioner.md for the derivation.
+    //
+    //  Default FALSE. Two reasons, not one:
+    //   * it inverts a working, measured configuration, and Tier 0 (the inner
+    //     KSP limits, now baked into the default options) already bought 9.3x
+    //     on its own -- this has to beat THAT, not the old defaults;
+    //   * inv(A_tt) becomes the inner solve, and an ITERATIVE inner solve
+    //     taking a varying number of iterations is exactly what broke down and
+    //     raised the SIGFPE of section 25c. Anything enabling this must also
+    //     pin the transport solve to a FIXED iteration count, e.g.
+    //       -fieldsplit_transport_ksp_type richardson
+    //       -fieldsplit_transport_ksp_max_it 5
+    //       -fieldsplit_transport_ksp_convergence_test skip
+    //     so every application performs identical arithmetic.
+    bool schurOnPhi_;
+
+    //- Ceiling on the Psrc/jouleHeating ratio above, so a cell where
+    //  jouleHeating is small but nonzero cannot produce a runaway coefficient.
+    //  Bounds the term rather than dropping it, which keeps the block alive in
+    //  a sheath -- exactly where it matters most.
+    scalar jouleJacobianRatioMax_;
+
     //- INEXACT NEWTON with an Eisenstat-Walker adaptive forcing term
     //  (PETSc `-snes_ksp_ew`): choose each linear solve's tolerance from how
     //  well the previous Newton step actually reduced ||F||, instead of
