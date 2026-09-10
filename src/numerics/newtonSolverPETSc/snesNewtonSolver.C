@@ -2659,10 +2659,46 @@ void Foam::snesNewtonSolver::solveOuterStep
     {
         const scalar Z = species.speciesChargeNumber(i);
         const plasmaTransportModel& m = transport.transportModel(i);
+        const volScalarField& ns = species.numberDensity(i);
+        const word sName = species.speciesNames()[i];
 
-        transport.convectiveFlux(i) =
+        const surfaceScalarField phis
+        (
             Z*fvc::interpolate(m.mu())*em.phiE()
-           *fvc::interpolate(species.numberDensity(i));
+        );
+
+        transport.convectiveFlux(i) = phis*fvc::interpolate(ns);
+
+        // AND THE PARTICLE FLUX, for the same reason and with worse
+        // consequences. plasmaTransport fills particleFlux_ from
+        // fvMatrix::flux() inside solve(); the Newton path never calls it, so
+        // it stays at whatever the last PICARD step left -- or at zero if
+        // handover happened before any Picard step wrote it.
+        //
+        // It is not a diagnostic-only field. plasmaDischargeCurrent integrates
+        // it for I_cond, and plasmaExternalCircuit REGULATES ON I_cond, so a
+        // frozen value silently disables the current-driven electrode: the
+        // source never sees the discharge ignite and just keeps charging the
+        // electrode capacitance.
+        //
+        // MEASURED 2026-09-11 on grubert_1d_I. Handover at t = 4.85e-08, after
+        // which I_cond sat at EXACTLY -4.5787e-10 A for ~3900 steps -- one
+        // fossilised Picard value, unchanged to 12 digits while V ramped from
+        // 0 to -284 V. On a restart where handover happened at step 1 it read
+        // 0 instead. Meanwhile n_e had reached 1.4e20 m^-3 with mu_e ~ 24
+        // m^2/(V.s): the gas HAD broken down and the circuit could not tell.
+        //
+        // Gamma = phi_s*n_f - D_f*|Sf|*snGrad(n) is exactly what
+        // fvMatrix::flux() returns for `fvm::div(phi,n) - fvm::laplacian(D,n)`,
+        // built here from STATE with the case's own div scheme -- the same
+        // construction residualCallback uses, so the current the circuit sees
+        // is the flux the residual was driven to zero on.
+        transport.particleFlux(i) =
+            fvc::flux(phis, ns, "div(phi_" + sName + ",n_" + sName + ")")
+          - fvc::interpolate(m.D())*mesh_.magSf()*fvc::snGrad(ns);
+
+        transport.diffusiveFlux(i) =
+            transport.particleFlux(i) - transport.convectiveFlux(i);
     }
 
     Info<< "outerSolver newton (SNES): reason " << reason
