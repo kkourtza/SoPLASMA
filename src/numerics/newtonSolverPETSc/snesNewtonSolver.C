@@ -382,21 +382,27 @@ void residualCallback
     // A guard that merely SKIPPED the source would be worse than the crash:
     // it would silently solve a streamer with no chemistry at all. So this
     // refuses, and names the fix.
-    if (!transport.chemistrySourcesAvailable())
+    // Either record will do: chemP/chemL from `ode`/`adaptive`/
+    // `adaptiveError`/`implicitRate`, or the net source that
+    // `explicitSource` now records (with no loss coefficient, because it
+    // has none). Both reproduce the term the Picard assembly applies.
+    const bool havePL  = transport.chemistrySourcesAvailable();
+    const bool haveNet = transport.chemNetSourceAvailable();
+    if (!havePL && !haveNet)
     {
         FatalErrorInFunction
             << "outerSolver newton: the chemistry production/loss fields"
             << " chemP/chemL are not available for this case." << nl
             << "    This solver builds its own species residual and needs"
-            << " them; they are populated by chemistry/solver `ode`,"
-            << " `adaptive`, `adaptiveError` and `implicitRate`, but NOT"
-            << " by `explicitSource`, which adds its source directly to"
-            << " the matrix instead." << nl
-            << "    WHAT TO DO: set chemistry/solver to `adaptiveError`"
-            << " (or another of the above) in the case, or use"
+            << " them; `ode`, `adaptive`, `adaptiveError` and `implicitRate`"
+            << " populate chemP/chemL, and `explicitSource` records a net"
+            << " source instead. This case provided NEITHER." << nl
+            << "    WHAT TO DO: use one of those chemistry solvers, or"
             << " outerSolver picard." << nl
             << exit(FatalError);
     }
+
+    const scalarField zeroLoss(nc, Zero);
 
     for (label s = 0; s < ctx.nSpecies; ++s)
     {
@@ -427,8 +433,15 @@ void residualCallback
         const scalarField& ddtF = tDdt().primitiveField();
         const scalarField& divF = tDiv().primitiveField();
         const scalarField& lapF = tLap().primitiveField();
-        const scalarField& P = transport.chemP(s);
-        const scalarField& Lr = transport.chemL(s);
+        // L is identically zero on the explicitSource path -- that path has
+        // no implicit loss coefficient, so -P alone IS its whole source.
+        // zeroLoss is SIZED (hoisted above the loop): a default-constructed
+        // scalarField is EMPTY, and Lr[c] on it is the same out-of-bounds
+        // read that made this callback segfault in the first place.
+        const scalarField& P =
+            havePL ? transport.chemP(s) : transport.chemNetSource(s);
+        const scalarField& Lr =
+            havePL ? transport.chemL(s) : zeroLoss;
         const scalarField& nsF = ns.primitiveField();
 
         const label off = (1 + s)*nc;

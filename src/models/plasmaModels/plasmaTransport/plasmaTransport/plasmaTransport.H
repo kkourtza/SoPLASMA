@@ -660,6 +660,14 @@ protected:
     scalarField chemNEps0_;
 
     //- Instantaneous production and loss coefficient, for csImplicitRate
+    //- Net chemistry source per species [1/m3/s], recorded on the
+    //  `explicitSource` path ONLY, for a caller that assembles the
+    //  species equation itself (the Newton outer solver).
+    //  Deliberately NOT chemP_/chemL_: maxChemStateRate() keys the
+    //  Co_chem limiter on those being non-empty, so reusing them
+    //  would change timesteps for unrelated cases.
+    List<scalarField> chemNetSrc_;
+
     List<scalarField> chemP_;
 
     //- ENERGY source from the chemistry ODE (Option 4), in the same
@@ -905,6 +913,24 @@ public:
                 }
             }
             return true;
+        }
+
+        //- Is the explicitSource net-source record available and sized?
+        //  Same contract as chemistrySourcesAvailable(): ASK before reading,
+        //  because chemNetSource() indexes the list directly.
+        bool chemNetSourceAvailable() const
+        {
+            if (chemNetSrc_.size() != species_.nSpecies()) return false;
+            forAll(chemNetSrc_, s)
+            {
+                if (chemNetSrc_[s].size() != mesh_.nCells()) return false;
+            }
+            return true;
+        }
+
+        const scalarField& chemNetSource(const label i) const
+        {
+            return chemNetSrc_[i];
         }
 
         const scalarField& chemP(const label i) const { return chemP_[i]; }

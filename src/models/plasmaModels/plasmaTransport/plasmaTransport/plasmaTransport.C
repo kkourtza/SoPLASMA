@@ -4893,6 +4893,31 @@ bool Foam::plasmaTransport::mechanismSourceTerms
         }
     }
 
+    // RECORD the net source for a caller that assembles the species equation
+    // ITSELF -- the Newton outer solver, which builds an explicit fvc::
+    // residual rather than calling nEqn().
+    //
+    // INTO ITS OWN FIELD, NOT chemP_/chemL_, and that distinction is the
+    // whole point. Writing chemP_/chemL_ here looked equivalent and is not:
+    // maxChemStateRate() returns 0 when they are EMPTY, and it feeds the
+    // Co_chem timestep limiter (plasmaTimeControl.C:1577). Populating them
+    // would silently switch that limiter on for every `explicitSource` case
+    // that sets limitChemistryCo -- changing timesteps well outside the one
+    // case this was added for. chemNetSrc_ is read by nothing else, so the
+    // Picard trajectory is BIT-IDENTICAL.
+    //
+    // There is no loss coefficient to record: this path is fully explicit, so
+    // the Newton residual forms -chemNetSrc_, exactly the -S that
+    // `*eqns[s] -= S` above applies. The two assemblies carry the SAME term.
+    {
+        chemNetSrc_.setSize(src.size());
+        forAll(chemNetSrc_, s)
+        {
+            chemNetSrc_[s].setSize(nCells, Zero);
+            chemNetSrc_[s] = src[s];
+        }
+    }
+
     // S_iz_, k_eff_ and alpha_ from the REAL reactions -- no Townsend fit and
     // no effective eta anywhere. alpha_ becomes its own definition,
     // S_iz/(n_e v_drift), rather than a fit to it, so the AMR criterion and the

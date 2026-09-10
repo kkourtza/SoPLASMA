@@ -164,12 +164,37 @@ Python is **`~/ct-env/bin/python`**, not the system python.
 |---|---|
 | **Newton/JFNK outer solver** (`outerSolver newton`, PETSc SNES, matrix-free) | replaces the segregated Picard sweep; runs on the real 5-field system |
 | **Newton in PARALLEL** | verified to 1.96e-09, below SNES rtol 1e-8, by fixed-dt cell-by-cell comparison of final fields. The bug was `ISCreateStride(...,0,...)` using rank 0's rows on every rank; fixed with `MatGetOwnershipRange`. |
+| **Newton transport models** | `driftDiffusion` and, since 2026-09-10, `immobile` -- the latter returns ZERO mu()/D() so the existing assembly reduces to ddt(n) == sources with no branching. `diffusion` is still REFUSED (it exposes neither), deliberately: assembling it without its transport would silently drop physics. The guard asks `providesTransportCoefficients()`, not a type. |
+| **Newton chemistry sources** | Needs per-species sources. `ode`/`adaptive`/`adaptiveError`/`implicitRate` populate chemP/chemL; `explicitSource` records a net source instead (added 2026-09-10, into its OWN field -- writing chemP_/chemL_ would have switched on the Co_chem limiter via maxChemStateRate(), changing dt for unrelated cases). Ask `chemistrySourcesAvailable()` / `chemNetSourceAvailable()` BEFORE reading: the accessors index the lists directly and segfault when unsized. |
+
 | **`PCFIELDSPLIT` + Schur** | splits named `phi`/`transport` via `PCFieldSplitSetIS` (**names, not `0`/`1`**) |
 | **Mesh independence of the Newton solve** | KSP median 8/11/9 over **100x** cells at MATCHED Courant; SNES its/step identical; exponent ~0.05 |
 | **Current-driven electrodes** | `currentDrivenElectrode` + `circuit { type currentSource; setCurrent; compliance; capacitance; }` -- `etc/boundaryRoles:377`, `README.md`, `docs/reference/plasmaSimulationControls.md:90` |
 | **Adaptive dt** | temporal-error PI controller (`plasmaTimeControl`), `maxDeltaT`/`minDeltaT`/`maxInitialDeltaT` supported. `deltaT` in `configuration/config` is only the INITIAL step. |
 | **Semi-implicit Poisson** | `poissonScheme semiImplicit` (auto-switched to `explicit` under `outerSolver newton`) |
 | **Flux schemes** | `standard` (div+laplacian, so `fvSchemes` decides) and `ScharfetterGummel` (bypasses `divSchemes`/`laplacianSchemes` **entirely and silently**) |
+
+## 3b. Newton gotchas that cost a session (2026-09-10)
+
+* **Newton needs a successful PICARD step before it hands over.** The handover
+  gates on every species being off its density floor, and it LATCHES. So a
+  COLD-STARTED arm cannot test Newton at any dt where Picard's own first step
+  dies -- measured: at dt=1e-10 on positiveStreamer both arms died with the
+  same SIGFPE after 1 step, and the Newton arm never handed over at all.
+  **Warm-start from an established state instead**; then handover happens on
+  step 1 and the two solvers start from a bit-identical field.
+* **Verify the handover MESSAGE, never assume it.** "outerSolver newton:
+  Picard warm-up COMPLETE ... this handover is PERMANENT" is the only proof an
+  arm is actually Newton. Its absence once meant 21,174 steps silently ran
+  Picard (commit b29c8a0).
+* **`libplasmaNewtonSolverPETSc` needs BOTH bashrcs.** Without the project's
+  own `etc/bashrc`, PETSC_DIR is unset, `libpetsc.so.3.24` is not found, the
+  dlopen fails silently and SNES reports "Registered types: 0()".
+  `libpetscFoam.so` fails the same way -- and did, unnoticed, in a reference run.
+* **Adding a VIRTUAL to a shared header is an ABI change.** It shifts every
+  later vtable slot; rebuilding only the changed library leaves the others
+  calling the wrong slots, which presents as a startup SEGV that looks like a
+  physics bug. Rebuild everything (`./build-all.sh`).
 
 ## 4. What has been REFUTED or DECIDED AGAINST -- do not re-propose
 
