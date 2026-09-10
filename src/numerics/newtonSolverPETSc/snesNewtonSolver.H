@@ -226,6 +226,49 @@ class snesNewtonSolver
     //  it is switchable and the measurement above is the justification.
     bool adaptiveForcing_;
 
+    //- Start the Newton solve from a LINEAR EXTRAPOLATION of the history
+    //  instead of from the previous step's solution.
+    //
+    //      u0 = u^n + (dt/dt_old)*(u^n - u^{n-1})
+    //
+    //  The initial guess was u^n -- a ZEROTH-order guess. Newton is only
+    //  LOCALLY convergent, and as dt grows the root moves further from u^n
+    //  until u^n leaves its basin of attraction; Newton then converges to a
+    //  local minimum of ||F|| rather than to the root.
+    //
+    //  That is exactly what the failing steps look like (measured 2026-09-11 on
+    //  grubert2009_ballast400): ||F|| falls to 0.29 of its initial value and
+    //  FLATLINES, while successful steps reach 1e-8 in 4-10 iterations. And
+    //  everything that would explain it differently has been eliminated by
+    //  measurement -- F is provably exact (purity and hysteresis checks both
+    //  return ||dF|| = 0), the differencing step is irrelevant (mffdErr 1e-5 /
+    //  1e-7 / PETSc default all give the same dt to within 1%), the KSP
+    //  converges, and relaxing errRtol 100x does not move dt.
+    //
+    //  Densities are floored at their own minNumberDensity: an extrapolated
+    //  guess may undershoot to a negative value, which is not merely infeasible
+    //  but breaks the rate-table lookups the residual performs.
+    //
+    //  Default FALSE until measured.
+    bool extrapolateGuess_;
+
+    //- Extrapolate the POTENTIAL too, or only the transported fields.
+    //
+    //  These are NOT the same case and the distinction is physical. Densities
+    //  and nEps carry a ddt term: they genuinely evolve, so
+    //  u^n + r*(u^n - u^{n-1}) is a proper second-order predictor and is
+    //  standard practice. ePotential has NO time derivative -- it is set
+    //  instantaneously by Poisson from the charge density -- so extrapolating
+    //  it in time is not motivated the same way, and the extrapolated phi may
+    //  be INCONSISTENT with the extrapolated rho. The consistent guess for phi
+    //  would be the solution of Poisson AT the extrapolated densities.
+    //
+    //  Kept separately switchable so the question is answered by measurement
+    //  rather than by argument. Default TRUE (i.e. extrapolate it) only
+    //  because phi(t) is smooth in the cases at hand; set false to extrapolate
+    //  the transported fields alone.
+    bool extrapolatePotential_;
+
     //- Whether the LAST SNES solve converged. Reported through
     //  lastSolveConverged() instead of being turned into a FatalError, so a
     //  step Newton cannot solve is DISCARDED AND RETRIED at a shorter dt via

@@ -904,7 +904,9 @@ Foam::snesNewtonSolver::snesNewtonSolver
     rebalanceScales_(dict.getOrDefault<bool>("rebalanceScales", true)),
     chemJacobian_(dict.getOrDefault<bool>("chemJacobian", true)),
     chemCrossJacobian_(dict.getOrDefault<bool>("chemCrossJacobian", false)),
-    adaptiveForcing_(dict.getOrDefault<bool>("adaptiveForcing", true))
+    adaptiveForcing_(dict.getOrDefault<bool>("adaptiveForcing", true)),
+    extrapolateGuess_(dict.getOrDefault<bool>("extrapolateGuess", false)),
+    extrapolatePotential_(dict.getOrDefault<bool>("extrapolatePotential", true))
 {
     // Lazy, ONCE-only: soPlasmaFoam's main() never calls initPetsc() itself
     // (this library is optionally loaded, so soPlasmaFoam must stay
@@ -1182,22 +1184,58 @@ void Foam::snesNewtonSolver::solveOuterStep
     List<double> xBuf(nLocalTotal, Zero);
     {
         const scalarField& ePotF = em.ePotential().primitiveField();
-        for (label c = 0; c < nCellsLocal; ++c) { xBuf[c] = ePotF[c]/sX[0]; }
+        // EXTRAPOLATION RATIO. deltaT0() is the PREVIOUS step, so this is
+        // (dt/dt_old) and it is 1 for a constant step. Guarded: on the first
+        // step there is no meaningful history and r collapses to 0, which
+        // recovers the old zeroth-order guess exactly.
+        const scalar dtNow = mesh_.time().deltaTValue();
+        const scalar dtOld = mesh_.time().deltaT0Value();
+        const scalar r =
+            (extrapolateGuess_ && dtOld > VSMALL && mesh_.time().timeIndex() > 2)
+          ? dtNow/dtOld
+          : 0.0;
+
+        {
+            // The potential has no ddt, so its extrapolation is a separate
+            // question from the transported fields' -- see
+            // extrapolatePotential_.
+            const scalar rPhi = (extrapolatePotential_ ? r : 0.0);
+            const scalarField& p0 = em.ePotential().oldTime().primitiveField();
+            for (label c = 0; c < nCellsLocal; ++c)
+            {
+                xBuf[c] = (ePotF[c] + rPhi*(ePotF[c] - p0[c]))/sX[0];
+            }
+        }
 
         for (label s = 0; s < nSpecies; ++s)
         {
-            const scalarField& nf = species.numberDensity(s).primitiveField();
+            const volScalarField& ns = species.numberDensity(s);
+            const scalarField& nf = ns.primitiveField();
+            const scalarField& n0 = ns.oldTime().primitiveField();
             const label off = (1 + s)*nCellsLocal;
             const scalar sxS = sX[1 + s];
-            for (label c = 0; c < nCellsLocal; ++c) { xBuf[off + c] = nf[c]/sxS; }
+            // FLOOR the extrapolation: an undershoot to a negative density
+            // breaks the rate-table lookups the residual performs.
+            const scalar fl = max(species.speciesMinNumberDensity(s), scalar(0));
+            for (label c = 0; c < nCellsLocal; ++c)
+            {
+                const scalar e = nf[c] + r*(nf[c] - n0[c]);
+                xBuf[off + c] = max(e, fl)/sxS;
+            }
         }
 
         if (lmea)
         {
-            const scalarField& nef = lmea->nEps().primitiveField();
+            const volScalarField& ne = lmea->nEps();
+            const scalarField& nef = ne.primitiveField();
+            const scalarField& ne0 = ne.oldTime().primitiveField();
             const label off = (1 + nSpecies)*nCellsLocal;
             const scalar sxE = sX[1 + nSpecies];
-            for (label c = 0; c < nCellsLocal; ++c) { xBuf[off + c] = nef[c]/sxE; }
+            for (label c = 0; c < nCellsLocal; ++c)
+            {
+                const scalar e = nef[c] + r*(nef[c] - ne0[c]);
+                xBuf[off + c] = max(e, scalar(0))/sxE;
+            }
         }
     }
 
