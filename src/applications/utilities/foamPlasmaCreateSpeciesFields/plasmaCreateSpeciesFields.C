@@ -221,9 +221,10 @@ static void classifyPatches
                 << exit(FatalError);
         }
 
-        const word kind(decl.subDict(name).get<word>("kind"));
+        const dictionary& pd = decl.subDict(name);
+        const word kind(pd.get<word>("kind"));
 
-        const word surf
+        word surf
         (
             boundaryRoleLibrary::surfaceClass
             (
@@ -231,6 +232,63 @@ static void classifyPatches
                 "configuration/boundaries, patch `" + name + "`"
             )
         );
+
+        // DELIBERATE OVERRIDE of what species do at this surface.
+        //
+        // Layer 1 says what a surface IS, and every electrode kind therefore
+        // implies `conductor`: a metal absorbs the flux that arrives. That is
+        // the physics and it stays the default.
+        //
+        // But a BENCHMARK is not a physical surface. The positive-streamer
+        // reference problem (Bagheri et al.; Pasolari & Kourtzanidis
+        // arXiv:2607.05137 sec 6.1) prescribes the electrode POTENTIAL while
+        // imposing homogeneous Neumann on the densities -- a non-absorbing
+        // electrode, which does not exist. It is chosen so the reference case
+        // is unambiguous, and reproducing published numbers requires being able
+        // to say it.
+        //
+        // Expressed as an EXPLICIT, GREPPABLE override rather than a new
+        // `kind`, for two reasons: a non-physical idealisation must not sit in
+        // the same vocabulary as real surfaces, and nobody should be able to
+        // switch a wall flux off by accident. It is ANNOUNCED every run,
+        // because "the electrodes do not absorb" silently changes an answer.
+        if (pd.found("speciesSurface"))
+        {
+            const word over(pd.get<word>("speciesSurface"));
+
+            if (over != "open" && over != "conductor"
+             && over != "chargingSurface")
+            {
+                FatalErrorInFunction
+                    << "speciesSurface `" << over << "` on patch `" << name
+                    << "` is not a surface class." << nl
+                    << "    Valid: open | conductor | chargingSurface." << nl
+                    << "    `mechanical` is NOT overridable -- it is read from"
+                    << " the mesh." << nl
+                    << exit(FatalError);
+            }
+
+            if (surf == "mechanical")
+            {
+                FatalErrorInFunction
+                    << "patch `" << name << "` is a MECHANICAL constraint"
+                    << " (empty/wedge/symmetry/processor)." << nl
+                    << "    Its species condition follows from the mesh and"
+                    << " cannot be overridden." << nl
+                    << exit(FatalError);
+            }
+
+            Info<< "plasmaCreateSpeciesFields: patch `" << name << "` (kind "
+                << kind << ") -- species surface OVERRIDDEN " << surf
+                << " -> " << over << "." << nl
+                << "    This is a DELIBERATE DEPARTURE FROM THE PHYSICS the"
+                << " kind implies, kept for benchmark reproduction." << nl
+                << "    `open` on an electrode means the wall absorbs NOTHING:"
+                << " no drift flux, no thermal flux, no secondary emission."
+                << endl;
+
+            surf = over;
+        }
 
         roles.insert
         (
@@ -258,7 +316,10 @@ static void writePatchEntry
     const dictionary& emission,//!< emission mechanisms, possibly empty
     const scalar gammaSEE,     //!< declared secondary yield, or -1 if not given
     const scalar eReflection,  //!< declared electron reflection, or -1
-    const scalar gasTconst     //!< fixed gas T [K], or <=0 to follow T_gas
+    const scalar gasTconst,    //!< fixed gas T [K], or <=0 to follow T_gas
+    const bool holdAmbient,  //!< hold the ambient value on INFLOW
+    const word& fluxName,      //!< this field's own particle flux, or null
+    const scalar internalValue //!< the ambient (initial) value
 )
 {
     const polyPatch& pp = mesh.boundaryMesh()[patchi];
@@ -283,7 +344,36 @@ static void writePatchEntry
         // Neutrals are not absorbed by a wall flux condition: the drift-
         // diffusion wall flux is built on the charged-particle thermal and
         // drift fluxes. An open boundary absorbs nothing either.
-        os << "        type            zeroGradient;" << nl;
+        //
+        // HOLD THE AMBIENT STATE. `zeroGradient` lets the background drain OUT of the
+        // domain: whatever the interior happens to hold is copied to the face,
+        // so an outflowing region empties and an inflowing one imports its own
+        // depletion. A far boundary into an ambient medium should instead hold
+        // the AMBIENT value on inflow and impose nothing on outflow, which is
+        // exactly `inletOutlet`.
+        //
+        // Physically motivated rather than a benchmark convention -- unlike
+        // `speciesSurface`, which is why this is a real parameter on the kind
+        // instead of an override of it. The reference streamer problem
+        // (Pasolari & Kourtzanidis arXiv:2607.05137 sec 6.1) uses it to keep
+        // the background ionisation level at the outer boundary.
+        //
+        // THE VALUE IS DERIVED (G1): the inflow value is the species' own
+        // initial uniform field, so a case states the ambient level ONCE, in
+        // the place it already states it, rather than repeating a number in a
+        // boundary entry where the two can drift apart.
+        if (holdAmbient && !fluxName.empty())
+        {
+            os  << "        type            inletOutlet;" << nl
+                << "        phi             " << fluxName << ";" << nl
+                << "        inletValue      uniform " << internalValue << ";"
+                << nl
+                << "        value           $internalField;" << nl;
+        }
+        else
+        {
+            os << "        type            zeroGradient;" << nl;
+        }
     }
     else
     {
@@ -543,12 +633,31 @@ static void writeDerivedField
                 pd.getOrDefault<scalar>("electronReflection", eReflection);
         }
 
+        // `holdAmbient` on an openBoundary: hold the ambient value on
+        // inflow. Read per patch; absent means the historical zeroGradient.
+        bool holdAmbient = false;
+        if (decl.found(name) && decl.isDict(name))
+        {
+            holdAmbient =
+                decl.subDict(name).getOrDefault<bool>("holdAmbient", false);
+        }
+
+        // This field's own particle flux, derived from its name: `n_e` ->
+        // `particleFlux_e`. Only the transported number densities have one, so
+        // the energy field falls back to zeroGradient.
+        word fluxName;
+        if (fieldName.starts_with("n_"))
+        {
+            fluxName = "particleFlux_" + fieldName.substr(2);
+        }
+
         writePatchEntry
         (
             os, mesh, patchi,
             roles.found(name) ? roles[name] : prOpen,
             kind, fluxFamily, wallTeV, material, emission,
-            gammaSEE, eReflection, gasTconst
+            gammaSEE, eReflection, gasTconst,
+            holdAmbient, fluxName, internalValue
         );
     }
 
@@ -922,9 +1031,41 @@ int main(int argc, char* argv[])
                  << "  (charge " << q << ", " << kind << ")" << endl;
         }
 
+        // THE AMBIENT (BACKGROUND) DENSITY IS THE SPECIES' OWN DECLARED
+        // FLOOR, and in this project that is not a coincidence: a case sets
+        // `minNumberDensity` TO the background level precisely so the bulk
+        // cannot attach itself away. The streamer benchmark says so in its own
+        // words -- "1e13, the benchmark's background density, not a numerical
+        // floor of 1e5 ... the bulk is net-ATTACHING: left free, the background
+        // would attach away".
+        //
+        // So it is read here rather than asked for again (G1). The floors in
+        // that case are 1e13 / 7.9e12 / 2.1e12 / 1e5 / 1e5 and the initial
+        // fields `etc/changeDictionary` wrote were 1e13 / 7.9e12 / 2.1e12 /
+        // 1e5 / 1e5 -- the SAME numbers, restated in a second place where they
+        // could drift apart.
+        //
+        // USED FOR THE INITIAL FIELD TOO. An initial value BELOW the floor is
+        // not a meaningful state: clampNumberDensities() raises it on the first
+        // step, so writing 0 and relying on a later changeDictionary to fix it
+        // only hid where the number came from. A case that wants a different
+        // initial profile still applies one afterwards -- the streamer's own
+        // initGaussianSeed.py adds its Gaussian on top of this background.
+        scalar ambientValue = 0.0;
+        {
+            const dictionary& spAll =
+                speciesDict.subDict("speciesProperties");
+            const dictionary* sd = spAll.findDict(s, keyType::REGEX);
+            if (sd)
+            {
+                ambientValue =
+                    sd->getOrDefault<scalar>("minNumberDensity", 0.0);
+            }
+        }
+
         writeDerivedField
         (
-            mesh, runTime, fieldName, dimDensity, 0.0,
+            mesh, runTime, fieldName, dimDensity, ambientValue,
             kind, fluxFamily, wallTeV, gasTconst, roles, decl
         );
     }

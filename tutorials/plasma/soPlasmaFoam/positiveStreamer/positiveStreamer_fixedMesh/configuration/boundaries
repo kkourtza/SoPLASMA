@@ -72,13 +72,20 @@ FoamFile
 // same constraint grubert2009's own boundaries file documents.
 active_electrode
 {
-    kind        drivenElectrode;
+    kind            drivenElectrode;
+    // BENCHMARK CONVENTION, not physics: the reference problem prescribes the
+    // electrode potential while imposing homogeneous Neumann on the densities.
+    // This is what `etc/changeDictionary` used to impose directly, and what
+    // layer 1 could not say until `speciesSurface` existed. See
+    // etc/boundaryRoles.
+    speciesSurface  open;
     waveform    table ((0 0) (9.375e-11 18.75e3));   // 18.75 kV over 93.75 ps
 }
 
 grounded_electrode
 {
-    kind        groundedElectrode;
+    kind            groundedElectrode;
+    speciesSurface  open;      // same benchmark convention as active_electrode
 }
 
 // The artificial outer boundary: the domain simply ends here. This is the
@@ -86,7 +93,12 @@ grounded_electrode
 // catch-all.
 far
 {
-    kind        openBoundary;
+    kind            openBoundary;
+    // Holds the ambient ionisation level on inflow instead of letting it
+    // drain out -- what `etc/changeDictionary` imposed as
+    // `inletOutlet / inletValue 1e13`. The value is DERIVED from each
+    // species' own initial field, so it cannot drift from it.
+    holdAmbient   yes;
 }
 
 // NOT LISTED, BECAUSE THEY ARE DERIVED FROM THE MESH:

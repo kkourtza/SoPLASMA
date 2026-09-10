@@ -49,6 +49,32 @@ FoamFile
 //   chargingSurface   absorbs AND accumulates a local surface charge, because
 //                     the potential condition on it CONSUMES that charge.
 //
+// OVERRIDING `surface` ON ONE PATCH -- `speciesSurface`
+//
+// Every electrode kind implies `conductor`, because a metal absorbs the flux
+// that reaches it. That is the physics and it is the default.
+//
+// A BENCHMARK, however, is not a physical surface. The positive-streamer
+// reference problem (Bagheri et al.; Pasolari & Kourtzanidis arXiv:2607.05137
+// sec 6.1) prescribes the electrode POTENTIAL while imposing homogeneous
+// Neumann on the densities -- a non-absorbing electrode, which does not exist.
+// It is chosen so the reference case is unambiguous, and reproducing published
+// numbers requires being able to state it:
+//
+//     active_electrode
+//     {
+//         kind            drivenElectrode;
+//         waveform        constant 18.75e3;
+//         speciesSurface  open;          // BENCHMARK: densities pass through
+//     }
+//
+// Deliberately NOT a new `kind`. A non-physical idealisation must not sit in
+// the same vocabulary as real surfaces, and no one should be able to switch a
+// wall flux off by accident. The generator ANNOUNCES every use, because "the
+// electrodes do not absorb" silently changes an answer.
+//
+// `mechanical` cannot be overridden: it is read from the mesh.
+//
 // THE RULE BEHIND THAT LAST DISTINCTION: sigma accumulates exactly where the
 // electrostatics condition reads it. A dielectric surface charges because
 // something reads the charge; a metal does not, because nothing does.
@@ -278,6 +304,18 @@ thinDielectricOnElectrode
 
 openBoundary
 {
+    // AMBIENT INFLOW. `zeroGradient` lets the background DRAIN OUT: the
+    // interior value is copied to the face, so an outflowing region empties
+    // and an inflowing one imports its own depletion. A far boundary into an
+    // ambient medium should hold the AMBIENT value on inflow and impose
+    // nothing on outflow -- `inletOutlet`.
+    //
+    //     far { kind openBoundary; holdAmbient yes; }
+    //
+    // The inflow value is DERIVED (G1) from the species' own initial uniform
+    // field, so the ambient level is stated once where it already is stated.
+    // Default no, so nothing existing changes.
+    optional    { holdAmbient no; }
     description "An artificial outer boundary: the domain simply ends here.";
 
     // zeroGradient on the potential is a MODELLING CHOICE and not a free one:
