@@ -123,6 +123,53 @@ void multiRegionPoisson::solveCoupled()
             fvMatrixAssemblyPtr_->addFvMatrix(reg.PoissonMatrix().ref());
         }
 
+        // ONE-TIME: report the assembled cell ordering. The Newton outer
+        // solver needs to place each region's rows in its own DOF layout, and
+        // "the gas comes first because addFvMatrix(gasEqn) is called first" is
+        // an INFERENCE. Print it instead (A6).
+        {
+            static bool told = false;
+            if (!told)
+            {
+                told = true;
+                const auto& asmMesh = fvMatrixAssemblyPtr_->lduAddr();
+                const auto* amp = fvMatrixAssemblyPtr_->lduMeshPtr();
+                Info<< "[assembly] lduAddr().size()=" << asmMesh.size()
+                    << "  assembled rows=" << (amp ? amp->lduAddr().size() : -1)
+                    << "  cellOffsets=";
+                if (amp) { forAll(amp->cellOffsets(), q) Info<< amp->cellOffsets()[q] << " "; }
+                Info<< " gas cells " << mesh_.nCells();
+                forAll(dielectrics_, i)
+                {
+                    Info<< "  region" << i+1 << " ("
+                        << dielectrics_[i].mesh().name() << ") cells "
+                        << dielectrics_[i].mesh().nCells();
+                }
+                Info<< endl;
+            }
+        }
+
+        {
+            static bool toldSI = false;
+            if (!toldSI)
+            {
+                toldSI = true;
+                const auto* amp = fvMatrixAssemblyPtr_->lduMeshPtr();
+                Info<< "[assembly] lduAddr().size()=" << fvMatrixAssemblyPtr_->lduAddr().size()
+                    << "  assembled rows=" << (amp ? amp->lduAddr().size() : -1)
+                    << "  cellOffsets=";
+                if (amp) { forAll(amp->cellOffsets(), q) Info<< amp->cellOffsets()[q] << " "; }
+                Info<< " gas cells " << mesh_.nCells();
+                forAll(dielectrics_, i)
+                {
+                    Info<< "  region" << i+1 << " ("
+                        << dielectrics_[i].mesh().name() << ") cells "
+                        << dielectrics_[i].mesh().nCells();
+                }
+                Info<< endl;
+            }
+        }
+
         fvMatrixAssemblyPtr_->solve();
 
         ePotential_.correctBoundaryConditions();
@@ -168,6 +215,27 @@ void multiRegionPoisson::solveCoupled
         for (dielectricRegion& reg : dielectrics_)
         {
             fvMatrixAssemblyPtr_->addFvMatrix(reg.PoissonMatrix().ref());
+        }
+
+        {
+            static bool toldSI = false;
+            if (!toldSI)
+            {
+                toldSI = true;
+                const auto* amp = fvMatrixAssemblyPtr_->lduMeshPtr();
+                Info<< "[assembly] lduAddr().size()=" << fvMatrixAssemblyPtr_->lduAddr().size()
+                    << "  assembled rows=" << (amp ? amp->lduAddr().size() : -1)
+                    << "  cellOffsets=";
+                if (amp) { forAll(amp->cellOffsets(), q) Info<< amp->cellOffsets()[q] << " "; }
+                Info<< " gas cells " << mesh_.nCells();
+                forAll(dielectrics_, i)
+                {
+                    Info<< "  region" << i+1 << " ("
+                        << dielectrics_[i].mesh().name() << ") cells "
+                        << dielectrics_[i].mesh().nCells();
+                }
+                Info<< endl;
+            }
         }
 
         fvMatrixAssemblyPtr_->solve();

@@ -71,6 +71,25 @@ class blockMatrixCOO
     //- Number of field blocks.
     const label nFields_;
 
+    //- RAGGED TAIL: extra rows appended AFTER the nFields uniform blocks,
+    //  for cells that exist for ONE field only.
+    //
+    //  multiRegionPoisson solves ePotential over the gas AND every dielectric
+    //  or farField region, while the species and energy exist in the GAS
+    //  alone. Padding every block to the total was rejected: a `farField`
+    //  region is "a FICTITIOUS air/vacuum region: Poisson only" and is
+    //  EXPECTED to be larger than the gas ("Poisson is long-range and usually
+    //  needs a larger domain than the plasma does"), so padding would multiply
+    //  the DOF count several-fold for nothing.
+    //
+    //  A tail costs exactly the non-gas cells and leaves every existing index
+    //  expression -- field*nCells + cell -- untouched. It is ZERO for a
+    //  single-region case, which is what makes those bit-identical.
+    //
+    //      [ f0 gas ][ f1 gas ] ... [ fN gas ][ f0 non-gas ]
+    //                                          ^ nTail_ rows
+    const label nTail_;
+
     //- GLOBAL row numbering across ranks, over this rank's nFields*nCells
     //  rows. PETSc's Vec/Mat layout is rank-contiguous, and our per-rank
     //  layout is field-major inside that block, so the global row of
@@ -85,14 +104,23 @@ class blockMatrixCOO
 
 public:
 
-    //- Construct for a given block layout
-    blockMatrixCOO(const label nCells, const label nFields);
+    //- Construct for a given block layout. nTail defaults to 0, so every
+    //  existing caller and every single-region case is unchanged.
+    blockMatrixCOO
+    (
+        const label nCells,
+        const label nFields,
+        const label nTail = 0
+    );
 
     //- Discard all accumulated entries, keeping the allocation
     void clear();
 
     //- Total unknowns, i.e. the matrix dimension
-    label nRows() const noexcept { return nFields_*nCells_; }
+    label nRows() const noexcept { return nFields_*nCells_ + nTail_; }
+
+    //- Size of the ragged tail (0 when single-region)
+    label nTail() const noexcept { return nTail_; }
 
     label nEntries() const noexcept { return rows_.size(); }
 
@@ -109,6 +137,25 @@ public:
     label globalRow(const label field, const label cell) const
     {
         return rowNumbering_.localStart() + field*nCells_ + cell;
+    }
+
+    //- GLOBAL row/column index of a TAIL cell (a non-gas cell of field 0).
+    //  `tailCell` is 0-based within the tail, i.e. assembledCell - nCells_
+    //  using the assembly's own cellOffsets().
+    label globalTailRow(const label tailCell) const
+    {
+        return rowNumbering_.localStart() + nFields_*nCells_ + tailCell;
+    }
+
+    //- GLOBAL row of an ASSEMBLED cell index for field 0 (ePotential):
+    //  gas cells map into block 0, non-gas cells into the tail. This is the
+    //  one mapping the multi-region Poisson block needs, and it is the
+    //  IDENTITY for a single-region case.
+    label globalPoissonRow(const label assembledCell) const
+    {
+        return (assembledCell < nCells_)
+             ? globalRow(0, assembledCell)
+             : globalTailRow(assembledCell - nCells_);
     }
 
     //- Add a DIAGONAL coupling block: d(residual of field rowField)/d(field

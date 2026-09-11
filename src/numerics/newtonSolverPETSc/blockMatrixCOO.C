@@ -19,17 +19,23 @@ License
 Foam::blockMatrixCOO::blockMatrixCOO
 (
     const label nCells,
-    const label nFields
+    const label nFields,
+    const label nTail
 )
 :
     nCells_(nCells),
     nFields_(nFields),
-    rowNumbering_(nFields*nCells)
+    nTail_(nTail),
+    // The GLOBAL numbering must span the tail as well, or the rank's
+    // ownership range is short by nTail and every tail row lands in the next
+    // rank's territory. nTail is 0 for a single-region case, so this is the
+    // identity there.
+    rowNumbering_(nFields*nCells + nTail)
 {
     // Diagonal for every unknown, plus both triangles of every internal face
     // for every field block. An estimate only -- DynamicList grows if the
     // coupling blocks add more.
-    const label estimate = nFields*nCells*8;
+    const label estimate = (nFields*nCells + nTail)*8;
     rows_.reserve(estimate);
     cols_.reserve(estimate);
     vals_.reserve(estimate);
