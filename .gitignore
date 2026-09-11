@@ -140,7 +140,10 @@ validation/**/logs/
 validation/**/postProcessing/
 validation/**/processor[0-9]*/
 validation/**/VTK/
-validation/**/constant/polyMesh/
+# `**/polyMesh/` rather than `**/constant/polyMesh/`: a multi-region case splits
+# into constant/<region>/polyMesh (splitMeshRegions), which the narrower pattern
+# missed -- 29 MB across needle_newton and needle_mrgate.
+validation/**/polyMesh/
 validation/**/constant/plasmaTables/
 validation/**/0/
 validation/**/[0-9]*.[0-9]*/
@@ -180,6 +183,12 @@ validation/**/system/changeDictionaryDict
 verification/**/logs/
 verification/**/processor[0-9]*/
 verification/**/sweep.out
+# Only the two beds that can rebuild their own mesh: both carry a
+# system/blockMeshDict and their Allrun runs blockMesh. testSnesJFNK and
+# testSnesJFNK2Field have NEITHER an Allrun NOR a blockMeshDict, so their
+# constant/polyMesh is the only copy and is deliberately TRACKED.
+verification/fluxScheme1D/constant/polyMesh/
+verification/fluxScheme2Dnonortho/constant/polyMesh/
 
 # ------------------------------------------------------------- tutorials/ ----
 # The tutorials carry the same generated artefacts as the validation cases; the

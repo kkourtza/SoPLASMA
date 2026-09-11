@@ -1,0 +1,27 @@
+FoamFile { version 2.0; format ascii; class dictionary; object blockMeshDict; }
+
+// 2D mesh, optionally SHEARED in x by SHEAR0 over its height. Only the
+// z-direction is `empty`; the y-patches are REAL patches carrying the exact
+// manufactured solution, which is what makes the bed valid on a sheared mesh.
+scale   1;
+NX      NCELLS;
+NY      NCELLS;
+
+vertices
+(
+    (0       0    0)     (1       0    0)
+    (SHEARP1 1    0)     (SHEAR0  1    0)
+    (0       0    0.05)  (1       0    0.05)
+    (SHEARP1 1    0.05)  (SHEAR0  1    0.05)
+);
+
+blocks ( hex (0 1 2 3 4 5 6 7) ($NX $NY 1) simpleGrading (1 1 1) );
+
+boundary
+(
+    left   { type patch; faces ((0 4 7 3)); }
+    right  { type patch; faces ((1 2 6 5)); }
+    bottom { type patch; faces ((0 1 5 4)); }
+    top    { type patch; faces ((3 7 6 2)); }
+    frontAndBack { type empty; faces ((0 3 2 1) (4 5 6 7)); }
+);

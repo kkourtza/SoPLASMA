@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Convergence + Peclet sweep for the INTERIOR flux schemes.
+#
+# NOT an SG bed. `standard` with Gauss ROUNDF is the PRODUCTION path in every
+# SoPLASMA case (`"div\(phi_.*,n.*\)" Gauss ROUNDF` -- bounded, which a density
+# that must stay positive needs), so it is swept on equal footing. upwind and
+# linear are included as reference points: upwind is the first-order floor,
+# linear the unbounded second-order ceiling that oscillates past |Pe_grid| = 2.
+#
+# ALL FOUR ROUND VARIANTS are swept (ROUNDF ROUNDA ROUNDAplus ROUNDL), because
+# the libROUNDSchemes README's own accuracy test names ROUND-A, ROUND-A+ and
+# ROUND-L as the ones that "significantly reduce numerical errors with similar
+# CPU time" -- and ROUNDF, the one SoPLASMA actually ships, is NOT among them.
+# The `01` variants are deliberately EXCLUDED: they are for strictly bounded
+# [0,1] fields such as mass fractions, and a number density is non-negative but
+# not bounded above.
+cd "${0%/*}" || exit 1
+source /usr/lib/openfoam/openfoam2412/etc/bashrc >/dev/null 2>&1
+export SoPLASMA=$HOME/soplasma-scratch
+export SoPLASMA_ETC=$SoPLASMA/etc
+export SoPLASMA_SRC=$SoPLASMA/src
+
+A=1.0 ; B=2.0 ; S=1.0        # BC values and the SOURCE (non-zero: see the header)
+mkdir -p logs
+: > results.txt
+
+for PE in 0.1 1 10 100 1000 10000; do   # DOMAIN Peclet = v L / D, L = 1
+  V=$PE ; D=1.0
+  for N in 20 40 80 160 320 640; do
+    sed "s/NCELLS/$N/" system/blockMeshDict.in > system/blockMeshDict
+    sed -e "s/AVAL/$A/" -e "s/BVAL/$B/" 0/n.in > 0/n
+    blockMesh > logs/log.blockMesh 2>&1 || { echo "blockMesh FAILED N=$N"; exit 1; }
+    # label:fvSchemes-entry.  The Pasolari & Kourtzanidis (arXiv 2607.05137)
+    # assessment tested limitedLinear, MUSCL, ROUNDF, ROUNDA, SuperBee, Minmod,
+    # vanLeer, upwind and SG; all of those are here so the two benchmarks can be
+    # compared directly. ROUNDAplus and ROUNDL are ADDITIONS -- that paper did
+    # not test them, and ROUNDL turns out to be the most accurate ROUND variant
+    # on this smooth problem. ROUNDW was added to the vendored library on
+    # 2026-09-07 from upstream (it postdates our 2026-08-10 snapshot).
+    for ENTRY in "upwind:upwind" "linear:linear" "limitedLinear:limitedLinear 1" \
+                 "MUSCL:MUSCL" "SuperBee:SuperBee" "Minmod:Minmod" \
+                 "vanLeer:vanLeer" "ROUNDF:ROUNDF" "ROUNDA:ROUNDA" \
+                 "ROUNDAplus:ROUNDAplus" "ROUNDL:ROUNDL" "ROUNDW:ROUNDW"; do
+      LAB="${ENTRY%%:*}" ; SCH="${ENTRY#*:}"
+      sed "s|div(phi,n) .*;|div(phi,n) Gauss $SCH;|" system/fvSchemes.in > system/fvSchemes
+      testFluxScheme -v $V -D $D -S $S -a $A -b $B -scheme standard \
+        > logs/log.$LAB.$PE.$N 2>&1
+      grep -h "^RESULT" logs/log.$LAB.$PE.$N | sed "s/scheme=standard/scheme=std:$LAB/" >> results.txt
+    done
+    sed "s|div(phi,n) .*;|div(phi,n) Gauss upwind;|" system/fvSchemes.in > system/fvSchemes
+    for CF in ScharfetterGummel CompleteFlux; do
+      testFluxScheme -v $V -D $D -S $S -a $A -b $B -scheme $CF \
+        > logs/log.$CF.$PE.$N 2>&1
+      grep -h "^RESULT" logs/log.$CF.$PE.$N >> results.txt
+    done
+  done
+done
+
+python3 report.py
