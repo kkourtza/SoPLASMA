@@ -14,7 +14,7 @@ region:    domain
 
 The R and C values were introduced to tame a breakdown transient that we now
 know was an artefact: `updateChargeDensity()` was running on 0.04% of steps, so
-the field was the vacuum field and nothing screened (`23cd599`). **If the fix
+the field was the vacuum field and nothing screened (`4618a51`). **If the fix
 is sufficient, the elaborate circuit may not be needed at all** -- and Grubert
 imposes a fixed -500 V, not a ballast.
 

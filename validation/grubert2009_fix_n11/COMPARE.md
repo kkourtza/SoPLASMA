@@ -15,7 +15,7 @@ region:    domain
 The three-arm R sweep of 2026-09-06 is VOID: it ran with Poisson's source
 frozen (151 charge-density updates in 364670 steps), so the field was the
 vacuum field, nothing screened, and the runaway it was built to study was the
-bug. Fixed in `23cd599`.
+bug. Fixed in `4618a51`.
 
 So the first question is no longer "which R" but **"does it behave at all"**,
 and the R sweep is only worth repeating if it does not.

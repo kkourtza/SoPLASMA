@@ -13,7 +13,7 @@ past the point where space charge should dominate. With no screening there is
 nothing to arrest ionisation, so the "runaway" this sweep was built to
 investigate WAS THE BUG, not physics.
 
-Fixed in `23cd599`; verified by the field range going from 12943..12989 V/m
+Fixed in `4618a51`; verified by the field range going from 12943..12989 V/m
 (uniform) to 8062..14310 V/m (structured) at the same physical time.
 
 **This case must be re-run before any row of it is quoted.** The question below

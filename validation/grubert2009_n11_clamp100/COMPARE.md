@@ -8,7 +8,7 @@ mean-energy clamp could have destroyed earlier results.
 `meanEnergyMax` defaulted to a hardcoded **100 eV** while the LMEA tables cover
 **2644 eV** -- so the clamp was 26.4x tighter than the "range the tables cover"
 justification it carried, and it DISCARDED ENERGY in cells inside the tabulated
-range (`c131d8c` fixes the default to be derived). It fired on **91,586** outer
+range (`8f5bab4` fixes the default to be derived). It fired on **91,586** outer
 iterations of `grubert2009_fix_n11`, at cells with `n_e = 7.2e18` -- dense
 plasma, not floor cells -- with raw mean energy reaching 105 eV.
 
@@ -95,7 +95,7 @@ a few eV, so that arm is unphysical everywhere, not merely at a hot spot.
 
 ## The verdict, and it inverts the change that prompted it
 
-`c131d8c` made `meanEnergyMax` DERIVE from the table range (2644 eV) instead of
+`8f5bab4` made `meanEnergyMax` DERIVE from the table range (2644 eV) instead of
 a hardcoded 100 eV, on the argument that the clamp exists to prevent
 extrapolation so its value should be the tabulated range. **That argument is
 sound and the outcome is still wrong**, because a table's EXTENT is not its

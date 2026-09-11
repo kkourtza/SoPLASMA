@@ -33,7 +33,7 @@ that is the difference between a 5-hour run and a 1-minute one.
 
 **This has to be re-measured rather than taken from the earlier sweep.** The
 `ballastCo_1000` / `ballastCo_10000` cases were run under the no-op-step defect
-(45-50% of timesteps executing zero correctors, `b6a7102`), so they are among
+(45-50% of timesteps executing zero correctors, `b54ff16`), so they are among
 the ten cases whose timings are void.
 
 ## What differs
@@ -86,7 +86,7 @@ there, and it costs minutes rather than the ~5 h a run to 20 us needs.
   `rho [contraction] max 48.4, residual GREW` at dt = 1.9e-11, which is why
   this is a measurement and not an assumption. If a larger dt makes that worse,
   the outer loop is the real constraint, not the Courant number.
-* **no-op steps** -> would mean the `b6a7102` regression has returned. The step
+* **no-op steps** -> would mean the `b54ff16` regression has returned. The step
   audit is fatal on it now, so this cannot pass silently.
 
 ## Extraction

@@ -68,7 +68,7 @@ backs dt off BEFORE a step fails.
 * **All1500's single discard is one event, not a characterised boundary.** It
   is the first discard in ~1.35 MILLION steps across all cases, so the
   robustness path is only now being exercised at all (rule 23).
-* Every timing here post-dates `b6a7102`. Earlier Courant work
+* Every timing here post-dates `b54ff16`. Earlier Courant work
   (`ballastCo_1000`, `ballastCo_10000`) is void: 45-50% of its timesteps ran
   zero correctors.
 
