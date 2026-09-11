@@ -1131,6 +1131,8 @@ Foam::snesNewtonSolver::snesNewtonSolver
     mesh_(mesh),
     rtol_(dict.getOrDefault<scalar>("rtol", 1e-8)),
     maxIt_(dict.getOrDefault<label>("maxIt", 50)),
+    kspMaxIt_(dict.getOrDefault<label>("kspMaxIt", 100)),
+    assembledPmat_(dict.getOrDefault<bool>("assembledPmat", true)),
     mffdErr_(dict.getOrDefault<scalar>("mffdErr", 1e-5)),
     bounded_(dict.getOrDefault<bool>("bounded", false)),
     petscOptions_(dict.getOrDefault<string>("petscOptions", string::null)),
@@ -1637,7 +1639,7 @@ void Foam::snesNewtonSolver::solveOuterStep
       + " -snes_monitor -snes_converged_reason"
       // -ksp_monitor deliberately NOT set: it prints per GMRES iteration and
       // floods a long run. -ksp_max_it caps the Krylov work per Newton step.
-      + " -ksp_converged_reason -ksp_max_it 100"
+      + " -ksp_converged_reason -ksp_max_it " + Foam::name(kspMaxIt_)
       // FGMRES, NOT GMRES, and the restart raised to match -ksp_max_it so no
       // restart happens inside one solve.
       //
@@ -2835,7 +2837,7 @@ void Foam::snesNewtonSolver::solveOuterStep
         &pcApplyCallback,
         &pcCtx,
         bounded_ ? lowerBounds.cdata() : nullptr,
-        &pmatCOO,
+        (assembledPmat_ ? &pmatCOO : nullptr),
         int(nFields),
         &its
     );

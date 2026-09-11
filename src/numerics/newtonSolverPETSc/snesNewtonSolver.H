@@ -73,6 +73,43 @@ class snesNewtonSolver
     scalar rtol_;
     label maxIt_;
 
+    //- Outer Krylov iteration cap (`kspMaxIt`, default 100).
+    //
+    //  IT WAS HARDCODED AT 100, and that single number is the measured cause
+    //  of every Newton failure seen so far -- on three unrelated cases:
+    //    streamer 449k, dt 2e-11: every failure is DIVERGED_LINEAR_SOLVE at
+    //      SNES iteration 0, after DIVERGED_ITS at 100. Zero line-search
+    //      failures, zero NaN. Successful solves take 3-41 iterations.
+    //    grubert pseudo-transient, dt 1e-10: 62 of 70 failures are reason -3,
+    //      against 4 in 23,467 at dt 1e-11. This is what caps the pseudo-steady
+    //      run at ~12 h when 10-100x is on the table.
+    //    needleDBD multi-region: first linear solve converges in 2 iterations
+    //      and drops ||F|| 4.2x; the second hits 100.
+    //  Raising it separates a Krylov that is STALLING from one that is merely
+    //  SLOW -- which decides whether the preconditioner needs replacing.
+    label kspMaxIt_;
+
+    //- Supply an assembled Pmat to PETSc (`assembledPmat`, default true).
+    //
+    //  true  -> PCFIELDSPLIT + Schur on the assembled Pmat.
+    //  false -> no Pmat, so snesBridge falls through to the PHYSICS-BASED
+    //           PCSHELL (pcApplyCallback): one segregated Picard sweep used as
+    //           a preconditioner, which is what the original design specified
+    //           and what both proofs of concept validated.
+    //
+    //  That preconditioner is written, wired, and UNREACHABLE in production,
+    //  because snesBridge prefers PCFIELDSPLIT whenever a Pmat is supplied and
+    //  production always supplies one. It is worth measuring because the
+    //  target is concrete: a PC that costs one Picard sweep should converge the
+    //  outer Krylov in about as many iterations as Picard needs correctors --
+    //  2 to 4 on the streamer bed, against the 3-41 (and sometimes >100) seen.
+    //
+    //  Caveat, from snesBridge.C's own note: PCSHELL once measured IDENTICAL to
+    //  PCNONE. The same note attributes that to a degenerate operator (a stale
+    //  MFFD differencing base vector), since fixed -- so it has never been
+    //  fairly measured against a correct operator.
+    bool assembledPmat_;
+
     //- Relative error to which F(u) can be EVALUATED, setting the matrix-free
     //  differencing step (PETSc `-mat_mffd_err`). NEGATIVE (the default) means
     //  do not set it at all and leave PETSc's own choice in place.

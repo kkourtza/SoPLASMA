@@ -398,6 +398,57 @@ first-step limit). Do not quote the table above as a verdict on JFNK.
   against a `soPlasmaFoam` replaced at 15:48 and were compared against 16:2x
   arms. Re-run on one binary before reading any ladder. ([[baseline-contamination]])
 
+### THE CAP WAS THE BUG: `-ksp_max_it 100` (2026-09-11, SUPERSEDES MUCH BELOW)
+
+**Every negative Newton result recorded today traces to a hardcoded number.**
+Measured on `grubert2009_pseudo` (2000 cells, dt=1e-10, 400 steps, identical in
+every other respect -- same steps, same 398 SNES solves):
+
+| arm | failures / solves | rate | evals | wall |
+|---|---|---|---|---|
+| `kspMaxIt 100` (as shipped) | 42 / 398 | 10.6% | 121,161 | 326.1 s |
+| `kspMaxIt 1000` | **4 / 398** | **1.0%** | 123,234 | 334.2 s |
+| physics-based PCSHELL (`assembledPmat false`) | 17 / 324 | 5.2% | -- | slower |
+
+**10.5x fewer failures for +1.7% evaluations and +2.5% wall clock.** And the
+reason is not subtle:
+
+    base   38 linear solves hit EXACTLY 100 and were killed
+    maxit  39 solves needed >100 -- and needed 104 to 115. ALL converged.
+           0.92% of 4,235 solves.
+
+Every killed solve was **4 to 15 iterations short of converging.** PETSc reports
+that as `DIVERGED_LINEAR_SOLVE`, which reads as a solver failure but is a budget
+expiring.
+
+**THE "PRECONDITIONER CLIFF" DIAGNOSIS WAS WRONG, and it was my own measurement
+artefact.** Earlier today this file said the KSP distribution was BIMODAL --
+"normally trivial, occasionally straight through the cap". It looked bimodal
+because it had been TRUNCATED AT 100 BY THE CAP ITSELF. The true distribution is
+unremarkable: **median 4, p90 14, max 115.**
+
+**The FIELDSPLIT/Schur preconditioner is GOOD, and already meets the target that
+was proposed for replacing it.** A median of 4 Krylov iterations is the same
+order as Picard's 2-4 correctors -- i.e. one PC application is already worth
+about one Picard sweep, which is exactly what a physics-based PC is supposed to
+buy. That also explains why the PCSHELL arm LOSES: it is solving a problem that
+was not broken, at higher cost per application. (`assembledPmat false` now
+selects it; it had been unreachable in production because `snesBridge` prefers
+PCFIELDSPLIT whenever a Pmat is supplied and production always supplies one.)
+
+**WHAT THIS INVALIDATES -- re-test before quoting any of it:**
+* The 449k streamer ladder's negative verdict. Every Newton failure there was
+  `DIVERGED_LINEAR_SOLVE` at SNES iteration 0 after `DIVERGED_ITS` at 100.
+* The pseudo-transient dt ceiling of 1e-11. At dt=1e-10 with the cap raised the
+  failure rate is 1.0%, against the 21% that produced the "ceiling". That is
+  ~10x on the timestep, i.e. the ~12 h steady run becomes ~1 h. **dt=1e-9 is now
+  worth testing** (its earlier 74% failure rate is also suspect).
+* needleDBD multi-region, whose second linear solve hit 100 having already
+  dropped ||F|| 4.2x on the first.
+
+`kspMaxIt` is now a `newtonSolver` dict key (default 100 -- UNCHANGED, so
+nothing silently moves; raise it deliberately).
+
 ### NEWTON'S FAILURE MODE IS THE LINEAR SOLVE, NOT THE NONLINEAR ONE (2026-09-11)
 
 Every single Newton failure in the ladder reads:
