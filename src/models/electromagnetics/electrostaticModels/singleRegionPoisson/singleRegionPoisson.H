@@ -121,7 +121,7 @@ public:
         //  fields after writing a new trial ePotential directly, exactly as
         //  solve() already does internally -- see
         //  docs/design/newton-outer-solver-design.md.
-        void updateDerivedFields();
+        virtual void updateDerivedFields() override;
 
     // Configuration
 

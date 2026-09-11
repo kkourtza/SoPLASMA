@@ -26,6 +26,7 @@ License
 #include "plasmaTransport.H"
 #include "plasmaTransportModel.H"
 #include "driftDiffusion.H"
+#include <cmath>
 #include "plasmaEnergy.H"
 #include "localEnergyEnergyModel.H"
 // For the d(Psrc)/d(phi) convection block: built directly rather than through
@@ -215,7 +216,7 @@ void residualCallback
     // ---- 2. Refresh E, Emag, phiE, reducedE from the new ePotential --
     // exactly what singleRegionPoisson::solve() does internally before
     // building its own matrix.
-    srp.updateDerivedFields();
+    em.updateDerivedFields();
 
     tDerived += secSince(tPhase); tPhase = clockNow();
 
@@ -541,6 +542,93 @@ void residualCallback
                 << " |Lsrc*nEps|=" << blockNorm(lossF, nc)
                 << " sX=" << sX[1 + ctx.nSpecies] << " sF=" << sfE
                 << " |F_scaled|=" << blockNorm(fBlock, nc) << endl;
+        }
+    }
+
+    // FIND THE FIRST NON-FINITE RESIDUAL, and say WHICH BLOCK and WHAT STATE
+    // produced it. DIVERGED_FNORM_NAN (PETSc reason -5) is reported per SOLVE,
+    // which tells you nothing about where it came from -- and four plausible
+    // causes have already been refuted by measurement (density positivity,
+    // the table edge, negative extrapolated rates, ion mobility). This reports
+    // ONCE per run, from the trial state that actually produced it.
+    {
+        static bool nanReported = false;
+        if (!nanReported)
+        {
+            const label nF = 1 + ctx.nSpecies + (ctx.hasEnergy ? 1 : 0);
+            for (label b = 0; b < nF && !nanReported; ++b)
+            {
+                for (label c = 0; c < nc; ++c)
+                {
+                    const scalar v = F[b*nc + c];
+
+                    // NOT just !isfinite. PETSc's DIVERGED_FNORM_NAN fires on
+                    // Inf too, and ||F|| = sqrt(sum F^2) OVERFLOWS to Inf once
+                    // any component reaches ~1e154 -- while every component is
+                    // still individually finite. The first version of this
+                    // diagnostic tested isfinite() alone and stayed SILENT
+                    // through six -5 failures, which is what pointed here.
+                    if (!std::isfinite(v) || Foam::mag(v) > 1.0e100)
+                    {
+                        nanReported = true;
+
+                        word blockName = "ePotential";
+                        if (b >= 1 && b <= ctx.nSpecies)
+                        {
+                            blockName = species.speciesNames()[b - 1];
+                        }
+                        else if (b > ctx.nSpecies)
+                        {
+                            blockName = "nEps_e";
+                        }
+
+                        Pout<< "[NaN] first non-finite-or-huge residual: block "
+                            << blockName << " (index " << b << "), local cell "
+                            << c << ", F = " << v << nl;
+
+                        {
+                            scalar mx = 0; scalar sumsq = 0;
+                            for (label q = 0; q < nc; ++q)
+                            {
+                                const scalar a = Foam::mag(F[b*nc + q]);
+                                mx = Foam::max(mx, a);
+                                sumsq += a*a;
+                            }
+                            Pout<< "[NaN]   block max|F| = " << mx
+                                << "  block ||F|| = " << Foam::sqrt(sumsq) << nl;
+                        }
+                        Pout<< "[NaN]   trial state in that cell:" << nl
+                            << "[NaN]     ePotential = "
+                            << em.ePotential().primitiveField()[c] << nl;
+                        for (label t = 0; t < ctx.nSpecies; ++t)
+                        {
+                            Pout<< "[NaN]     n_" << species.speciesNames()[t]
+                                << " = "
+                                << species.numberDensity(t).primitiveField()[c]
+                                << nl;
+                        }
+                        if (ctx.hasEnergy)
+                        {
+                            const scalar ne =
+                                species.numberDensity
+                                (
+                                    species.electronSpeciesID()
+                                ).primitiveField()[c];
+                            const scalar nEpsC =
+                                ctx.lmea->nEps().primitiveField()[c];
+                            Pout<< "[NaN]     nEps_e = " << nEpsC
+                                << "  meanE = "
+                                << (ne > 0 ? nEpsC/ne : -1) << " eV" << nl;
+                        }
+                        Pout<< "[NaN]   chemP = "
+                            << (havePL ? transport.chemP(b > 0 && b <= ctx.nSpecies ? b-1 : 0)[c] : 0)
+                            << "  chemL = "
+                            << (havePL ? transport.chemL(b > 0 && b <= ctx.nSpecies ? b-1 : 0)[c] : 0)
+                            << endl;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -2615,7 +2703,7 @@ void Foam::snesNewtonSolver::solveOuterStep
             lmea->nEpsRef().correctBoundaryConditions();
         }
     }
-    srp.updateDerivedFields();
+    em.updateDerivedFields();
 
     // Required bookkeeping the Picard sequence does every corrector that
     // is NOT itself "the solve" -- omitting these left densities at their

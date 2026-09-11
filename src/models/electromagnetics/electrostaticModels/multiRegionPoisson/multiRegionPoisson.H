@@ -75,7 +75,7 @@ private:
     void operator=(const multiRegionPoisson&) = delete;
 
     //- Update E, Emag, phiE, and reducedE from ePotential
-    void updateDerivedFields();
+
 
     //- Monolithic solve (explicit Poisson))
     void solveCoupled();
@@ -155,6 +155,12 @@ public:
 
         //- Solve Poisson equation (for explicit Poisson)
         virtual void solve() override;
+
+        //- Refresh E, phiE, Emag, reducedE in the gas AND every region.
+        //  PUBLIC since 2026-09-11: it is the one thing the Newton outer
+        //  solver needs from a concrete electrostatics model, and it was the
+        //  only reason that solver had to cast to singleRegionPoisson.
+        virtual void updateDerivedFields() override;
 
         //- Solve semi-implicit Poisson equation (for semiImplicit Poisson)
         virtual void solve

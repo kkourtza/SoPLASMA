@@ -403,6 +403,15 @@ public:
         //  thereafter consistent. The same change to a TRANSPORTED field, which
         //  carries fvm::ddt and an old-time history, would NOT be safe.
         virtual void setPoissonScheme(const word& scheme) = 0;
+
+        //- Refresh E, phiE, Emag, reducedE from the current ePotential.
+        //
+        //  Hoisted to the base 2026-09-11. Both concrete models already had
+        //  it; only the CAST to singleRegionPoisson forced the Newton outer
+        //  solver to know which model it had. It calls this and nothing else
+        //  on the concrete type, so making it virtual is what lets Newton
+        //  support multiRegionPoisson at all.
+        virtual void updateDerivedFields() = 0;
         virtual label nNonOrthCorr() const = 0;
         virtual const word& EScheme() const = 0;
 
