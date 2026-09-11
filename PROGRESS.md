@@ -1,6 +1,6 @@
 # PROGRESS — the live state. READ THIS FIRST.
 
-**Last updated: 2026-09-11 (evening session).**
+**Last updated: 2026-09-12.**
 
 This is the ONE orientation file (rule R0). It holds what is *happening*.
 `docs/CAPABILITIES.md` holds what *exists* — the inventory, the tooling, the full
@@ -105,7 +105,21 @@ valid track, not a lower-priority one.)
 - [x] 2026-09-11 — `ROUNDW.{C,H}` committed (untracked source, in `Make/files`, 2nd-best of five ROUND variants).
 - [x] 2026-09-11 — needleDBD `Allrun-serial` portability fix committed.
 - [x] 2026-09-11 — CLAUDE.md rewritten and moved here; SoEEDF's is now a stub importing it.
-- [ ] **Build the regression gate** (§6) — the baselines exist and nothing compares them.
+      **475 → 369 lines while gaining 12 rules and the command card**, because the procedures
+      moved into skills. All 31 rule ids and all 44 old numbers still resolve (checked by grep).
+- [x] 2026-09-12 — `.claude/` built: 9 skills, 10 agents, 3 hooks, and `.claude/mined/` (the
+      adversarially-verified extraction of 129 memories and ~90 documents across nine
+      dimensions). The verification pass rejected **19 of 212** extracted commands — including
+      one copied verbatim FROM a memory, so that memory is wrong too (`Starting time loop` is
+      never printed, and the `sed` range then matches the whole log).
+- [x] 2026-09-12 — memory store SHARED: the `soplasma-scratch` memory directory is now a symlink
+      to the `Projects-SoEEDF` one, so 129 memories resolve from both roots and the base cannot
+      fork. `SoEEDF/.claude/{skills,agents,hooks,mined}` symlink here too.
+- [~] **The regression gate is HALF done.** `/regression-gate` now carries the procedure and the
+      classification B5 requires (REGRESSION vs INTENDED IMPROVEMENT vs STALE BASELINE), but it is
+      a skill I execute — **there is still no script and no CI hook**, so nothing compares
+      `results.txt` to `results.baseline.txt` unattended. Finishing it means a runnable comparator
+      with a relative tolerance. Until then the gate only fires when someone invokes it.
 
 ### Also open, unordered *(CAPABILITIES §6)*
 - [ ] `grubert_1d_I`, relaunched cold 2026-09-11 — the **first genuine test of current control**, because `particleFlux_` was fossilised under Newton so the regulator had never actually worked. Its earlier state came from ~3900 steps of UNREGULATED ramping and is not trustworthy as physics.
@@ -176,7 +190,9 @@ CPU/rank), both at 99.9% CPU, i.e. computing, not deadlocked.
 
 Found during other work; not yet scheduled.
 
-- [ ] **The regression gate does not exist.** `verification/fluxScheme1D/` and `fluxScheme2Dnonortho/` each ship a `results.baseline.txt` and **nothing in the tree ever compares them** (`grep -rn baseline verification/` finds no caller). `fluxScheme2Dnonortho` already differs from its baseline — and it is a **STALE BASELINE, not a regression** (`nCorr` 2→15/16, errors ~2x lower, written three minutes later). Nothing on disk can tell those apart. *(Found 2026-09-11. This is what B5 requires and `/regression-gate` is meant to be.)*
+- [~] **The regression gate is half-built as of 2026-09-12** — `/regression-gate` carries the
+      procedure and the three-way classification, but no script exists, so this entry stays open.
+      Originally found as: **the regression gate does not exist.** `verification/fluxScheme1D/` and `fluxScheme2Dnonortho/` each ship a `results.baseline.txt` and **nothing in the tree ever compares them** (`grep -rn baseline verification/` finds no caller). `fluxScheme2Dnonortho` already differs from its baseline — and it is a **STALE BASELINE, not a regression** (`nCorr` 2→15/16, errors ~2x lower, written three minutes later). Nothing on disk can tell those apart. *(Found 2026-09-11. This is what B5 requires and `/regression-gate` is meant to be.)*
 - [ ] **`DANGLING: simulationType` in needleDBD** — a real live defect. The dangling-key detector prints exactly one line on that case today. A `$key` nothing references is inert, and a dangling `appliedVoltage` once invalidated a whole "low-field" arm that ran at the original 62.1 Td and exited 0. *(Found 2026-09-11.)*
 - [ ] **`./Allwmake` is NOT a full build and says "Build complete." anyway.** `src/models/plasmaModels/Allwmake` builds 4 of 8 model directories; `src/applications/Allwmake` builds 4 of ~15. `./build-all.sh` is the only correct build. Either fix Allwmake or make it refuse. *(Found 2026-09-11.)*
 - [ ] **The repo's `build.log` is a stale 2026-08-10 artefact** with 14 `OK` lines against a `BUILD_DIRS` list that now has 31 entries. Anything grepping it reads a month-old build as current. Delete it or regenerate it. *(It is gitignored, so it only misleads locally.)*
