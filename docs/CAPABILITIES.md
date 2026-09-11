@@ -473,6 +473,55 @@ happening there". It separated no causes. The perturbation test has only one
 possible reading. ([[diagnostics-must-separate-causes]],
 [[silent-diagnostic-trap]])
 
+### MULTI-REGION UNDER NEWTON: DONE 2026-09-11 (commit 7df1cbe)
+
+`outerSolver newton` now accepts `multiRegionPoisson`. The dielectric and
+far-field regions are packed into the RAGGED TAIL of the DOF layout -- phi
+lives in every region, the species only in the gas.
+
+**No `lduPrimitiveMeshAssembly` is involved.** See the measurement above: the
+explicit `fvc::` residual already sees the neighbouring region through
+`coupledElectricPotential`'s Robin condition, and Newton's own outer iteration
+converges the coupling -- which is what the monolithic assembly does inside the
+LINEAR solve, but at the nonlinear level. So it is GENERIC: the dielectric's
+cell fraction never enters, and a `farField` Poisson-only region is just
+another region with `laplacian(eps,phi) == 0`.
+
+| gate | result |
+|---|---|
+| single-region bit-identical | **PASS** -- 62 fields identical, 0 differing, stripped log identical |
+| needleDBD past the guard | **PASS** (it used to die at "supports only singleRegionPoisson") |
+| handover on a dielectric case | **PASS** -- t=2e-12 |
+| ragged tail wired | **PASS** -- `Poisson tail: 1 extra region(s), 5976 rows`, matching cellOffsets 0/71745/77721 |
+| a real Newton step | **PASS** -- first linear solve 2 iterations, \|\|F\|\| 1037 -> 245 |
+
+**THREE DEFECTS THE GATE CAUGHT, none visible without running it:**
+
+* **Empty Pmat tail rows.** Extending the phi split over the tail without
+  assembling anything there left 5976 rows with a ZERO DIAGONAL, and the first
+  `PCApply` raised an FPE. The residual had already evaluated cleanly to
+  `0 SNES Function norm 1.037388548231e+03`, so nothing upstream flagged it.
+  Fixed by `blockMatrixCOO::addFvMatrixTail()`.
+* **A FIFTH `fvSchemes` catch-all: `"snGrad\(n_.*\)"`.** Newton refreshes
+  `particleFlux_` with an explicit `fvc::snGrad(n_s)`, so EVERY species needs a
+  snGrad scheme. It only shows up on a case whose species set is bigger than
+  the electron: needleDBD died after 545 residual evaluations on
+  `Entry 'snGrad(n_N2p)' not found`. The streamer beds needed only three
+  (`interpolate(mu_*)`, `div(phi_*,n_*)`, `laplacian(D_*,n_*)`).
+* **PARALLEL IS REFUSED, loudly.** The tail's processor-interface coupling is
+  not assembled; a FatalError says so rather than building a preconditioner
+  from disconnected subdomains.
+
+**A HANDOVER PROBLEM THIS EXPOSED, still open.** `anySpeciesOnFloor()` gates
+the Picard->Newton handover on EVERY species having max > its floor. In
+needleDBD all 13 species start exactly AT their floor (n_e 1e11 = the default
+floor; N2p 7.9e10, O2p 2.1e10, Om/O2m 1e5 = theirs; and eight more at
+`uniform 0`, which the clamp lifts to the floor). So Newton is unreachable
+until ignition -- thousands of steps at ~3 s each. The gate above seeds all 13
+above their floors, which is MACHINERY, NOT PHYSICS and must never be quoted
+for DBD results. This matters for the automatic Picard/Newton switch: the
+handover is also ONE-WAY and PERMANENT by construction.
+
 ### Surface charge under Newton -- ANSWERED
 
 Works. `thinDielectricOnElectrode` (pmma, 100 um, Vb=0) on the coarse streamer
