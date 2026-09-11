@@ -109,6 +109,16 @@ struct SnesPmatCOO
     const int* cols = nullptr;
     const double* vals = nullptr;
 
+    //- RAGGED TAIL LENGTH: rows beyond nFieldBlocks*nCells that belong to the
+    //  PHI split only. These are the extra Poisson-only regions (dielectric,
+    //  far-field), where the potential is solved but no species exists.
+    //
+    //  It has to be carried here because the split index sets are built from
+    //  nLocal/nFieldBlocks, and that division is WRONG the moment the layout
+    //  stops being a clean nFields x nCells rectangle. ZERO restores the exact
+    //  previous arithmetic and the exact previous ISCreateStride calls.
+    int nTail = 0;
+
     //- WHICH BLOCK THE SCHUR COMPLEMENT ACTS ON. PETSc's fieldsplit eliminates
     //  split 0 and forms the Schur complement on split 1, and the choice is
     //  made purely by REGISTRATION ORDER -- there is no runtime option for it.

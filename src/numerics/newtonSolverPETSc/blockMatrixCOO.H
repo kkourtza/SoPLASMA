@@ -196,6 +196,26 @@ public:
         const scalarField& rowFactor
     );
 
+    //- Place a Poisson-only region's matrix into the RAGGED TAIL rows.
+    //
+    //  tailOffset is the region's first row COUNTED FROM THE START OF THE
+    //  TAIL, so consecutive regions pass their running cell offset.
+    //
+    //  The block is DIAGONAL in the tail: the inter-region coupling is carried
+    //  by the explicit residual (coupledElectricPotential's Robin condition),
+    //  not by this matrix, which exists only to give the preconditioner a real
+    //  elliptic operator on those rows. WITHOUT IT THOSE ROWS ARE EMPTY, the
+    //  phi split's diagonal is zero there, and the first PCApply raises an FPE
+    //  -- measured on needleDBD 2026-09-11, after the residual itself had
+    //  already evaluated cleanly (SNES Function norm 1.037e+03).
+    void addFvMatrixTail
+    (
+        const label tailOffset,
+        const fvScalarMatrix& m,
+        const scalar scaling,
+        const scalarField& rowFactor
+    );
+
     //- Place an fvMatrix in an OFF-DIAGONAL block: rows belong to rowField,
     //  columns to colField.
     //

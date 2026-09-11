@@ -198,6 +198,31 @@ public:
         //- Return number of non-orthogonal corrector passes
         label nNonOrthCorr() const override { return nNonOrthCorr_; }
 
+        // Extra Poisson-only regions, for the Newton outer solver's ragged
+        // tail. Every dielectric region qualifies, INCLUDING the fictitious
+        // far-field regions that solve Poisson alone -- they are ordinary
+        // dielectricRegions with their own epsilon, so nothing here needs to
+        // know which kind it has. See electromagneticsModel.H for why no
+        // monolithic assembly is required to couple them.
+
+        label nExtraPoissonRegions() const override
+        {
+            return dielectrics_.size();
+        }
+
+        volScalarField& extraPoissonPotential(const label i) override
+        {
+            return dielectrics_[i].ePotential();
+        }
+
+        const dimensionedScalar& extraPoissonEpsilon
+        (
+            const label i
+        ) const override
+        {
+            return dielectrics_[i].epsilon();
+        }
+
         //- Return E-field scheme
         const word& EScheme() const override { return EScheme_; }
 

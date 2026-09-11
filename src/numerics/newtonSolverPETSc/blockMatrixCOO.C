@@ -93,6 +93,80 @@ void Foam::blockMatrixCOO::addFvMatrix
 }
 
 
+void Foam::blockMatrixCOO::addFvMatrixTail
+(
+    const label tailOffset,
+    const fvScalarMatrix& m,
+    const scalar scaling,
+    const scalarField& rowFactor
+)
+{
+    // PARALLEL IS REFUSED, NOT SILENTLY WRONG. The gas blocks below exchange
+    // global row indices across processor interfaces so the matrix is not a
+    // set of disconnected subdomains. That exchange has not been written for
+    // the tail regions, and a Pmat that merely LOOKS assembled is exactly the
+    // failure mode this project has been bitten by; so say so instead.
+    if (Pstream::parRun())
+    {
+        FatalErrorInFunction
+            << "Extra Poisson regions (the ragged tail) are not yet supported"
+            << " in PARALLEL." << nl
+            << "    The tail's processor-interface coupling is not assembled,"
+            << " which would give a preconditioner built from disconnected"
+            << " subdomains rather than failing." << nl
+            << "    Run this case in serial, or use outerSolver picard."
+            << exit(FatalError);
+    }
+
+    const lduAddressing& addr = m.lduAddr();
+    const labelUList& upp = addr.upperAddr();
+    const labelUList& low = addr.lowerAddr();
+
+    // Diagonal, with the boundary contribution folded in -- same reasoning as
+    // addFvMatrixBlock: fvMatrix::addBoundaryDiag() is protected, and by the
+    // time a matrix would normally reach an lduMatrix solver solveSegregated()
+    // has already done this.
+    scalarField d(m.diag());
+    {
+        const FieldField<Field, scalar>& intCoeffs = m.internalCoeffs();
+        forAll(intCoeffs, patchi)
+        {
+            const labelUList& pa = addr.patchAddr(patchi);
+            const scalarField& pc = intCoeffs[patchi];
+            forAll(pa, i)
+            {
+                d[pa[i]] += pc[i];
+            }
+        }
+    }
+
+    forAll(d, c)
+    {
+        const label r = globalTailRow(tailOffset + c);
+        add(r, r, d[c]*scaling*rowFactor[c]);
+    }
+
+    const scalarField& uppVal = m.upper();
+    const scalarField& lowVal = (m.hasLower() ? m.lower() : m.upper());
+
+    forAll(upp, f)
+    {
+        add
+        (
+            globalTailRow(tailOffset + low[f]),
+            globalTailRow(tailOffset + upp[f]),
+            uppVal[f]*scaling*rowFactor[low[f]]
+        );
+        add
+        (
+            globalTailRow(tailOffset + upp[f]),
+            globalTailRow(tailOffset + low[f]),
+            lowVal[f]*scaling*rowFactor[upp[f]]
+        );
+    }
+}
+
+
 void Foam::blockMatrixCOO::addFvMatrixBlock
 (
     const label rowField,

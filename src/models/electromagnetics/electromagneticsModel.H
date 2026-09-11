@@ -415,6 +415,40 @@ public:
         virtual label nNonOrthCorr() const = 0;
         virtual const word& EScheme() const = 0;
 
+        //- Number of EXTRA Poisson-only regions beyond the gas mesh:
+        //  dielectrics, and the fictitious far-field regions that solve
+        //  Poisson alone to get the correct far-field distribution.
+        //  ZERO for singleRegionPoisson.
+        //
+        //  These exist for the Newton outer solver, which packs them into the
+        //  RAGGED TAIL of its DOF layout (phi lives in every region; the
+        //  species do not, so the tail extends the Poisson block ONLY).
+        //
+        //  The inter-region coupling needs no monolithic assembly.
+        //  coupledElectricPotential::updateCoeffs() sets valueFraction,
+        //  refValue (the mapped neighbour potential) and refGrad (the
+        //  surface-charge jump) REGARDLESS of useImplicit -- useImplicit only
+        //  additionally fills source() for manipulateMatrix -- so an explicit
+        //  fvc:: residual already sees the neighbouring region. Measured
+        //  2026-09-11 on needleDBD: a +1 V bump of the dielectric potential
+        //  moves the explicit gas residual by rms 1.549 on the 160 interface
+        //  cells against 0.0035 in the interior. Newton's own outer iteration
+        //  then converges the region coupling, which is exactly what the
+        //  monolithic assembly does inside the LINEAR solve -- but at the
+        //  nonlinear level, so the surface-charge and permittivity
+        //  nonlinearity come with it.
+        virtual label nExtraPoissonRegions() const { return 0; }
+
+        //- Potential field of extra Poisson region i. Non-const: Newton
+        //  writes the trial state into it.
+        virtual volScalarField& extraPoissonPotential(const label i);
+
+        //- Permittivity of extra Poisson region i.
+        virtual const dimensionedScalar& extraPoissonEpsilon
+        (
+            const label i
+        ) const;
+
 
     // Mesh and dictionary access
 

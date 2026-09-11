@@ -122,6 +122,18 @@ snGradSchemes
 {
     snGrad(n_e)                     corrected 0.33;
     snGrad(ePotential)              corrected 0.33;
+
+    // CATCH-ALL for every other transported species. Newton assembles each
+    // species equation itself and refreshes particleFlux_ with an explicit
+    // fvc::snGrad(n_s), so a snGrad scheme is needed for EVERY species, not
+    // just the electron. A missing entry is a FATAL lookup, not a fallback:
+    // measured 2026-09-11, needleDBD died after 545 residual evaluations on
+    // "Entry 'snGrad(n_N2p)' not found".
+    //
+    // This is a FIFTH catch-all beyond the three the streamer beds needed
+    // (interpolate(mu_*), div(phi_*,n_*), laplacian(D_*,n_*)) -- it only
+    // shows up on a case whose species set is bigger than the electron.
+    "snGrad\(n_.*\)"              corrected 0.33;
 }
 
 fluxRequired

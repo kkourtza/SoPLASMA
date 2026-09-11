@@ -893,4 +893,42 @@ void Foam::electromagneticsModel::correctFloatingElectrode
 }
 
 
+// Default implementations for models with NO extra Poisson region. They are
+// unreachable while nExtraPoissonRegions() returns 0, so reaching one means a
+// model reported extra regions without supplying them -- a wiring error, not a
+// user error, and it must be loud rather than return a dangling reference.
+
+Foam::volScalarField& Foam::electromagneticsModel::extraPoissonPotential
+(
+    const label i
+)
+{
+    FatalErrorInFunction
+        << "Model '" << type() << "' reports "
+        << nExtraPoissonRegions() << " extra Poisson region(s) but does not"
+        << " supply their potentials (asked for region " << i << ")." << nl
+        << "    Override extraPoissonPotential() alongside"
+        << " nExtraPoissonRegions()."
+        << exit(FatalError);
+
+    return const_cast<volScalarField&>(ePotential());
+}
+
+
+const Foam::dimensionedScalar&
+Foam::electromagneticsModel::extraPoissonEpsilon(const label i) const
+{
+    FatalErrorInFunction
+        << "Model '" << type() << "' reports "
+        << nExtraPoissonRegions() << " extra Poisson region(s) but does not"
+        << " supply their permittivities (asked for region " << i << ")." << nl
+        << "    Override extraPoissonEpsilon() alongside"
+        << " nExtraPoissonRegions()."
+        << exit(FatalError);
+
+    static const dimensionedScalar unreachable("unreachable", dimless, 0);
+    return unreachable;
+}
+
+
 // ************************************************************************* //

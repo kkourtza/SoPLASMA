@@ -1,5 +1,6 @@
 // PETSc-only side of the bridge -- deliberately does NOT include fvCFD.H
 // or any other OpenFOAM header. See snesBridge.H for why.
+#include <vector>
 #include "snesBridge.H"
 #include <petscsnes.h>
 
@@ -362,7 +363,10 @@ int solveWithSNES
             // PCFieldSplitSetIS, NOT PCFieldSplitSetFields: our DOF layout is
             // FIELD-MAJOR (all of field 0, then all of field 1, ...), not
             // interlaced, so the block-size-based helper does not describe it.
-            const PetscInt nc = nLocal/nFieldBlocks;
+            // The layout is nFieldBlocks x nc PLUS a phi-only ragged tail,
+            // so the cell count comes from the rectangle, not from nLocal.
+            const PetscInt nTail = PetscInt(pmat->nTail);
+            const PetscInt nc = (nLocal - nTail)/nFieldBlocks;
 
             // GLOBAL ROW INDICES, OFFSET BY THIS RANK'S OWNERSHIP START.
             //
@@ -389,8 +393,46 @@ int solveWithSNES
             MatGetOwnershipRange(Pmat, &rstart, nullptr);
 
             IS isPhi, isTransport;
-            ISCreateStride(petscComm, nc, rstart, 1, &isPhi);
-            ISCreateStride(petscComm, nLocal - nc, rstart + nc, 1, &isTransport);
+
+            // The transport split is unchanged: the species/energy blocks sit
+            // between the gas phi block and the tail. nFieldBlocks*nc - nc
+            // equals the old nLocal - nc exactly when nTail == 0.
+            ISCreateStride
+            (
+                petscComm, nFieldBlocks*nc - nc, rstart + nc, 1, &isTransport
+            );
+
+            if (nTail == 0)
+            {
+                // BIT-IDENTICAL to the single-region path: the same one call
+                // with the same arguments, not a general IS that happens to
+                // hold the same indices.
+                ISCreateStride(petscComm, nc, rstart, 1, &isPhi);
+            }
+            else
+            {
+                // phi is now TWO ranges -- the gas block and the tail -- so it
+                // is no longer a stride and must be enumerated.
+                const PetscInt nPhi = nc + nTail;
+                std::vector<PetscInt> phiIdx(static_cast<std::size_t>(nPhi), 0);
+                for (PetscInt i = 0; i < nc; ++i)
+                {
+                    phiIdx[std::size_t(i)] = rstart + i;
+                }
+                const PetscInt tailStart = rstart + nFieldBlocks*nc;
+                for (PetscInt i = 0; i < nTail; ++i)
+                {
+                    phiIdx[std::size_t(nc + i)] = tailStart + i;
+                }
+                ISCreateGeneral
+                (
+                    petscComm,
+                    nPhi,
+                    phiIdx.data(),
+                    PETSC_COPY_VALUES,
+                    &isPhi
+                );
+            }
 
             PCSetType(pc, PCFIELDSPLIT);
 

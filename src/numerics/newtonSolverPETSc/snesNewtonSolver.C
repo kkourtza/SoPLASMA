@@ -76,13 +76,18 @@ Foam::scalar safeScale(const Foam::scalar s)
 struct ResidualContext
 {
     Foam::electromagneticsModel* em;
-    Foam::singleRegionPoisson* srp;     // same object as em, checked+cast once
     Foam::plasmaSpecies* species;
     Foam::plasmaTransport* transport;
     Foam::localEnergyEnergyModel* lmea; // nullptr under LFA
     Foam::label nCellsLocal;
     Foam::label nSpecies;
     bool hasEnergy;
+
+    // RAGGED TAIL: total cells across the extra Poisson-only regions
+    // (dielectrics, far-field). ZERO for a single-region case, which is what
+    // keeps that path bit-identical. phi lives in every region; the species
+    // do not, so the tail extends the POISSON block only -- hence "ragged".
+    Foam::label nTailLocal;
 
     // PER-BLOCK SCALING, fixed for the whole Newton solve (recomputing it
     // per residual call would move the target and the problem would stop
@@ -154,7 +159,6 @@ void residualCallback
     ResidualContext& ctx = *static_cast<ResidualContext*>(userDataVoid);
     const label nc = ctx.nCellsLocal;
     electromagneticsModel& em = *ctx.em;
-    singleRegionPoisson& srp = *ctx.srp;
     plasmaSpecies& species = *ctx.species;
     plasmaTransport& transport = *ctx.transport;
 
@@ -166,10 +170,49 @@ void residualCallback
     const scalarList& sX = *ctx.sX;
     const scalarList& sF = *ctx.sF;
 
+    const label nFieldsCtx = 1 + ctx.nSpecies + (ctx.hasEnergy ? 1 : 0);
+    const label nExtra = em.nExtraPoissonRegions();
+
     volScalarField& ePotential = em.ePotentialRef();
     {
         scalarField& f = ePotential.primitiveFieldRef();
         for (label c = 0; c < nc; ++c) { f[c] = x[c]*sX[0]; }
+    }
+
+    // Unpack the tail into each extra region's potential BEFORE correcting
+    // any boundary condition. The interface BC (coupledElectricPotential)
+    // reads its NEIGHBOUR's cell values through a mapped patch, so correcting
+    // one side against a half-updated other side would evaluate the residual
+    // at a state that is neither the old one nor the trial one.
+    {
+        label tailOff = nFieldsCtx*nc;
+        for (label r = 0; r < nExtra; ++r)
+        {
+            volScalarField& rPot = em.extraPoissonPotential(r);
+            scalarField& rf = rPot.primitiveFieldRef();
+            const label nrc = rf.size();
+            for (label c = 0; c < nrc; ++c)
+            {
+                rf[c] = x[tailOff + c]*sX[0];
+            }
+            tailOff += nrc;
+        }
+    }
+
+    // NOW correct every region, gas first. Both sides are at the trial state,
+    // so each mapped refValue/refGrad reflects THIS iterate. Skipping this for
+    // the extra regions would leave their interface coefficients frozen at the
+    // last Picard state -- the same class of staleness as convectiveFlux_ and
+    // particleFlux_, which silently disabled two features before.
+    ePotential.correctBoundaryConditions();
+    for (label r = 0; r < nExtra; ++r)
+    {
+        em.extraPoissonPotential(r).correctBoundaryConditions();
+    }
+    if (nExtra > 0)
+    {
+        // Second pass on the gas: its interface values are mapped FROM the
+        // regions, which only reached the trial state on the line above.
         ePotential.correctBoundaryConditions();
     }
 
@@ -363,6 +406,42 @@ void residualCallback
                     << " sX=" << sX[0] << " sF=" << sF[0]
                     << " |F_scaled|=" << blockNorm(fBlock, nc) << endl;
             }
+        }
+    }
+
+    // ---- Poisson in the EXTRA regions (dielectric, far-field), into the
+    // ragged tail. Each region carries no space charge, so its residual is
+    // simply lap(eps_r, phi_r). The INTERFACE coupling needs nothing here:
+    // coupledElectricPotential has already put the neighbour's trial
+    // potential into refValue and the surface-charge jump into refGrad, and
+    // fvc::laplacian reads both through the patch. Measured 2026-09-11 --
+    // a +1 V bump of the dielectric moves this residual by rms 1.549 on the
+    // interface cells against 0.0035 in the interior.
+    //
+    // Scaled with the Poisson block's own sF[0]/sX[0]: it is the SAME field,
+    // so a different scale would make one Poisson equation converge to a
+    // different tolerance than the rest of itself.
+    if (nExtra > 0)
+    {
+        label tailOff = nFieldsCtx*nc;
+        for (label r = 0; r < nExtra; ++r)
+        {
+            const volScalarField& rPot = em.extraPoissonPotential(r);
+            tmp<volScalarField> tLapR =
+                fvc::laplacian(em.extraPoissonEpsilon(r), rPot);
+            const scalarField& lapR = tLapR().primitiveField();
+            const label nrc = lapR.size();
+            for (label c = 0; c < nrc; ++c)
+            {
+                F[tailOff + c] = lapR[c]/sF[0];
+            }
+            tailOff += nrc;
+        }
+
+        if (diagThisCall)
+        {
+            Pout<< "[diag]   Poisson tail: " << nExtra << " extra region(s), "
+                << ctx.nTailLocal << " rows" << endl;
         }
     }
 
@@ -664,7 +743,6 @@ void residualCallback
 struct PCContext
 {
     Foam::electromagneticsModel* em;
-    Foam::singleRegionPoisson* srp;
     Foam::plasmaSpecies* species;
     Foam::plasmaTransport* transport;
     Foam::localEnergyEnergyModel* lmea;
@@ -1101,17 +1179,20 @@ void Foam::snesNewtonSolver::solveOuterStep
     plasmaEnergy* energy
 )
 {
-    if (!isA<singleRegionPoisson>(em))
-    {
-        FatalErrorInFunction
-            << "outerSolver newton (type SNES) supports only"
-            << " singleRegionPoisson so far -- got '"
-            << em.type() << "'." << nl
-            << "    multiRegionPoisson (dielectric regions) is not yet"
-            << " supported; see docs/design/newton-outer-solver-design.md."
-            << nl << exit(FatalError);
-    }
-    singleRegionPoisson& srp = refCast<singleRegionPoisson>(em);
+    // NO TYPE TEST. This used to refuse anything but singleRegionPoisson,
+    // and the cast it then performed was VESTIGIAL: once updateDerivedFields()
+    // was hoisted to the base as a pure virtual (2026-09-11), not one
+    // singleRegionPoisson-only member was called anywhere in this file. The
+    // real requirement is that the model can hand over its extra Poisson
+    // regions, which the BASE class now expresses -- so a model that reports
+    // regions it cannot supply fails loudly in electromagneticsModel.C rather
+    // than being screened out by its type name here.
+    //
+    // Extra regions are packed into the ragged tail of the DOF layout. Their
+    // inter-region coupling needs no lduPrimitiveMeshAssembly: it is carried
+    // explicitly by coupledElectricPotential's Robin condition, measured
+    // 2026-09-11. See electromagneticsModel.H.
+    const label nExtraRegions = em.nExtraPoissonRegions();
 
     const label nSpecies = species.nSpecies();
 
@@ -1214,8 +1295,18 @@ void Foam::snesNewtonSolver::solveOuterStep
     }
 
     const label nCellsLocal = mesh_.nCells();
+
+    // Ragged tail: phi exists in every region, the species only in the gas.
+    // ZERO extra regions gives nTailLocal = 0 and every expression below
+    // collapses to exactly what it was -- which is what makes the
+    // single-region path bit-identical rather than merely intended to be.
+    label nTailLocal = 0;
+    for (label r = 0; r < nExtraRegions; ++r)
+    {
+        nTailLocal += em.extraPoissonPotential(r).primitiveField().size();
+    }
     const label nFields = 1 + nSpecies + (lmea ? 1 : 0);
-    const label nLocalTotal = nFields*nCellsLocal;
+    const label nLocalTotal = nFields*nCellsLocal + nTailLocal;
 
     // ---- BURN ANY ONE-SHOT MODEL INITIALISATION *BEFORE* THE SOLVE.
     //
@@ -1376,8 +1467,9 @@ void Foam::snesNewtonSolver::solveOuterStep
 
     ResidualContext ctx
     {
-        &em, &srp, &species, &transport, lmea,
+        &em, &species, &transport, lmea,
         nCellsLocal, nSpecies, lmea != nullptr,
+        nTailLocal,
         &sX, &sF,
         &sXcell, &sFcell
     };
@@ -1434,7 +1526,7 @@ void Foam::snesNewtonSolver::solveOuterStep
 
     PCContext pcCtx
     {
-        &em, &srp, &species, &transport, lmea,
+        &em, &species, &transport, lmea,
         nCellsLocal, nSpecies, lmea != nullptr,
         &dePotential, &dSpecies, dEnergy.get(),
         &sX, &sF,
@@ -1465,6 +1557,24 @@ void Foam::snesNewtonSolver::solveOuterStep
             for (label c = 0; c < nCellsLocal; ++c)
             {
                 xBuf[c] = (ePotF[c] + rPhi*(ePotF[c] - p0[c]))/sX[0];
+            }
+
+            // The tail regions' potentials, same block scale and the same
+            // extrapolation. Their old-time fields exist for the same reason
+            // the gas one does -- the region owns a registered volScalarField.
+            label tailOff = nFields*nCellsLocal;
+            for (label rr = 0; rr < nExtraRegions; ++rr)
+            {
+                const volScalarField& rPot = em.extraPoissonPotential(rr);
+                const scalarField& rf = rPot.primitiveField();
+                const scalarField& r0 = rPot.oldTime().primitiveField();
+                const label nrc = rf.size();
+                for (label c = 0; c < nrc; ++c)
+                {
+                    xBuf[tailOff + c] =
+                        (rf[c] + rPhi*(rf[c] - r0[c]))/sX[0];
+                }
+                tailOff += nrc;
             }
         }
 
@@ -1942,7 +2052,7 @@ void Foam::snesNewtonSolver::solveOuterStep
         }
     }
 
-    blockMatrixCOO coo(nCellsLocal, nFields);
+    blockMatrixCOO coo(nCellsLocal, nFields, nTailLocal);
     {
         // fvm:: matrices are VOLUME-INTEGRATED; the residual is per unit
         // volume. Convert with 1/V so Pmat approximates dF/dx and not
@@ -1985,6 +2095,58 @@ void Foam::snesNewtonSolver::solveOuterStep
                     )
                 );
                 coo.addFvMatrix(0, pEqn, sc, rV);
+            }
+
+            // --- The RAGGED TAIL's own Poisson blocks, one per extra region.
+            //
+            // Without these the tail rows of the Pmat are EMPTY. The phi split
+            // now covers them, so PCFIELDSPLIT hands hypre a matrix with a
+            // zero diagonal on 5976 of its rows and the first PCApply raises
+            // an FPE -- measured on needleDBD 2026-09-11, and note the
+            // residual itself had already evaluated cleanly to
+            // `0 SNES Function norm 1.037e+03`, so nothing upstream flagged it.
+            //
+            // Block-diagonal by design: the inter-region coupling lives in the
+            // explicit residual (coupledElectricPotential's Robin condition),
+            // and this matrix is only the preconditioner.
+            label tailOff = 0;
+            for (label r = 0; r < nExtraRegions; ++r)
+            {
+                volScalarField& rPot = em.extraPoissonPotential(r);
+                const fvMesh& rMesh = rPot.mesh();
+
+                scalarField rVr(rMesh.nCells());
+                {
+                    const scalarField& Vr = rMesh.V().field();
+                    forAll(rVr, c) { rVr[c] = 1.0/Vr[c]; }
+                }
+
+                // A CORRECTION field, like dePotential: homogeneous BCs, so
+                // the assembled operator is the one acting on an increment.
+                volScalarField dRegion
+                (
+                    IOobject
+                    (
+                        "d_" + rPot.name(),
+                        rMesh.time().timeName(),
+                        rMesh,
+                        IOobject::NO_READ,
+                        IOobject::NO_WRITE
+                    ),
+                    rPot
+                );
+                dRegion == dimensionedScalar(rPot.dimensions(), Zero);
+
+                fvScalarMatrix rEqn
+                (
+                    fvm::laplacian
+                    (
+                        em.extraPoissonEpsilon(r), dRegion,
+                        "laplacian(epsilon,ePotential)"
+                    )
+                );
+                coo.addFvMatrixTail(tailOff, rEqn, sc, rVr);
+                tailOff += rMesh.nCells();
             }
         }
 
@@ -2653,6 +2815,7 @@ void Foam::snesNewtonSolver::solveOuterStep
     pmatCOO.rows = coo.rows();
     pmatCOO.cols = coo.cols();
     pmatCOO.vals = coo.vals();
+    pmatCOO.nTail = int(nTailLocal);
     pmatCOO.schurOnPhi = schurOnPhi_;
     if (schurOnPhi_)
     {
@@ -2683,7 +2846,34 @@ void Foam::snesNewtonSolver::solveOuterStep
     {
         scalarField& ePotF = em.ePotentialRef().primitiveFieldRef();
         for (label c = 0; c < nCellsLocal; ++c) { ePotF[c] = xBuf[c]*sX[0]; }
+
+        // Tail regions, before correctBoundaryConditions() on ANY of them --
+        // the interface BCs read each other, so every region must hold its
+        // final internal field first.
+        {
+            label tailOff = nFields*nCellsLocal;
+            for (label rr = 0; rr < nExtraRegions; ++rr)
+            {
+                scalarField& rf =
+                    em.extraPoissonPotential(rr).primitiveFieldRef();
+                const label nrc = rf.size();
+                for (label c = 0; c < nrc; ++c)
+                {
+                    rf[c] = xBuf[tailOff + c]*sX[0];
+                }
+                tailOff += nrc;
+            }
+        }
+
         em.ePotentialRef().correctBoundaryConditions();
+        for (label rr = 0; rr < nExtraRegions; ++rr)
+        {
+            em.extraPoissonPotential(rr).correctBoundaryConditions();
+        }
+        if (nExtraRegions > 0)
+        {
+            em.ePotentialRef().correctBoundaryConditions();
+        }
 
         for (label s = 0; s < nSpecies; ++s)
         {
