@@ -427,14 +427,35 @@ artefact.** Earlier today this file said the KSP distribution was BIMODAL --
 because it had been TRUNCATED AT 100 BY THE CAP ITSELF. The true distribution is
 unremarkable: **median 4, p90 14, max 115.**
 
-**The FIELDSPLIT/Schur preconditioner is GOOD, and already meets the target that
-was proposed for replacing it.** A median of 4 Krylov iterations is the same
-order as Picard's 2-4 correctors -- i.e. one PC application is already worth
-about one Picard sweep, which is exactly what a physics-based PC is supposed to
-buy. That also explains why the PCSHELL arm LOSES: it is solving a problem that
-was not broken, at higher cost per application. (`assembledPmat false` now
-selects it; it had been unreachable in production because `snesBridge` prefers
-PCFIELDSPLIT whenever a Pmat is supplied and production always supplies one.)
+**The FIELDSPLIT/Schur preconditioner is GOOD.** A median of 4 Krylov iterations
+is the same order as Picard's 2-4 correctors -- one PC application is already
+worth about one Picard sweep.
+
+**BUT THE PHYSICS-BASED PCSHELL IS BETTER, and a first reading here said the
+opposite.** With all three arms complete the reason breakdown is what matters,
+not the headline rate:
+
+| arm | rate | -3 LINEAR_SOLVE | -5 maxIt | -6 line search | KSP med/p90/max | evals |
+|---|---|---|---|---|---|---|
+| base | 10.6% | **38** | 2 | 2 | 4 / 14 / 89 | 121,161 |
+| maxit | 1.0% | **0** | 2 | 2 | 4 / 14 / 115 | 123,234 |
+| shell | 4.3% | **0** | 0 | **17** | **3 / 6 / 22** | **113,208** |
+
+* Raising the cap removes **exactly and only** the 38 linear-solve failures. The
+  2 maxIt + 2 line-search failures are identical to base's. Clean attribution.
+* The PCSHELL removes them too, AND is the stronger preconditioner by every
+  linear-algebra measure: median 3 vs 4, p90 **6 vs 14**, max **22 vs 115** (a
+  5x tighter tail), and **8% FEWER residual evaluations** -- the real JFNK cost.
+* Its 17 failures are ALL `-6`, LINE SEARCH -- a different defect entirely, and
+  the only thing standing between it and the best arm. It also converges on
+  `CONVERGED_FNORM_RELATIVE` far more often (97 vs 2), which may be the same
+  story seen from the other side. NOT yet diagnosed.
+
+So the cheap fix (`kspMaxIt`) is the one to take TODAY, and the PCSHELL is worth
+returning to: fix its line search and it should beat everything. It is reachable
+via `assembledPmat false`; it had been unreachable in production because
+`snesBridge` prefers PCFIELDSPLIT whenever a Pmat is supplied and production
+always supplies one.
 
 **WHAT THIS INVALIDATES -- re-test before quoting any of it:**
 * The 449k streamer ladder's negative verdict. Every Newton failure there was
