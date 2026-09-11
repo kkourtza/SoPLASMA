@@ -1,5 +1,30 @@
 # A stationary (pseudo-steady) solve path for SoPLASMA
 
+**Status: PARTLY SUPERSEDED, 2026-09-11. Section 2's "no new code" first step
+DOES NOT EXIST.** The plan proposes `ddtSchemes { default steadyState; }` as a
+case setting. It was tried the DAY AFTER this plan was written and the solver
+now refuses it outright (`plasmaTimeControl.C`, commit `0ccdea1`, 2026-09-09):
+
+> "The ddt term IS the diagonal of a segregated species transport equation.
+> Removing it leaves rows with no diagonal for any species without an implicit
+> loss term, and the linear solver then divides by zero on its first sweep
+> (observed: SIGFPE in GaussSeidelSmoother::smooth). simpleFoam can drop ddt
+> because SIMPLE's pressure equation and under-relaxation supply the diagonal
+> dominance; nothing here does."
+
+So under-relaxation would have to supply the diagonal itself (OpenFOAM's
+`fvMatrix::relax()` does exactly that -- it divides the diagonal by the factor
+and moves the remainder to the source), and the guard fires before relaxation
+is ever applied. Making the stationary path real therefore needs SOLVER WORK,
+not case settings: at minimum, permit `steadyState` when relaxation is active
+AND ensure `relax()` reaches the species equations.
+
+Section 2 item 4 (CURRENT CONTROL) was checked on 2026-09-11 and stands, but is
+NOT sufficient on its own: all six `grubert2009_iset*` arms are current
+controlled and all stalled at t ~ 9.5e-07, one of them after 80,983 steps. They
+did not fail for a fixable reason and were not abandoned early.
+
+
 Written 2026-09-08 after Almeida, Benilov, Cunha & Gomes, *Computing Different
 Modes on Cathodes of DC Glow and High-Pressure Arc Discharges: Time-Dependent
 Versus Stationary Solvers*, Plasma Process. Polym. **14**, 1600122 (2017)

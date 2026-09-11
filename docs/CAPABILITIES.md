@@ -272,6 +272,31 @@ attempt, after two wrong guesses from reading code.
 | **GMRES (not FGMRES) on the transport split** | `DIVERGED_BREAKDOWN` from a varying operator. FGMRES tolerates it. |
 | **`ROUND*01` schemes for number densities** | `libROUNDSchemes.so` registers EIGHT names; the `01` variants clamp the field to **[0,1]** -- catastrophic for a density of 1e16 m^-3, and "bounded" is exactly what a user reaches for. |
 
+## 4b. GRUBERT'S DC-GLOW OPERATING POINT: SETTLED 2026-09-11
+
+**Every route to it by time-marching is closed, and the remaining one is a
+build.** Recorded here so the effort is not restarted from the top.
+
+| route | verdict |
+|---|---|
+| Voltage + ballast | REFUTED. Almeida 2017: at the CVC minimum dR/dI = 0, the load line is TANGENT and selects nothing. ~10 of our arms (`seriesResistor` 1e8, `seriesRC` 1e6/1e8/1e9/5e9) all died at 150/150 correctors with dt collapsing ~25,000x. Includes "ballast-limited ignition". |
+| Current control, time-marched | SOUND BUT INSUFFICIENT. All six `grubert2009_iset*` arms stalled at t ~ 9.5e-07 -- `grubert2009_iset` after **80,983 steps** with 23,575 discards. Checked 2026-09-11 per the plan's own instruction; they did not fail for a fixable reason. |
+| A gentler ignition ramp | HELPS, DOES NOT SOLVE. 2.04e7 V/s (20 V per ion transit) ignited quasi-statically at -137.7 V instead of over-volting to -245 V, and cut rejections 30,547 -> 1,727. It STILL overshot to 718x setpoint, after which the source sat at its 0 V rail and Newton could not step (line-search + maxIt; NO NaN -- that was my own misreading of PETSc reason -5). |
+| `ddtSchemes steadyState` as a case setting | **DOES NOT EXIST.** The solver refuses it: "the ddt term IS the diagonal... removing it leaves rows with no diagonal... SIGFPE in GaussSeidelSmoother". Added 2026-09-09, one day AFTER the stationary plan proposed it. |
+| A stationary driver with j-continuation | THE REMAINING ROUTE, and it is real work -- permit `steadyState` when relaxation is active, ensure `fvMatrix::relax()` reaches the species equations (it supplies the diagonal OpenFOAM's SIMPLE relies on), then continuation in j. |
+
+**THE UNDERLYING REASON, which is not ours:** Almeida et al. 2017 report that
+COMSOL's time-dependent module fails in the same place ("convergence was lost
+shortly before the minimum of the CVC"), and that Grubert computed his result
+AT STEADY STATE by FEM -- so the nanosecond avalanche that kills these runs is
+**a transient he never traversed**. Time-marching is the wrong tool for this
+operating point, whatever the circuit.
+
+**CONSEQUENCE FOR BENCHMARKING.** Grubert is NOT a viable vehicle for the
+Newton-vs-Picard comparison: it is blocked behind a stationary solver, which is
+separate work. The streamer IS viable and is the published benchmark -- see
+section 6.
+
 ## 5. Diagnosed, with the action already chosen
 
 * **Grubert lateral asymmetry** (`docs/design/grubert-lateral-asymmetry.md`). Mesh not
