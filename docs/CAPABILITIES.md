@@ -1,10 +1,19 @@
 # CAPABILITIES, TOOLING, AND WHAT HAS BEEN REFUTED
 
-**THIS IS THE FILE TO RE-READ WHENEVER MY CONTEXT WAS REBUILT** -- after a
-compaction/summary resume, a `--continue`/`--resume`, or a fresh session. Rule
-B5 makes that mandatory. It exists because a compaction summary preserves the
-NARRATIVE of what we did and loses the INVENTORY of what we have, and twice on
-2026-09-10 that cost real work:
+**READ `../PROGRESS.md` FIRST — it is the ONE orientation file (rule R0), and it points
+here.** This file is the second stop, not the first. *(Changed 2026-09-11. It used to say
+"THIS IS THE FILE TO RE-READ WHENEVER MY CONTEXT WAS REBUILT", and the rule that made it
+mandatory was cited as B5, which is now the no-silent-regressions rule. Two files both
+claiming to be the first thing to read is exactly the G1 defect — a fact stated twice
+that will disagree later.)*
+
+**The split, and it is worth keeping straight:** `PROGRESS.md` holds what is HAPPENING —
+the next action, what is in flight, what is blocked, and the failed approaches not to
+retry. **This file holds what EXISTS** — the inventory, the tooling, and what has been
+refuted. They cross-reference and must never duplicate.
+
+This file exists because a compaction summary preserves the NARRATIVE of what we did and
+loses the INVENTORY of what we have, and twice on 2026-09-10 that cost real work:
 
 * I proposed current-source electrode control as "a genuine piece of work". It
   was already implemented and documented in three places. (Rule B4.)
@@ -27,7 +36,11 @@ This file POINTS. It does not duplicate. If a fact lives in `README.md` or
 | every dictionary key, with meaning | `docs/reference/` (`configuration-config.md`, `plasmaSimulationControls.md`, `controlDict.md`, `fvSchemes-fvSolution.md`) |
 | a model's physics and options | `docs/models/**` |
 | design notes, status, and what was refuted | `docs/design/*.md` -- **check the `Status:` line; several are DESIGN, nothing implemented** |
-| the rules and their measured evidence | `../Projects/SoEEDF/CLAUDE.md`, `../Projects/SoEEDF/docs/rules-postmortems.md` |
+| the rules, and the command card | `../CLAUDE.md` — **it moved here from the SoEEDF tree on 2026-09-11**; SoEEDF's is now a stub that imports it |
+| why a rule is trusted — the measured post-mortems | `../../Projects/SoEEDF/docs/rules-postmortems.md` |
+| what is happening right now, and what not to retry | `../PROGRESS.md` |
+| a reusable procedure (build, validate, new case, doc sweep, commit) | `../.claude/skills/` — invoke as `/build`, `/validate`, `/new-case`, `/doc-sweep`, `/commit`, `/regression-gate`, `/perf-compare`, `/orient`, `/save-state` |
+| a specialist judgement (numerics, physics, diagnosis, performance) | `../.claude/agents/` — delegate rather than re-derive (E5) |
 
 **ONE DOCUMENTATION FOLDER: `docs/`.** Decided by the user 2026-09-10 after I
 had created a second top-level `doc/` alongside the pre-existing `docs/` -- two
