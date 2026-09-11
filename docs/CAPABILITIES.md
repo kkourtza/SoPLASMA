@@ -283,7 +283,9 @@ build.** Recorded here so the effort is not restarted from the top.
 | Current control, time-marched | SOUND BUT INSUFFICIENT. All six `grubert2009_iset*` arms stalled at t ~ 9.5e-07 -- `grubert2009_iset` after **80,983 steps** with 23,575 discards. Checked 2026-09-11 per the plan's own instruction; they did not fail for a fixable reason. |
 | A gentler ignition ramp | HELPS, DOES NOT SOLVE. 2.04e7 V/s (20 V per ion transit) ignited quasi-statically at -137.7 V instead of over-volting to -245 V, and cut rejections 30,547 -> 1,727. It STILL overshot to 718x setpoint, after which the source sat at its 0 V rail and Newton could not step (line-search + maxIt; NO NaN -- that was my own misreading of PETSc reason -5). |
 | `ddtSchemes steadyState` as a case setting | **DOES NOT EXIST.** The solver refuses it: "the ddt term IS the diagonal... removing it leaves rows with no diagonal... SIGFPE in GaussSeidelSmoother". Added 2026-09-09, one day AFTER the stationary plan proposed it. |
-| A stationary driver with j-continuation | THE REMAINING ROUTE, and it is real work -- permit `steadyState` when relaxation is active, ensure `fvMatrix::relax()` reaches the species equations (it supplies the diagonal OpenFOAM's SIMPLE relies on), then continuation in j. |
+| **PSEUDO-TRANSIENT** (BDF2 + `adjustTimeStep false` + fixed dt + currentSource, and NO relaxationFactors) | **WORKS TODAY, NO CODE.** Measured: **9472 consecutive converged steps, 0 failures, 4 correctors/step** against a 150 cap. Cost ~5 h per us of simulated time, and the run reported was only 9.5 ns -- far too early to say anything about the physics. So this route is STABLE BUT UNPROVEN, not closed. See `docs/design/steady-mode-spec.md`. |
+| **`relaxationFactors` added by hand** | **BREAKS IT.** 9472/9472 converged -> **0/10** converged. SoPLASMA already runs ADAPTIVE AITKEN outer relaxation (`plasmaOuterRelaxation`, omega ~0.371); fixed factors fight it. Recorded in the spec as its author's own error -- and repeated by me on 2026-09-11 before reading it. The generator must never emit them. |
+| A true stationary driver with j-continuation | A SOLVER PROJECT, not a case setting. And NOT reachable via relaxation: "OpenFOAM's equation relaxation cannot rescue this either -- it SCALES a diagonal that must already exist." So something must supply the species diagonal that `ddt` currently provides. |
 
 **THE UNDERLYING REASON, which is not ours:** Almeida et al. 2017 report that
 COMSOL's time-dependent module fails in the same place ("convergence was lost
@@ -291,6 +293,12 @@ shortly before the minimum of the CVC"), and that Grubert computed his result
 AT STEADY STATE by FEM -- so the nanosecond avalanche that kills these runs is
 **a transient he never traversed**. Time-marching is the wrong tool for this
 operating point, whatever the circuit.
+
+**NOT EVERY ROUTE IS CLOSED -- corrected 2026-09-11.** The PSEUDO-TRANSIENT
+recipe above runs stably and was simply never run far enough (9.5 ns of a
+problem that needs us-ms). "Settled" means the VOLTAGE/BALLAST and
+case-setting-`steadyState` routes are closed, not that the operating point is
+unreachable.
 
 **CONSEQUENCE FOR BENCHMARKING.** Grubert is NOT a viable vehicle for the
 Newton-vs-Picard comparison: it is blocked behind a stationary solver, which is
