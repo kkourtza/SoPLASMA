@@ -97,7 +97,7 @@ printChemistryCo                    true;
 maxChemistryCo                      0.9;
 
 //- Runtime & Parallelization
-endTime                             1e-6;
+endTime                             20e-6;
 deltaT                              1e-12;
 writeControl                        runTime;
 writeInterval                       1e-6;

@@ -1,0 +1,98 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Master Simulation Configuration: Physical, Numerical & Solver Parameters   |
+\*---------------------------------------------------------------------------*/
+
+//- Physical Constants & Plasma Parameters
+appliedVoltage                      18.75e3;    // [V]
+// Rise time of the applied-voltage ramp [s]. The electrode waveform is an
+// OpenFOAM Function1, so this bed's `table` is only one of the options -- see
+// docs/models/energy/applied-voltage.md for constant / linearRamp / sine /
+// polynomial / csv / coded.
+//
+// Ramped rather than stepped ON PURPOSE: a step puts a very large field
+// transient on the electrode in the first timesteps.
+voltageRampTime                     9.375e-11;  // [s]
+
+//- Global Numerical Schemes (Macros for fvSchemes)
+driftDiffusionFluxScheme            standard;
+ddtSchemes                          backward;
+gradSchemes                         leastSquares;
+
+//- Species-Specific Schemes
+electronDriftDivScheme                  Gauss ROUNDF;
+electronDiffusionLaplacianScheme        Gauss harmonic corrected 0.33;
+ePotentialLaplacianScheme               Gauss linear corrected 0.33;
+electronMobilityInterpolationScheme     harmonic;
+electronDiffusivityInterpolationScheme  harmonic;
+ePotentialSnGradScheme                  corrected 0.33;
+snGradSpeciesScheme                     corrected 0.33;
+
+//- Matrix Solver & PETSc Settings
+matrixSolver                        "foam";
+nNonOrthogonalCorrectors            0;
+nOuterCorrectors                    1;
+ePotentialTolerancePIMPLE           1e-10;
+neTolerancePIMPLE                   1e-10;
+npIonTolerancePIMPLE                1e-10;
+
+ePotentialMatrixCacheUpdate         always;
+ePotentialPreconditionerCacheUpdate always;
+ePotentialTolerance                 1e-10;
+ePotentialRelTolerance              0.0;
+
+neMatrixCacheUpdate                 always;
+nePreconditionerCacheUpdate         always;
+neTolerance                         1e-10;
+neRelTolerance                      0.0;
+
+npIonMatrixCacheUpdate              always;
+npIonPreconditionerCacheUpdate      always;
+npIonTolerance                      1e-10;
+npIonRelTolerance                   0.0;
+
+//- Solution Control
+poissonScheme                       explicit;
+
+// Newton-vs-Picard benchmark arm switch.
+outerSolver                         newton;
+// TRANSIENT or PSEUDO-STEADY. `transient` is real time-marching -- what every
+// shipped tutorial does. `pseudoSteady` is PSEUDO-TRANSIENT CONTINUATION for
+// reaching a stationary state: `deltaT` becomes a RELAXATION PARAMETER, the
+// time axis stops being physical, and adjustTimeStep is forced off so the step
+// cannot collapse. It also interlocks several settings across three files, so
+// it is set HERE and enforced in the solver -- see docs/design/steady-mode-spec.md.
+//
+// `steadyState` is deliberately NOT offered: dropping ddt leaves a segregated
+// species equation with no matrix diagonal, and the linear solver divides by
+// zero on its first sweep.
+simulationType                      transient;
+
+adjustTimeStep                      false;
+limitDielectricRelaxationRatio      false;
+printDielectricRelaxationRatio      true;
+maxDielectricRelaxationRatio        5;
+limitSpeciesCo                      false;
+printSpeciesCo                      true;
+maxSpeciesCo                        1;
+limitChemistryCo                    false;
+printChemistryCo                    true;
+maxChemistryCo                      0.9;
+// VOLTS PER STEP, not V/s: the limiter solves for the deltaT that makes
+// the applied voltage change by this much in one step. 100 V resolves a
+// nanosecond rise on a kV-scale pulse while staying coarse enough to be a
+// SAFETY NET rather than the primary control -- the Courant and dielectric
+// limits do that job.
+//
+// This shipped as 1, which is inert only because limitVoltageRiseRate is
+// off. Anyone switching that on inherited a 1 V/step ceiling and a run
+// that crawled -- and 58 cases derived from this template carried it.
+maxVoltageRisePerStep               100;
+
+//- Runtime & Parallelization
+endTime                             2e-9;
+deltaT                              1e-11;
+writeControl                        runTime;
+writeInterval                       2.5e-10;
+numberOfSubdomains                  8;
+
+// ************************************************************************* //

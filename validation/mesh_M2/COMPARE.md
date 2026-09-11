@@ -1,6 +1,6 @@
 # Mesh convergence on the Grubert dc glow -- M1 / M2 / MU
 
-Created 2026-09-07. Design and provenance: `../../doc/mesh-convergence-plan.md`.
+Created 2026-09-07. Design and provenance: `../../docs/design/mesh-convergence-plan.md`.
 
 ## The question
 

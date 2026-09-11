@@ -1,0 +1,85 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSchemes;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+ddtSchemes
+{
+    default                         $ddtSchemes;
+}
+
+gradSchemes
+{
+    default                         $gradSchemes;
+}
+
+divSchemes
+{
+    div(phi_e,n_e)                  $electronDriftDivScheme;
+
+    // Catch-all, as positiveStreamer_fixedMesh carries: outerSolver newton
+    // assembles the species equation itself and forms a flux for EVERY
+    // transported species, whose names are not knowable here under
+    // `include chargedAndExcited`.
+    "div\(phi_.*,n_.*\)"            $electronDriftDivScheme;
+}
+
+laplacianSchemes
+{
+    laplacian(D_e,n_e)              $electronDiffusionLaplacianScheme;
+    "laplacian\(D_.*,n_.*\)"        $electronDiffusionLaplacianScheme;
+
+    laplacian((epsilon+(deltaT*electricalConductivity)),ePotential)  $ePotentialLaplacianScheme;
+    laplacian(epsilon,ePotential)                                    $ePotentialLaplacianScheme;
+
+    // Gas-temperature conduction, required when energy.solve is true.
+    laplacian(kappa,T_gas)          Gauss linear corrected;
+}
+
+interpolationSchemes
+{
+    interpolate(n_e)                linear;
+
+    interpolate(mu_e)               $electronMobilityInterpolationScheme; 
+    interpolate(D_e)                $electronDiffusivityInterpolationScheme;
+
+    // Catch-alls, as positiveStreamer_fixedMesh already carries. Needed
+    // because outerSolver newton assembles the species equation ITSELF and so
+    // interpolates mu/D for EVERY transported species, not just the electron
+    // -- including immobile ions and excited neutrals, whose names the case
+    // cannot list in advance under `include chargedAndExcited`.
+    "interpolate\(n_.*\)"           linear;
+    "interpolate\(mu_.*\)"          $electronMobilityInterpolationScheme;
+    "interpolate\(D_.*\)"           $electronDiffusivityInterpolationScheme;
+}
+
+snGradSchemes
+{
+    snGrad(n_e)                     $snGradSpeciesScheme;
+    snGrad(ePotential)              $ePotentialSnGradScheme;
+}
+
+fluxRequired
+{
+    default         no;
+    n_e             ;
+    n_N2p            ;
+    n_O2p            ;
+    n_Om             ;
+    n_O2m            ;
+    n_nIon          ;
+    ePotential      ;
+}
+// ************************************************************************* //

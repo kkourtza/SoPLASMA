@@ -1,0 +1,20 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      photoionizationProperties;
+}
+
+photoionizationModel   nTermHelmholtz;
+
+nTermHelmholtzCoeffs
+{
+    p                 100;          // [Pa], matches the case
+    sourceMode        ionizationRate;
+    Siz               S_iz;
+    quenchingFactor   0.038;
+    xiNuRatio         0.06;
+    nTerms            2;
+    fittingParameters ( (0.0553 1.986e-4) (0.1460 5.130e-4) );
+}

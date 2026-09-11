@@ -29,7 +29,7 @@ cathode
 {
     // BALLASTED, not driven: the potential is an OUTPUT of the external
     // circuit declared in system/plasmaSimulationControls. See
-    // doc/external-circuit-plan.md for why a fixed-voltage gap above
+    // docs/design/external-circuit-plan.md for why a fixed-voltage gap above
     // breakdown cannot select an operating point.
     kind        currentDrivenElectrode;
 

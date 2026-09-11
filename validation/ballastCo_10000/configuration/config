@@ -95,7 +95,7 @@ maxChemistryCo                      0.9;
 endTime                             45e-6;
 deltaT                              1e-12;
 writeControl                        runTime;
-writeInterval                       5e-7;   // 5e-7 not 4.5e-6: the coarse cadence meant NO snapshot ever existed before the runs failed at ~1.3e-6, so every fix cost a restart from zero. 90 snapshots of a 2000-cell case is ~100 MB, which is nothing against a lost hour.
+writeInterval                       2e-6;   // 2e-6, not 5e-7: with the RC ballast (tau = 5 us) the run is tens of microseconds, so 5e-7 meant 90 writes. 2e-6 gives 23 -- still fine restart granularity (a lost 2 us is ~7000 steps) and enough snapshots to resolve the approach to steady state.
 numberOfSubdomains                  4;
 
 // ************************************************************************* //

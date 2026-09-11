@@ -47,7 +47,7 @@ Three conclusions:
 3. **At All1500 the binding limiter is NO LONGER COURANT.** It is
    `coupling margin (hold)`, the omega-based outer-coupling governor. **The
    automatic dt controller already exists; the hand-set caps at 15 were masking
-   it.** See `doc/adaptive-dt-design.md`.
+   it.** See `docs/design/adaptive-dt-design.md`.
 
 `coupling margin` is keyed on the Aitken relaxation factor `omega`, which is
 DIMENSIONLESS -- so its threshold means the same thing in any case, satisfying

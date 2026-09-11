@@ -101,7 +101,7 @@ extrapolation so its value should be the tabulated range. **That argument is
 sound and the outcome is still wrong**, because a table's EXTENT is not its
 VALIDITY: the tables are self-consistent to 2644 eV only for a FREELY GROWING
 swarm, where `nu_i*U` carries up to 99.4% of the power budget
-(`doc/electron-energy-balance.md`). The fluid energy equation is robustly
+(`docs/design/electron-energy-balance.md`). The fluid energy equation is robustly
 dissipative only below ~1000-2450 Td, i.e. `U` ~ 15-35 eV.
 
 So the old 100 eV was an unsourced constant AND it was holding the solution
@@ -112,7 +112,7 @@ that proves it was load-bearing rather than cosmetic.**
 
 Do not simply revert `meanEnergyMax` to 100 eV. That restores the old behaviour
 for a reason nobody understood and re-hides this. The three candidate fixes are
-in `doc/electron-energy-balance.md`; the evidence does not yet choose between
+in `docs/design/electron-energy-balance.md`; the evidence does not yet choose between
 them, and the one independently justified is tightening the `n_e`/`nEps`
 coupling, since the growth cancellation `dU/dt = (Joule - Loss) - U*nu_i` arises
 only from `n_e` in the DENOMINATOR and is a difference of two large terms at

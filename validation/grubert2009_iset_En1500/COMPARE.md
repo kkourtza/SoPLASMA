@@ -117,7 +117,7 @@ The question therefore moved to `grubert2009_iset_All150`, which raises ALL the
 caps and finds ~30x of dt for ~0.3% in V_gap -- and, at 1500, reveals that the
 binding limiter is no longer Courant at all but the omega-based
 `coupling margin`. See that case's COMPARE.md and
-`doc/adaptive-dt-design.md`.
+`docs/design/adaptive-dt-design.md`.
 
 **The answer to this case's own question is therefore YES, unambiguously:** the
 energy convective Courant is an EFFICIENCY knob, not an accuracy limit --

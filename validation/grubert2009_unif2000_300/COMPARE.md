@@ -100,7 +100,7 @@ the discharge grows exponentially throughout the ramp. That is why this arm need
 # RESULT 2026-09-07: the uniform mesh REVERSES TOO. Resolution is EXCLUDED.
 
 Run in PARALLEL on 8 ranks after three parallel defects were fixed (rule 31,
-`doc/parallel-blockers.md`); parallel verified against serial to 7 digits at
+`docs/design/parallel-blockers.md`); parallel verified against serial to 7 digits at
 matched simulated times.
 
 ## Matched-time comparison against the graded mesh

@@ -1,0 +1,107 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Master Simulation Configuration: Physical, Numerical & Solver Parameters   |
+\*---------------------------------------------------------------------------*/
+
+
+//- Gas state. Grubert: argon at 100 Pa, 300 K.
+//  100 Pa gives N = 2.414e22 m^-3, so the MEAN field -500 V over 1 cm is
+//  E/N = 2071 Td -- and the cathode fall reaches far higher, which is why the
+//  Boltzmann sweep runs to 55000 Td.
+gasPressure                         100;      // [Pa]
+gasTemperature                      300;      // [K]
+
+//- Global Numerical Schemes (Macros for fvSchemes)
+// ScharfetterGummel, not `standard`. On this case the standard branch of the
+// wall-flux condition went SINGULAR at the anode at t = 1.1e-7 s:
+// (D/delta + uEff)/(D/delta) = -9.26. With electron reflection r = 0.36 the
+// closure returns W = (1-r)*w_w, so uEff = (1-r)/(1+r)*(A + uDrift) - uDrift
+// goes negative once uDrift > 0.889*A -- `includeDriftFlux true` does NOT
+// remove the mode for a reflecting wall, only for r = 0. The SG denominator
+// is D/delta*Bern(Pe) + uAbs, non-negative for any r, and SG is in any case
+// the right scheme for a drift-dominated near-wall cell. Measured 2026-09-06.
+driftDiffusionFluxScheme            standard;
+ddtSchemes                          backward;
+gradSchemes                         leastSquares;
+
+//- Species-Specific Schemes
+electronDriftDivScheme                  Gauss ROUNDF;
+electronDiffusionLaplacianScheme        Gauss harmonic corrected 0.33;
+ePotentialLaplacianScheme               Gauss linear corrected 0.33;
+electronMobilityInterpolationScheme     harmonic;
+electronDiffusivityInterpolationScheme  harmonic;
+ePotentialSnGradScheme                  corrected 0.33;
+snGradSpeciesScheme                     corrected 0.33;
+
+//- Matrix Solver & PETSc Settings
+matrixSolver                        "foam";
+nNonOrthogonalCorrectors            0;
+nOuterCorrectors                    4;
+ePotentialTolerancePIMPLE           1e-10;
+neTolerancePIMPLE                   1e-10;
+npIonTolerancePIMPLE                1e-10;
+
+ePotentialMatrixCacheUpdate         always;
+ePotentialPreconditionerCacheUpdate always;
+TgasTolerance                       1e-12;
+ePotentialTolerance                 1e-10;
+ePotentialRelTolerance              0.0;
+
+neMatrixCacheUpdate                 always;
+nePreconditionerCacheUpdate         always;
+neTolerance                         1e-10;
+neRelTolerance                      0.0;
+
+npIonMatrixCacheUpdate              always;
+npIonPreconditionerCacheUpdate      always;
+npIonTolerance                      1e-10;
+npIonRelTolerance                   0.0;
+
+//- Solution Control
+poissonScheme                       semiImplicit;
+adjustTimeStep                      true;
+limitDielectricRelaxationRatio      false;
+printDielectricRelaxationRatio      true;
+maxDielectricRelaxationRatio        5;
+limitSpeciesCo                      true;
+printSpeciesCo                      true;
+// RAISED FROM 1.5 ON 2026-09-06, on the licence of the co-sweep study
+// (/home/kkourtza/co-sweep/COMPARE_coSweep.md, measured 2026-08-31): error
+// SATURATES with Co -- domain maxima within 0.32% (n_e) and 0.51% (meanE) for
+// every Co from 3 to 50, and relL2 grows only 1.07-1.37x over a 3x longer
+// window where linear accumulation would give 3x. The pre-registered
+// prediction that accuracy would degrade beyond Co~5 was RETRACTED there: the
+// solution is field-slaved and quasi-steady, so larger steps relax to the same
+// local equilibrium rather than accumulating transport error.
+//
+// That study licenses large Co in the INERT phase ONLY, and only to ~15,
+// because Co does not self-lower and a streamer head must not be crossed in
+// 2-10 steps. TWO REASONS IT APPLIES HERE: this discharge has not ignited
+// (n_e is still ~1e15 with no multiplication), and its END STATE IS STEADY --
+// a dc glow has no advected structure to under-resolve, unlike the streamer
+// the restriction was written for.
+//
+// THE GUARD THAT LICENSES IT IS Co_chem, and it is measured, not assumed:
+// 0.000404 against its 0.9 cap on this case, 2200x slack. If Co_chem ever
+// approaches 0.9 this number must come back down.
+//
+// Co=50 is deliberately NOT used: the same study found it buys no speed
+// (coupling-margin limited, 141 vs 151 steps) and is slightly worse.
+maxSpeciesCo                        1500;
+limitChemistryCo                    true;
+printChemistryCo                    true;
+maxChemistryCo                      0.9;
+
+//- Runtime & Parallelization
+endTime                             1.9546e-6;
+deltaT                              1e-12;
+writeControl                        runTime;
+writeInterval                       2e-7;
+numberOfSubdomains                  4;
+
+// ************************************************************************* //
+
+// Voltage-rise resolution limit [V/step]; 0 disables it.
+// Migrated 2026-09-01 from the deprecated pair
+// `limitVoltageRiseRate` + `maxVoltageRiseRate`. This bed had the
+// limiter off; now set to 100 V/step like every other bed (user, 2026-09-01).
+maxVoltageRisePerStep               100;

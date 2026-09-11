@@ -20,7 +20,7 @@ gasTemperature                      300;      // [K]
 // is D/delta*Bern(Pe) + uAbs, non-negative for any r, and SG is in any case
 // the right scheme for a drift-dominated near-wall cell. Measured 2026-09-06.
 driftDiffusionFluxScheme            standard;
-ddtSchemes                          backward;
+ddtSchemes                          steadyState;
 gradSchemes                         leastSquares;
 
 //- Species-Specific Schemes
@@ -58,7 +58,7 @@ npIonRelTolerance                   0.0;
 
 //- Solution Control
 poissonScheme                       semiImplicit;
-adjustTimeStep                      true;
+adjustTimeStep                      false;
 limitDielectricRelaxationRatio      false;
 printDielectricRelaxationRatio      true;
 maxDielectricRelaxationRatio        5;
@@ -86,16 +86,16 @@ printSpeciesCo                      true;
 //
 // Co=50 is deliberately NOT used: the same study found it buys no speed
 // (coupling-margin limited, 141 vs 151 steps) and is slightly worse.
-maxSpeciesCo                        1500;
+maxSpeciesCo                        15;
 limitChemistryCo                    true;
 printChemistryCo                    true;
 maxChemistryCo                      0.9;
 
 //- Runtime & Parallelization
-endTime                             10e-6;
-deltaT                              1e-12;
+endTime                             2e-6;
+deltaT                              1e-9;
 writeControl                        runTime;
-writeInterval                       1e-6;
+writeInterval                       500;
 numberOfSubdomains                  4;
 
 // ************************************************************************* //

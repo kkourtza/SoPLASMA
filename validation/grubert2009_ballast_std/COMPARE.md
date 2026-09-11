@@ -50,7 +50,7 @@ ballast's short-circuit current, as a multiple of the operating point, is then
 **Larger R is a TIGHTER current pin, not a looser one.** In the limit
 R -> infinity with V_src = 500 + R*I_op, the ballast IS a current source at
 I_op. So this sweep and the planned `currentSource` (stage 2a of
-`doc/external-circuit-plan.md`) approach the same thing from two directions,
+`docs/design/external-circuit-plan.md`) approach the same thing from two directions,
 and the sweep tests the physics before the new model is written.
 
 **This cuts against my own earlier change**, 5e8 -> 1e8 (recorded in

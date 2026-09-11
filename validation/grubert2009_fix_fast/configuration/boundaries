@@ -1,0 +1,118 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Grubert 2009 dc glow -- the SEMANTIC boundary description.                  |
+|                                                                              |
+|  G2: this says WHAT each surface IS. Every dictionary in 0/ is DERIVED from   |
+|  it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.                   |
+|                                                                              |
+|  Only the two electrodes are declared. side_lo/side_hi are `symmetryPlane`   |
+|  and front/back are `empty` -- CONSTRAINT patches, which carry their own      |
+|  condition by construction and are not a semantic choice.                     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+// The waveform is written LITERALLY, not as $appliedVoltage. A $var nested
+// inside a compound value is not expanded by OpenFOAM's dictionary reader --
+// `table ((0 0) ($t $V))` fails -- so the gap voltage is stated once, here,
+// and nowhere else.
+//
+// -500 V on the CATHODE, anode grounded: Grubert's polarity. The 100 ns ramp
+// is numerical hygiene only, 45x shorter than the 4.5 us ion transit time, so
+// it cannot influence the steady state this case is run to measure.
+cathode
+{
+    // BALLASTED, not driven: the potential is an OUTPUT of the external
+    // circuit declared in system/plasmaSimulationControls. See
+    // doc/external-circuit-plan.md for why a fixed-voltage gap above
+    // breakdown cannot select an operating point.
+    kind        ballastedElectrode;
+
+    // THE CIRCUIT, declared on the electrode it feeds. One place: the patch
+    // name is never written twice, so it cannot drift.
+    //
+    // SIZING: Grubert's operating point is j = 0.511 mA/cm^2 at a gap voltage
+    // of -500 V. This electrode is 5 faces of 200 x 200 um = 2.0e-3 cm^2, so
+    // I = 1.022e-6 A, and V_source = -500 - R*I gives -1011 V at R = 5e8 --
+    // an ordinary ballast for a microamp-scale glow.
+    circuit
+    {
+        type          seriesRC;
+        // FULL SOURCE VOLTAGE, reached in 50 ns, NOT ramped over 5 us.
+        //
+        // The slow ramp starved the discharge at ignition and that is what
+        // broke the ballast. Measured 2026-09-06: breakdown happens at
+        // t = 1.27 us, when a 5 us ramp has only reached -257 V, so the
+        // ballast can pass V_src/R = 0.51 uA while the discharge asks for
+        // 1.0 uA. Starved 1.9x, the circuit's target V_src - R*I goes to
+        // +243 V -- a POSITIVE cathode -- and no amount of damping makes a
+        // wrong target right.
+        //
+        // At the full -1011 V the load line passes through Grubert's operating
+        // point exactly:  V_gap = -1011 + R*I  gives -500 V at
+        // j = 0.511 mA/cm^2. And it is how a glow is actually struck: close the
+        // switch on a charged supply through a ballast. Before ignition no
+        // current flows, so the gap simply sits at -1011 V, far above its
+        // -179 V breakdown, and lights.
+        //
+        // 50 ns rather than a true step is numerical hygiene only; the ballast,
+        // not the ramp, is what limits the current now.
+        sourceVoltage table ((0 0) (5e-8 -501));
+        // R = 1e8, NOT 5e8. Same load line -- V_gap = -602 + R*I still gives
+        // -500 V at j = 0.511 mA/cm^2 -- but far more TRANSIENT HEADROOM.
+        //
+        // At 5e8 the ballast's short-circuit current V_src/R was only
+        // 1.011 mA/cm^2, just 1.98x the operating point, and the ignition
+        // transient drew 1.068. Above that ceiling the circuit's target
+        // V_src - R*I MUST go positive -- that is arithmetic, not instability,
+        // and no coupling scheme can fix a source that cannot supply the
+        // current. Measured 2026-09-06.
+        //
+        // At 1e8 the short-circuit current is 3.01 mA/cm^2, 5.9x the operating
+        // point. This is the same R > |dV/dj| load-line condition that makes a
+        // ballast stabilise at all, applied to the transient rather than only
+        // to the fixed point.
+        resistance    1e6;
+
+        // THE SHUNT CAPACITANCE IS WHAT MAKES A REAL RIG LIGHT GENTLY.
+        //
+        // With the gap's own 1.77e-16 F alone, R*C = 17.7 ns: the electrode
+        // snaps to full voltage before any plasma exists, the gap sits far
+        // past Paschen with alpha*d enormous, and the first avalanche
+        // overshoots before space charge can screen it. Measured 2026-09-06:
+        // n_e reached 6.3e19 m^-3 (ionisation degree 2.6e-3) where both the
+        // screening-arrest estimate (1.6e16) and the reference (2.5e15) say
+        // four decades less.
+        //
+        // A real bench rig has ~100 pF/m of coax across the gap, giving
+        // R*C ~ 10 ms -- which is why a laboratory dc discharge creeps up and
+        // breaks down at the lowest voltage that sustains it. That is 200x
+        // longer than is affordable here, so C is chosen to be slow against
+        // the IONISATION and SCREENING times (both ~1.5e-10 s) while staying
+        // simulable: 5e-14 F gives 5 us, gentle by 3e4 and comparable to the
+        // 4.5 us ion transit.
+        capacitance   5e-14;
+    }
+
+    gammaSEE            0.06;
+}
+
+anode
+{
+    kind        groundedElectrode;
+
+    // Grubert's anode electron reflection. This is a LARGE value and the
+    // reason V4 is worth running: nothing in this framework had ever exercised
+    // a non-zero reflection coefficient before (framework-state gap 16).
+    electronReflection  0.36;
+}
+
+// NOT DECLARED: their ion reflection of 5e-4. The ion wall condition takes no
+// reflection coefficient, and at 5e-4 it changes the ion wall flux by 0.05% --
+// far below the ~5% spread between our Boltzmann coefficients and theirs. It
+// is recorded here so its absence is a stated choice rather than an omission.
