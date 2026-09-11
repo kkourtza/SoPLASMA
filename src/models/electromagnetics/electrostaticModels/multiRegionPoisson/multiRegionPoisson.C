@@ -178,6 +178,115 @@ void multiRegionPoisson::solveCoupled()
             reg.ePotential().correctBoundaryConditions();
         }
 
+        // ONE-TIME PROBE (rule A6): does the EXPLICIT fvc:: gas residual SEE
+        // the dielectric region's state, or is it blind to it?
+        //
+        // This decides the shape of multi-region support under Newton. A
+        // Newton residual must be explicit fvc:: (fvMatrix::residual() is
+        // broken in parallel), and coupledElectricPotential::updateCoeffs()
+        // sets valueFraction/refValue/refGrad from the MAPPED NEIGHBOUR
+        // regardless of useImplicit -- useImplicit only additionally fills
+        // source() for manipulateMatrix. If the explicit residual really
+        // carries the coupling, Newton needs NO lduPrimitiveMeshAssembly:
+        // its own outer iteration converges the inter-region coupling, which
+        // is what the monolithic assembly does inside the LINEAR solve.
+        //
+        // THE TEST IS A PERTURBATION, not a residual magnitude. An earlier
+        // version compared interface-cell residual against interior-cell
+        // residual and read EXACTLY 0 at the interface -- which is equally
+        // consistent with "coupling is perfect" and "nothing is happening
+        // there", so it separated no causes. Instead: bump the dielectric
+        // potential by 1 V, re-evaluate the GAS residual, and see whether it
+        // moves. Non-zero at the interface and zero in the interior is the
+        // only outcome consistent with the coupling being carried explicitly.
+        {
+            static bool probed = false;
+            if (!probed)
+            {
+                probed = true;
+
+                const fvMesh& gm = ePotential_.mesh();
+                boolList atInterface(gm.nCells(), false);
+                forAll(ePotential_.boundaryField(), pI)
+                {
+                    if (!isA<mappedPatchBase>(gm.boundary()[pI].patch()))
+                    {
+                        continue;
+                    }
+                    for (const label c : gm.boundary()[pI].faceCells())
+                    {
+                        atInterface[c] = true;
+                    }
+                }
+
+                auto gasResidual = [&]() -> tmp<volScalarField>
+                {
+                    return tmp<volScalarField>::New
+                    (
+                        "probeRes",
+                        fvc::laplacian(epsilon_, ePotential_) + chargeDensity_
+                    );
+                };
+
+                ePotential_.correctBoundaryConditions();
+                const scalarField r0(gasResidual()().primitiveField());
+
+                // Perturb every dielectric region by +1 V and re-map.
+                PtrList<scalarField> saved(dielectrics_.size());
+                forAll(dielectrics_, i)
+                {
+                    saved.set
+                    (
+                        i,
+                        new scalarField(dielectrics_[i].ePotential().primitiveField())
+                    );
+                    dielectrics_[i].ePotential().primitiveFieldRef() += 1.0;
+                    dielectrics_[i].ePotential().correctBoundaryConditions();
+                }
+                ePotential_.correctBoundaryConditions();
+                const scalarField r1(gasResidual()().primitiveField());
+
+                // Restore exactly.
+                forAll(dielectrics_, i)
+                {
+                    dielectrics_[i].ePotential().primitiveFieldRef() = saved[i];
+                    dielectrics_[i].ePotential().correctBoundaryConditions();
+                }
+                ePotential_.correctBoundaryConditions();
+
+                scalar si = 0, so = 0, b0i = 0;
+                label ni = 0, no = 0;
+                forAll(r0, c)
+                {
+                    const scalar d = sqr(r1[c] - r0[c]);
+                    if (atInterface[c]) { si += d; b0i += sqr(r0[c]); ++ni; }
+                    else                { so += d; ++no; }
+                }
+                reduce(si, sumOp<scalar>());
+                reduce(so, sumOp<scalar>());
+                reduce(b0i, sumOp<scalar>());
+                reduce(ni, sumOp<label>());
+                reduce(no, sumOp<label>());
+
+                Info<< "[explicitCouplingProbe] gas residual response to a"
+                    << " +1 V bump of the dielectric potential" << nl
+                    << "    interface cells (" << ni << "):  d(res) rms "
+                    << (ni ? Foam::sqrt(si/ni) : 0)
+                    << "   [base res rms " << (ni ? Foam::sqrt(b0i/ni) : 0)
+                    << "]" << nl
+                    << "    interior  cells (" << no << "):  d(res) rms "
+                    << (no ? Foam::sqrt(so/no) : 0) << nl
+                    << "    VERDICT: "
+                    << (si > 0
+                          ? "explicit residual SEES the dielectric -- no"
+                            " lduPrimitiveMeshAssembly needed for the Newton"
+                            " residual."
+                          : "explicit residual is BLIND to the dielectric --"
+                            " Newton needs the monolithic assembly.")
+                    << nl << endl;
+            }
+        }
+
         fvMatrixAssemblyPtr_->clear();
     }
 }

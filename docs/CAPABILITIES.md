@@ -358,6 +358,121 @@ Newton arm dies in it and Newton never runs (measured at dt=1e-10: both arms,
 same SIGFPE, 1 step, handover count 0). **Warm-start from an established state**
 and handover fires on step 1.
 
+### THE HEAD-TO-HEAD dt LADDER AT 449k (2026-09-11) -- AND WHY IT ANSWERS NOTHING
+
+Run cold on `scale_r4`, limiters ALL off (`limitSpeciesCo/limitChemistryCo/
+limitDielectricRelaxationRatio false`, `adjustTimeStep false`), fixed dt, both
+solvers on the same bed. Handover message VERIFIED present in every Newton arm.
+
+| dt | Picard | Newton |
+|---|---|---|
+| 1e-11 | 20 steps, 2-4 correctors, exit 0 | 11 steps, 0 SNES failures |
+| 2e-11 | 10 steps, 2-4 correctors, exit 0 | 10 steps, 5 of 38 SNES failed |
+| 5e-11 | **SIGFPE, 1 step** | 4 steps, 3 of 48 failed, NO crash |
+| 1e-10 | **SIGFPE, 1 step** | crash |
+
+**THE LADDER CANNOT ANSWER THE BENCHMARK'S QUESTION, BY CONSTRUCTION.** Cold
+start means it reaches only t = 2e-10 -- 10% of the validated 2 ns window --
+with peak `n_e` still at the **1.3e13 seed**. A streamer head is ~1e20. The
+dielectric relaxation time tau = eps0/(e*mu_e*n_e) is then **~1e-4 s**, so
+dt/tau ~ 2e-7: the ladder ran SEVEN ORDERS OF MAGNITUDE BELOW the stiffness
+constraint Newton exists to step over. Picard's own numbers confirm it --
+**2 to 4 correctors** against a cap of 20, with Aitken relaxation INACTIVE.
+That is a nearly-uncoupled fixed-point map, and nothing can beat 2-4 cheap
+sweeps of one. At streamer-head density tau is ~1e-11 s, i.e. dt/tau ~ 2, which
+is the regime the experiment was specified for.
+
+**So the benchmark still requires the WARM-STARTED ladder from a developed
+streamer** (deferred-action-items: "a metric must be tested where its answer
+MUST differ"; CAPABILITIES 3b: cold arms cannot test Newton above Picard's own
+first-step limit). Do not quote the table above as a verdict on JFNK.
+
+**What it DOES establish, and it corrects an earlier claim:**
+* **Picard's cold ceiling at 449k is 2e-11, not 5e-11.** At 5e-11 and 1e-10 it
+  SIGFPEs on step 1. The "Newton must reach ~5e-10 to break even" bar below
+  rests on WARM-started Picard at 1.15M; that is a different bed and a
+  different start, and the bar must be restated against a like-for-like control.
+* **Newton is NOT less robust in dt here.** At 5e-11 Picard dies outright while
+  Newton completes 4 steps. Newton's cost is the problem, not its stability.
+* **BASELINE CONTAMINATION, caught:** four of the seven original arms ran
+  against a `soPlasmaFoam` replaced at 15:48 and were compared against 16:2x
+  arms. Re-run on one binary before reading any ladder. ([[baseline-contamination]])
+
+### NEWTON'S FAILURE MODE IS THE LINEAR SOLVE, NOT THE NONLINEAR ONE (2026-09-11)
+
+Every single Newton failure in the ladder reads:
+
+    Linear solve did not converge due to DIVERGED_ITS iterations 100
+    Nonlinear solve did not converge due to DIVERGED_LINEAR_SOLVE iterations 0
+
+`iterations 0` -- **SNES never took a step.** The outer FGMRES hit its
+`-ksp_max_it 100` cap (hardcoded, `snesNewtonSolver.C:1530`) on the FIRST
+linear solve of the step. ZERO line-search failures, ZERO NaN, ZERO nonlinear
+divergence, in any arm. Successful solves converge in 3-41 iterations, most
+under 12 -- so it is BIMODAL: normally trivial, occasionally straight through
+the cap. That is a PRECONDITIONER cliff. Newton's nonlinear machinery was never
+exercised on the failing steps, so no ladder result to date says anything about
+Newton as a nonlinear method.
+
+Three candidates, untested, cheapest first -- and (3) is NOT what
+`sourceAwareScaling` refuted (that scaled per CELL within a field; this is
+non-dimensionalising the field BLOCKS against each other):
+1. `-ksp_max_it 100` simply too low; raising it converts a hard failure into an
+   expensive success and separates "stalling" from "slow". One flag.
+2. The transport split is a VARIABLE preconditioner (`rtol 1e-2`, `max_it 200`
+   -- which is why FGMRES is mandatory). If that inner solve hits its own cap
+   the preconditioner is noise for that iteration. NOT instrumented. Same shape
+   as the chemJacobian bug: both sub-solves report converged while the outer
+   stagnates.
+3. No per-FIELD scaling of the matrix-free differencing. phi ~ 1e4 V,
+   n ~ 1e13-1e20. `MatCreateSNESMF` picks ONE h from ||u||.
+
+### MULTI-REGION UNDER NEWTON NEEDS NO MONOLITHIC ASSEMBLY -- MEASURED (2026-09-11)
+
+`coupledElectricPotential::updateCoeffs()` sets `valueFraction`, `refValue`
+(the mapped neighbour potential) and `refGrad` (the surface-charge jump)
+**unconditionally**; `useImplicit` only ADDITIONALLY fills `source()` for
+`manipulateMatrix`. So the Robin condition carries the interface physics
+explicitly, and the monolithic assembly is a LINEAR-SOLVER ACCELERATION, not a
+correctness requirement.
+
+Measured on needleDBD (`scheme explicit`, which is what Newton forces), by
+bumping the dielectric potential +1 V and re-evaluating the explicit gas
+residual:
+
+    interface cells (160):    d(res) rms 1.549      [base res rms 0]
+    interior  cells (71585):  d(res) rms 0.00354
+
+O(1) response at the interface; ~440x smaller one cell in, which is the
+non-orthogonal correction's stencil spread. **The explicit residual SEES the
+dielectric.**
+
+**Consequence:** the Newton path evaluates each region's phi residual on its
+own mesh with `fvc::` and packs them into the ragged tail --
+`lduPrimitiveMeshAssembly` is not needed at all, and Newton's own outer
+iteration converges the region coupling (exactly what the assembly does inside
+the linear solve, but at the NONLINEAR level, which also picks up the
+surface-charge and permittivity nonlinearity for free). This is generic by
+construction: indifferent to the dielectric's cell fraction, and `farField`
+Poisson-only regions are just another region with `laplacian(eps,phi) == 0`.
+
+**THE TRAP THIS CREATES:** `correctBoundaryConditions()` must be called on
+EVERY region before each trial-state residual evaluation, or the mapped
+`refValue`/`refGrad` reflect the last PICARD state. That is the same class as
+the `particleFlux_`/`convectiveFlux_` staleness (3c) -- a field populated in
+the Picard path going stale under Newton.
+
+Assembled ordering, from the live probe (gas FIRST, confirmed not inferred):
+
+    cellOffsets = 0  71745  77721     gas 71745 cells, dielectric 5976
+
+**A diagnostic note worth keeping.** The FIRST version of this probe compared
+interface-cell residual against interior-cell residual and read EXACTLY 0 at
+the interface -- equally consistent with "coupling perfect" and "nothing
+happening there". It separated no causes. The perturbation test has only one
+possible reading. ([[diagnostics-must-separate-causes]],
+[[silent-diagnostic-trap]])
+
 ### Surface charge under Newton -- ANSWERED
 
 Works. `thinDielectricOnElectrode` (pmma, 100 um, Vb=0) on the coarse streamer
