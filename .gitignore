@@ -148,6 +148,21 @@ validation/**/[0-9]*e-[0-9]*/
 validation/**/log.*
 validation/**/run.log
 validation/**/case.foam
+# Field SNAPSHOTS kept beside a case for restart/comparison (rule B1's use
+# side). Same content as a time directory, different name: 142 MB in one sweep.
+validation/**/.snapshot*/
+validation/**/gdb_newton/
+# ionTables sit next to plasmaTables and are generated the same way.
+validation/**/ionTables/
+# Solver logs written at the validation/ ROOT rather than inside a case --
+# `validation/pcfix_maxit_dt1e-9.log` alone is 33 MB. `log.*` above does not
+# match these because the name is <arm>.log, not log.<utility>.
+validation/*.log
+validation/**/*.log
+# Bulk analysis dumps at a case root (runaway.csv was 26 MB). Deliberately
+# `*/*.csv`, one level only: validation/<case>/profiles/*.csv is a kept,
+# hand-curated extraction and sits one level deeper.
+validation/*/*.csv
 # NOT `validation/**/*.foam`: `constant/argon_plasma.foam` is the MECHANISM,
 # a tracked input, and a blanket glob would silently drop it.
 validation/**/*.msh
@@ -165,6 +180,28 @@ validation/**/system/changeDictionaryDict
 verification/**/logs/
 verification/**/processor[0-9]*/
 verification/**/sweep.out
+
+# ------------------------------------------------------------- tutorials/ ----
+# The tutorials carry the same generated artefacts as the validation cases; the
+# stanza above already covers their dictionaries, this covers their run output.
+tutorials/**/constant/polyMesh/
+tutorials/**/constant/ionTables/
+#
+# NOT `tutorials/**/constant/plasmaTables/`, though smoke/ and validation/ both
+# ignore exactly that path. THE TUTORIALS MUST SHIP THEIR TABLES, because --
+# unlike every validation case, whose Allrun-serial regenerates them with
+# `--EN 1:55000:261 -o constant/plasmaTables` -- the tutorial Allrun-serial
+# does NOT (checked 2026-09-11: 0 of 1 Allrun files mention them). Ignoring
+# them would leave a fresh clone unable to start
+# positiveStreamer_LMEA_fast, which is THE coarse debugging bed at ~2 s/run and
+# the thing every Newton defect of 2026-09-11 was actually found on.
+# The mesh is a different matter and IS ignored above: those cases carry a
+# system/blockMeshDict and their Allrun does blockMesh + refineMesh.
+tutorials/**/postProcessing/
+tutorials/**/processor[0-9]*/
+tutorials/**/logs/
+tutorials/**/log.*
+tutorials/**/case.foam
 
 # Locally built PETSc (1.3 GB, ThirdParty/petsc-3.24.0). Built from source per
 # docs/getting_started/petsc4foam.md; PETSC_DIR is set by etc/bashrc.
