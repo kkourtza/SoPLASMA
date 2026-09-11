@@ -48,7 +48,7 @@ not an opinion. Every number below was paid for once; do not re-derive it by gue
 * **The density floor is a volumetric source**, not an initial condition: ions per clamped electron = N·k_iz·tau_i
   = 691 at Grubert 100 V, so a 1e11 floor bootstraps n_Arp ~ 6.9e13 and drove a sub-breakdown gap into local
   breakdown. Choose it by convergence (1e9 shipped). **Newton restrictions:** `driftDiffusion` transport only;
-  `multiRegionPoisson` **is supported** since commit 7df1cbe (phi in a ragged COO tail, no monolithic assembly —
+  `multiRegionPoisson` **is supported** since commit 10b7b2c (phi in a ragged COO tail, no monolithic assembly —
   memories saying otherwise are stale); the per-patch **surface-charge guard is unwritten**, so a dielectric case
   under `outerSolver newton` silently drops surface charge.
 

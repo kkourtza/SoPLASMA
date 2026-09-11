@@ -362,7 +362,7 @@ cannot supply.
 
 ### 4d. Why `g` being poorly known stops mattering
 
-`g` is the known weak spot: `093ffcb` found the regulator was an undamped
+`g` is the known weak spot: `deb0c96` found the regulator was an undamped
 integrator, and section 2c's search was inconclusive because `nu'` was known
 only to ~1.95x. **In a steady solve `g` sets the convergence RATE, not the
 answer** -- shown by the algebra in 4a, where the fixed point is independent of

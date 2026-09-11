@@ -159,7 +159,7 @@ Three buckets (B5), not interchangeable:
 baseline to make a test pass: that converts a failure into a silent, permanent wrong answer, and
 a baseline refreshed without a stated reason has stopped being a test.
 
-Mechanical evidence for the classification (`verification/` has been tracked since `99e2542`,
+Mechanical evidence for the classification (`verification/` has been tracked since `bec57c9`,
 2026-09-11, so git works here now — but the history starts there, and **mtimes are the real
 provenance**):
 

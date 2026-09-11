@@ -96,7 +96,7 @@ cannot vary area, so it must vary j -- and the normal-glow branch has
 * **Not indicted:** gamma (corroborated), alpha and k_iz (they predict the
   measured rate), the screening (tau_diel = 0.018 ns, 43x faster than
   ionisation, and `Emag` min ~ 0 in the bulk), the wall-flux closure, and the
-  charge-density fix of `23cd599`, without which none of these numbers would
+  charge-density fix of `4618a51`, without which none of these numbers would
   have been meaningful.
 
 ## Provenance

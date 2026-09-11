@@ -978,10 +978,10 @@ reader rather than merely being private mistakes.
 
 | claim | what is actually true |
 |---|---|
-| the legacy Townsend fit is calibrated for a REDUCED field, so it underflows at real discharge fields (comment in `plasmaTransport.C`, twice) | **Raw V/m is exactly what its constants expect**, for air at 1 atm: α = 19 cm⁻¹ at the 30 kV/cm breakdown field, 1.06e3 cm⁻¹ at 100 kV/cm, `mu = 2.398·E^-0.26` → 0.036 m²/V/s at 1e7 V/m, η = 3.4 cm⁻¹. All correct. The fit is gas- and pressure-SPECIFIC, not miscalibrated. The 2026-09-09 measurement that motivated gating it off (S_iz ~250 orders low) stands, but because it was taken in a 100 Pa argon glow — outside the fit's regime — not because of a field normalisation error. `d4db586` |
-| the Newton photoionization refusal (`8c7e572`) was verified | It was keyed on `photoionization_.valid()`, and that autoPtr is **always** valid — a case with no photoionization holds the null object `noPhotoionization`, TypeName `"none"`. The predicate was a constant true, so the guard **refused every case in existence** under Newton. Caught by it refusing `grubert_steady`, a 100 Pa argon glow with no photoionization key at all. `e07d0bb` |
+| the legacy Townsend fit is calibrated for a REDUCED field, so it underflows at real discharge fields (comment in `plasmaTransport.C`, twice) | **Raw V/m is exactly what its constants expect**, for air at 1 atm: α = 19 cm⁻¹ at the 30 kV/cm breakdown field, 1.06e3 cm⁻¹ at 100 kV/cm, `mu = 2.398·E^-0.26` → 0.036 m²/V/s at 1e7 V/m, η = 3.4 cm⁻¹. All correct. The fit is gas- and pressure-SPECIFIC, not miscalibrated. The 2026-09-09 measurement that motivated gating it off (S_iz ~250 orders low) stands, but because it was taken in a 100 Pa argon glow — outside the fit's regime — not because of a field normalisation error. `ef0a59b` |
+| the Newton photoionization refusal (`b07850d`) was verified | It was keyed on `photoionization_.valid()`, and that autoPtr is **always** valid — a case with no photoionization holds the null object `noPhotoionization`, TypeName `"none"`. The predicate was a constant true, so the guard **refused every case in existence** under Newton. Caught by it refusing `grubert_steady`, a 100 Pa argon glow with no photoionization key at all. `4547e95` |
 
-**The lesson, and it is the same one as rule 42:** `8c7e572` verified only that
+**The lesson, and it is the same one as rule 42:** `b07850d` verified only that
 the guard FIRES (by stripping a chemistry dict until it did). It never checked
 that the guard stays SILENT when it should — which is the half that was broken.
 A guard has two directions and both are part of the test. Both are now verified

@@ -84,7 +84,7 @@ cause, two symptoms, which is what made it cost a full session. A `reduce` after
 (`gAverage` over an empty local field is well defined); where it only found a global worst case for a message,
 delete it — `FatalErrorInFunction` aborts the job and names the rank. Audit the diff with
 `cd src && grep -rnE 'reduce\(|returnReduce|gSum\(|gMax\(|gMin\(|gAverage\(' --include=*.C .` (174 lines / 27 files
-at HEAD `04f815c`, 2026-09-11 — never quote a fixed count as a pass criterion).
+at HEAD `aed5dbe`, 2026-09-11 — never quote a fixed count as a pass criterion).
 
 **Test TWO decompositions.** The `.simple`/`.scotch` dicts do not exist in the tree; make them —
 `cp system/decomposeParDict system/decomposeParDict.scotch && sed 's/^method .*/method simple;/' system/decomposeParDict > system/decomposeParDict.simple`

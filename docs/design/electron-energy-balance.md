@@ -88,7 +88,7 @@ ELECTRONS, not into collisional dissipation. Two consequences:
 
 ## WHAT THIS MEANS FOR THE CLAMP -- my change was wrong in EFFECT
 
-`c131d8c` made `meanEnergyMax` derive from the table range (2644 eV) on the
+`8f5bab4` made `meanEnergyMax` derive from the table range (2644 eV) on the
 argument that the clamp exists to prevent EXTRAPOLATION, so its value should be
 the tabulated range. That argument is still correct as far as it goes, and the
 old hardcoded 100 eV was still an unsourced constant.

@@ -30,7 +30,7 @@ construction (§4, Task 1).
 **Nothing is running.** `ps` shows no `soPlasmaFoam`/`mpirun` (checked 2026-09-11).
 
 **But there is ~1 h of measurement on disk that nobody has read**, written after the
-last physics commit (`04f815c`, 17:50) at 18:47. It is in no commit, no `COMPARE.md`
+last physics commit (`aed5dbe`, 17:50) at 18:47. It is in no commit, no `COMPARE.md`
 verdict and no memory. Two arms were cut off MID-RUN:
 
 | arm | state when it stopped |
@@ -57,9 +57,11 @@ to prevent.
 | PCSHELL becoming the default | its 17 failures are all `-6 DIVERGED_LINE_SEARCH`, undiagnosed | diagnose the line search |
 | Dielectric cases under Newton | the per-patch surface-charge GUARD is unwritten — a dielectric case does not refuse, it **silently drops the surface charge** | write the guard (correctness hole, not an enhancement) |
 
-**Not blocked, but at risk: 205 commits are unpushed in this tree, and SoEEDF's branch
-`fix/mechc-audit-unitarity-bound` has NO UPSTREAM AT ALL — it has never been pushed.**
-The entire Newton/JFNK outer solver exists only on this machine.
+**SoPlasma is now PUSHED — resolved 2026-09-12.** All 208 commits are on `origin` at
+`37b6b6e`; the tree is 0 ahead / 0 behind. The Newton/JFNK solver is off this machine.
+
+**Still at risk: SoEEDF's branch `fix/mechc-audit-unitarity-bound` has NO UPSTREAM AT ALL**
+— it has never been pushed, so that work still exists only here.
 
 ---
 
@@ -70,9 +72,9 @@ Newest first. `[x]` carries the date it was completed.
 ### Task 1 — Newton-vs-Picard benchmark on `positiveStreamer_fixedMesh` *(user's order, agreed 2026-09-10)*
 Status: **IN FLIGHT, unanswered.** Needs a `COMPARE.md`. Already parametrised; no new code.
 
-- [x] 2026-09-11 — `kspMaxIt` exposed as a `newtonSolver` dict key, default 100 unchanged so nothing moves silently (`d78a8d2`).
+- [x] 2026-09-11 — `kspMaxIt` exposed as a `newtonSolver` dict key, default 100 unchanged so nothing moves silently (`f17a489`).
 - [x] 2026-09-11 — cap measured on `grubert2009_pseudo` (2000 cells, dt=1e-10, 400 steps, 398 SNES solves, identical otherwise): **100 → 42/398 failures (10.6%), 38 of them `DIVERGED_LINEAR_SOLVE`; 1000 → 4/398 (1.0%), ZERO linear-solve failures, +2.5% wall clock.** The 39 solves needing >100 needed 104–115 and **all converged** — 0.92% of 4,235 solves, each 4–15 iterations short.
-- [x] 2026-09-11 — the "preconditioner cliff"/bimodal-KSP diagnosis **RETRACTED**: the distribution looked bimodal only because the cap truncated it. True distribution median 4, p90 14, max 115 (`04f815c`).
+- [x] 2026-09-11 — the "preconditioner cliff"/bimodal-KSP diagnosis **RETRACTED**: the distribution looked bimodal only because the cap truncated it. True distribution median 4, p90 14, max 115 (`aed5dbe`).
 - [x] 2026-09-11 — PCSHELL (`assembledPmat false`) measured **better**: KSP median 3 / p90 6 / max 22 vs fieldsplit 4 / 14 / 115 (5x tighter tail), 8% fewer residual evaluations (113,208 vs 123,234).
 - [ ] **Read the five unrecorded arms in §2 and write their verdict into a `COMPARE.md`.**
 - [ ] **THE KEY EXPERIMENT — the warm-started ladder.** Measure the largest dt each solver survives at fixed accuracy with the Picard-era limiters off.
@@ -87,7 +89,7 @@ comparison is rigged for Picard (C3).
 ### Task 2 — surface charge / dielectrics under Newton, in `tutorials/.../needleDBD`
 Status: **unblocked as of 2026-09-11, not finished.** A correctness hole, not an enhancement.
 
-- [x] 2026-09-11 — multi-region blocker REMOVED (`7df1cbe`): phi lives in a ragged COO tail, **no monolithic assembly needed**. Measured why: the explicit `fvc::` residual already sees the neighbouring region through `coupledElectricPotential`'s Robin condition (interface-cell d(res) rms 1.549 vs 0.00354 one cell in), so Newton's own outer iteration converges the region coupling.
+- [x] 2026-09-11 — multi-region blocker REMOVED (`10b7b2c`): phi lives in a ragged COO tail, **no monolithic assembly needed**. Measured why: the explicit `fvc::` residual already sees the neighbouring region through `coupledElectricPotential`'s Robin condition (interface-cell d(res) rms 1.549 vs 0.00354 one cell in), so Newton's own outer iteration converges the region coupling.
 - [x] 2026-09-11 — five gates passed, three defects caught that were invisible without running: empty Pmat tail rows (zero diagonal → FPE in the first `PCApply`); a **fifth** `fvSchemes` catch-all, `"snGrad(n_.*)"`; and parallel refused loudly rather than silently building a preconditioner from disconnected subdomains.
 - [ ] **Write the per-patch surface-charge guard.** Until it exists a dielectric case under `outerSolver newton` silently drops the surface charge.
 - [ ] Re-run `validation/needle_mrgate` with `kspMaxIt` raised — its `DIVERGED_LINEAR_SOLVE` at 17:35 predates the key landing at 17:49.
@@ -115,6 +117,22 @@ valid track, not a lower-priority one.)
 - [x] 2026-09-12 — memory store SHARED: the `soplasma-scratch` memory directory is now a symlink
       to the `Projects-SoEEDF` one, so 129 memories resolve from both roots and the base cannot
       fork. `SoEEDF/.claude/{skills,agents,hooks,mined}` symlink here too.
+- [x] 2026-09-12 — **the push was unblocked.** It had been failing because **7 blobs exceeded
+      GitHub's 100 MB hard limit** (up to 317.5 MB), all `validation/*/logs/log.soPlasmaFoam`,
+      baked into 151 of the 208 unpushed commits. The `.gitignore` work stopped them
+      accumulating but git pushes HISTORY, so the whole push was rejected. Purged all run
+      output from the unpushed range with `git filter-repo` in a throwaway clone:
+      **2094 MB → 39.7 MB, 0 blobs over 50 MB.** The rewritten chain still descends from
+      origin's tip, so it went up as a **normal fast-forward, no `--force`**, and the working
+      tree was never touched — the solver running at the time was undisturbed.
+      **The purge set is derived, not hand-written**: purge = output-shaped AND not present in
+      the current tree, so tree identity holds BY CONSTRUCTION. A first attempt that
+      hand-wrote the path list silently dropped 414 tutorial `plasmaTables` files (breaking
+      `positiveStreamer_LMEA_fast`, the 2 s debugging bed) and 14 `testSnesJFNK` mesh files —
+      caught only because the tree hash was compared before and after. Verified identical:
+      `ce3db1a6…` before and after.
+      152 commits got new SHAs; the 102 hash citations across 42 docs and memories were
+      rewritten from filter-repo's commit map in the same change (D1/D2), leaving 0 stale.
 - [~] **The regression gate is HALF done.** `/regression-gate` now carries the procedure and the
       classification B5 requires (REGRESSION vs INTENDED IMPROVEMENT vs STALE BASELINE), but it is
       a skill I execute — **there is still no script and no CI hook**, so nothing compares

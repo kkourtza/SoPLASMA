@@ -271,5 +271,5 @@ that same run was 7-15x faster than anything else that day.
 ## Provenance
 
 Measured 2026-09-06 from the case logs named above. All timing numbers in this
-document post-date `b6a7102`; earlier timings are void because 45-50% of
+document post-date `b54ff16`; earlier timings are void because 45-50% of
 timesteps ran zero correctors.

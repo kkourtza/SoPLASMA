@@ -1,12 +1,12 @@
 # dim6
 
 ## Summary
-This dimension is the live state of work as of 2026-09-11 evening: what is done, what was cut off mid-flight, what is blocked, and what a PROGRESS.md must never let anyone re-attempt. The project is in the middle of ONE thread — does the Newton/JFNK outer solver pay against the segregated Picard sweep — and that thread was re-opened hours before the session ended: a hardcoded `-ksp_max_it 100` was found (commits d78a8d2, 04f815c, 2026-09-11 17:49/17:50) to have produced EVERY negative Newton verdict on record, so the 449k head-to-head ladder, the pseudo-transient dt ceiling and the needleDBD multi-region result are all INVALIDATED and awaiting re-test. Five re-test arms exist on disk (`validation/pcfix_maxit_dt1e-9`, `_dt1e-8`, `lad_*_k1000`) whose results are NOT in any commit, doc or memory — two of them were still writing at 18:47 and were cut off mid-run. The second live fact is mechanical: `git status` in the live tree takes 182 s and prints 1310 lines, of which 1109 are experiment output, so every "small testable commits" rule is dead on arrival until `validation/` run output is ignored the way `smoke/` already is. The Grubert DC-glow thread is settled-as-closed for every time-marched route except the pseudo-transient recipe, which has only ever been run to 9.5 ns of a microsecond-to-millisecond problem. No PROGRESS.md, TODO.md or equivalent exists in either tree; `docs/CAPABILITIES.md` (§4/4b/4c/5/6) is the de-facto inventory and PROGRESS.md must point at it rather than restate it.
+This dimension is the live state of work as of 2026-09-11 evening: what is done, what was cut off mid-flight, what is blocked, and what a PROGRESS.md must never let anyone re-attempt. The project is in the middle of ONE thread — does the Newton/JFNK outer solver pay against the segregated Picard sweep — and that thread was re-opened hours before the session ended: a hardcoded `-ksp_max_it 100` was found (commits f17a489, aed5dbe, 2026-09-11 17:49/17:50) to have produced EVERY negative Newton verdict on record, so the 449k head-to-head ladder, the pseudo-transient dt ceiling and the needleDBD multi-region result are all INVALIDATED and awaiting re-test. Five re-test arms exist on disk (`validation/pcfix_maxit_dt1e-9`, `_dt1e-8`, `lad_*_k1000`) whose results are NOT in any commit, doc or memory — two of them were still writing at 18:47 and were cut off mid-run. The second live fact is mechanical: `git status` in the live tree takes 182 s and prints 1310 lines, of which 1109 are experiment output, so every "small testable commits" rule is dead on arrival until `validation/` run output is ignored the way `smoke/` already is. The Grubert DC-glow thread is settled-as-closed for every time-marched route except the pseudo-transient recipe, which has only ever been run to 9.5 ns of a microsecond-to-millisecond problem. No PROGRESS.md, TODO.md or equivalent exists in either tree; `docs/CAPABILITIES.md` (§4/4b/4c/5/6) is the de-facto inventory and PROGRESS.md must point at it rather than restate it.
 
 ## Facts
 
-### NOTHING IS RUNNING and the newest work is uncommitted. `ps` shows no soPlasmaFoam/mpirun process. Last commit is 04f815c at 2026-09-11 17:50; the newest run output was written at 18:47 (`validation/lad_newton_dt2e-11_k1000.log`, `lad_newton_dt5e-11_k1000.log`). So ~1 h of measurement exists on disk with no commit, no COMPARE.md verdict and no memory entry — and two of those arms were cut off MID-RUN (7 and 3 steps).
-**Evidence:** `ps -eo pid,etime,cmd | grep soPlasmaFoam` → empty; `git log -1 --format='%h %ad'` → 04f815c 2026-09-11 17:50; `ls -lt /home/kkourtza/soplasma-scratch/validation/*.log | head -2` → 18:47
+### NOTHING IS RUNNING and the newest work is uncommitted. `ps` shows no soPlasmaFoam/mpirun process. Last commit is aed5dbe at 2026-09-11 17:50; the newest run output was written at 18:47 (`validation/lad_newton_dt2e-11_k1000.log`, `lad_newton_dt5e-11_k1000.log`). So ~1 h of measurement exists on disk with no commit, no COMPARE.md verdict and no memory entry — and two of those arms were cut off MID-RUN (7 and 3 steps).
+**Evidence:** `ps -eo pid,etime,cmd | grep soPlasmaFoam` → empty; `git log -1 --format='%h %ad'` → aed5dbe 2026-09-11 17:50; `ls -lt /home/kkourtza/soplasma-scratch/validation/*.log | head -2` → 18:47
 
 **Rule:** PROGRESS.md must open with a dated 'AS OF' block listing: nothing running, last commit hash+time, newest run-output mtime. On session start, run the three commands in exact_commands #1-#3 and reconcile — output newer than the last commit means a result nobody has read.
 
@@ -14,7 +14,7 @@ This dimension is the live state of work as of 2026-09-11 evening: what is done,
 
 
 ### THE CAP WAS THE BUG, and it is the single most important live fact. A hardcoded `-ksp_max_it 100` (`snesNewtonSolver.C:1530`) killed near-converged linear solves. On `grubert2009_pseudo` (2000 cells, dt=1e-10, 400 steps, 398 SNES solves, identical otherwise): kspMaxIt 100 → 42/398 failures (10.6%), 38 of them DIVERGED_LINEAR_SOLVE; kspMaxIt 1000 → 4/398 (1.0%), ZERO linear-solve failures, +2.5% wall clock. The 39 solves that needed >100 needed 104-115 and ALL converged — 0.92% of 4,235 solves, each 4-15 iterations short.
-**Evidence:** I reproduced the counts from the raw logs: `grep -c 'Nonlinear solve did not converge' validation/pcfix_base_dt1e-10.log` → 42 (converged 356); `pcfix_maxit_dt1e-10.log` → 4 (394); `pcfix_shell_dt1e-10.log` → 17 (381). Memory `ksp-cap-was-the-bug.md`; commits d78a8d2, 04f815c; docs/CAPABILITIES.md:401-472
+**Evidence:** I reproduced the counts from the raw logs: `grep -c 'Nonlinear solve did not converge' validation/pcfix_base_dt1e-10.log` → 42 (converged 356); `pcfix_maxit_dt1e-10.log` → 4 (394); `pcfix_shell_dt1e-10.log` → 17 (381). Memory `ksp-cap-was-the-bug.md`; commits f17a489, aed5dbe; docs/CAPABILITIES.md:401-472
 
 **Rule:** Treat every Newton/JFNK verdict recorded before 2026-09-11 17:49 as INVALID until re-measured with `kspMaxIt 1000`. Never quote a failure COUNT without the `due to <REASON>` breakdown.
 
@@ -22,7 +22,7 @@ This dimension is the live state of work as of 2026-09-11 evening: what is done,
 
 
 ### THE PCSHELL IS THE BETTER PRECONDITIONER and its remaining defect is named but undiagnosed: `assembledPmat false` gives KSP median 3 / p90 6 / max 22 against the fieldsplit's 4 / 14 / 115 (5x tighter tail) and 8% fewer residual evaluations (113,208 vs 123,234), but its 17 failures are ALL `-6 DIVERGED_LINE_SEARCH`. Fix the line search and it should beat everything.
-**Evidence:** `grep -o 'due to [A-Z_]*' validation/pcfix_shell_dt1e-10.log | sort | uniq -c` → 5722 CONVERGED_RTOL, 284 CONVERGED_FNORM_RELATIVE, 97 CONVERGED_SNORM_RELATIVE, 17 DIVERGED_LINE_SEARCH, zero DIVERGED_LINEAR_SOLVE. Commit 04f815c; memory ksp-cap-was-the-bug.md
+**Evidence:** `grep -o 'due to [A-Z_]*' validation/pcfix_shell_dt1e-10.log | sort | uniq -c` → 5722 CONVERGED_RTOL, 284 CONVERGED_FNORM_RELATIVE, 97 CONVERGED_SNORM_RELATIVE, 17 DIVERGED_LINE_SEARCH, zero DIVERGED_LINEAR_SOLVE. Commit aed5dbe; memory ksp-cap-was-the-bug.md
 
 **Rule:** Put 'diagnose the PCSHELL line-search failures (`assembledPmat false`)' on the task list as the cheapest remaining Newton win. It was previously unreachable in production because `snesBridge` prefers PCFIELDSPLIT whenever a Pmat is supplied.
 
@@ -62,7 +62,7 @@ This dimension is the live state of work as of 2026-09-11 evening: what is done,
 
 
 ### THE 1.15M WALL IS MESH SIZE, and its one proposed cause is REFUTED. Newton converges at 40k, 211k, 449k and does not at 1.15M — proven both warm (10 h CPU/rank, still step 1) and cold (3 h CPU/rank, stuck after handover), both at 99.9% CPU. The 'starved Schur complement' hypothesis (more `-fieldsplit_phi_ksp_max_it`) was tested at 449k, 10 steps at dt=1e-11: 2 cycles = 77 SNES/387 Krylov/121 s per step; 8 cycles = 73/373/138 s — -5% SNES, -4% Krylov, +14% wall clock, a net LOSS. Cause still unknown.
-**Evidence:** docs/CAPABILITIES.md:314-338 and the REFUTED row; commit db3ea59 'Refute the phi-split hypothesis for the 1.15M wall' (2026-09-11 15:15)
+**Evidence:** docs/CAPABILITIES.md:314-338 and the REFUTED row; commit abcd8d2 'Refute the phi-split hypothesis for the 1.15M wall' (2026-09-11 15:15)
 
 **Rule:** Never re-run 1.15M under Newton 'to see if it works' — answered twice, both ways. The open question is the PRECONDITIONER, not the case. Keep the inner phi count FIXED (`convergence_test skip`): a convergence-tested inner solve makes the Schur operator non-linear in b, which is what raised the original SIGFPE.
 
@@ -117,8 +117,8 @@ This dimension is the live state of work as of 2026-09-11 evening: what is done,
 **Cost:** Thread-switching. Memory `never-switch-threads` exists because it happened.
 
 
-### TASK 2 — surface charge / dielectrics under Newton in `tutorials/plasma/soPlasmaFoam/needleDBD`. The multi-region blocker was REMOVED on 2026-09-11 (commit 7df1cbe, 17:33: phi in a ragged COO tail, no monolithic assembly), and `validation/needle_mrgate` then ran: handover 'Picard warm-up COMPLETE at t = 2e-12 … PERMANENT', then SNES reason -3 (DIVERGED_LINEAR_SOLVE). That run is at 17:35, i.e. BEFORE the `kspMaxIt` key landed at 17:49, and the memory records that its second linear solve hit 100 having already dropped ||F|| 4.2x on the first. It has NOT been re-run with the cap raised. Separately, the per-patch surface-charge GUARD is still unwritten: a dielectric case under `outerSolver newton` does not refuse — it silently drops the surface charge.
-**Evidence:** `grep -in 'multiRegion|handover|reason -3' validation/needle_mrgate/log.mrgate2` lines 29/229/963; commit 7df1cbe 17:33 vs d78a8d2 17:49; memory surface-charge-under-newton-test-in-needledbd.md; docs/CAPABILITIES.md §6 item 2 'dielectric cases under Newton are currently unguarded — a correctness hole, not an enhancement'
+### TASK 2 — surface charge / dielectrics under Newton in `tutorials/plasma/soPlasmaFoam/needleDBD`. The multi-region blocker was REMOVED on 2026-09-11 (commit 10b7b2c, 17:33: phi in a ragged COO tail, no monolithic assembly), and `validation/needle_mrgate` then ran: handover 'Picard warm-up COMPLETE at t = 2e-12 … PERMANENT', then SNES reason -3 (DIVERGED_LINEAR_SOLVE). That run is at 17:35, i.e. BEFORE the `kspMaxIt` key landed at 17:49, and the memory records that its second linear solve hit 100 having already dropped ||F|| 4.2x on the first. It has NOT been re-run with the cap raised. Separately, the per-patch surface-charge GUARD is still unwritten: a dielectric case under `outerSolver newton` does not refuse — it silently drops the surface charge.
+**Evidence:** `grep -in 'multiRegion|handover|reason -3' validation/needle_mrgate/log.mrgate2` lines 29/229/963; commit 10b7b2c 17:33 vs f17a489 17:49; memory surface-charge-under-newton-test-in-needledbd.md; docs/CAPABILITIES.md §6 item 2 'dielectric cases under Newton are currently unguarded — a correctness hole, not an enhancement'
 
 **Rule:** Next concrete action: re-run `needle_mrgate` with `kspMaxIt 1000` before concluding anything about multi-region Newton; and land the cheap half (a boundary walk that refuses charging surfaces under Newton) independently of the residual work.
 
@@ -158,7 +158,7 @@ This dimension is the live state of work as of 2026-09-11 evening: what is done,
 
 
 ### REFUTED — GRUBERT DC-GLOW ROUTES (CAPABILITIES 4b, settled 2026-09-11): voltage+ballast CANNOT reach the operating point (at the CVC minimum dR/dI = 0 so the load line is TANGENT and selects nothing — Almeida & Benilov 2017, plus ~10 of our arms at seriesResistor 1e8 and seriesRC 1e6/1e8/1e9/5e9, every one dying at 150/150 correctors with dt collapsing ~25,000x); current control TIME-MARCHED is sound but insufficient (all six `grubert2009_iset*` arms stalled at t~9.5e-07, `grubert2009_iset` after 80,983 steps with 23,575 discards); a gentler ignition ramp helps but does not solve (2.04e7 V/s ignited quasi-statically at -137.7 V and cut rejections 30,547→1,727, then still overshot to 718x setpoint); `ddtSchemes steadyState` as a case setting DOES NOT EXIST — the solver refuses it because ddt IS the diagonal; `relaxationFactors` added by hand BREAKS the working recipe (9472/9472 converged → 0/10) because SoPLASMA already runs adaptive Aitken outer relaxation.
-**Evidence:** docs/CAPABILITIES.md:276-308; commits 970a4ac, f164c8d, 6189f4f (2026-09-11 13:48-14:13)
+**Evidence:** docs/CAPABILITIES.md:276-308; commits 787c912, 94689f1, 2e1b1d0 (2026-09-11 13:48-14:13)
 
 **Rule:** Reproduce this table in PROGRESS.md. The ONE route still open is the PSEUDO-TRANSIENT recipe (BDF2 + `adjustTimeStep false` + fixed dt + currentSource + NO relaxationFactors), which ran 9472 consecutive converged steps with 0 failures and 4 correctors/step — but only to 9.5 ns of a us-ms problem, at ~5 h per us. STABLE BUT UNPROVEN, not closed.
 
@@ -218,7 +218,7 @@ This dimension is the live state of work as of 2026-09-11 evening: what is done,
 
 **Rule:** PROGRESS.md's 'how to resume' block: kill or finish running arms (the build guard refuses while they run), `./build-all.sh` → BUILD-COMPLETE, then verify the handover banner in the first Newton arm.
 
-**Cost:** Recorded: a silent dlopen failure went unnoticed in a reference run; and 21,174 steps once ran Picard while believed to be Newton (commit b29c8a0).
+**Cost:** Recorded: a silent dlopen failure went unnoticed in a reference run; and 21,174 steps once ran Picard while believed to be Newton (commit 68688f9).
 
 
 ## Traps

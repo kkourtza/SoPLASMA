@@ -200,7 +200,7 @@ Python is **`~/ct-env/bin/python`**, not the system python.
 * **Verify the handover MESSAGE, never assume it.** "outerSolver newton:
   Picard warm-up COMPLETE ... this handover is PERMANENT" is the only proof an
   arm is actually Newton. Its absence once meant 21,174 steps silently ran
-  Picard (commit b29c8a0).
+  Picard (commit 68688f9).
 * **`libplasmaNewtonSolverPETSc` needs BOTH bashrcs.** Without the project's
   own `etc/bashrc`, PETSC_DIR is unset, `libpetsc.so.3.24` is not found, the
   dlopen fails silently and SNES reports "Registered types: 0()".
@@ -558,7 +558,7 @@ happening there". It separated no causes. The perturbation test has only one
 possible reading. ([[diagnostics-must-separate-causes]],
 [[silent-diagnostic-trap]])
 
-### MULTI-REGION UNDER NEWTON: DONE 2026-09-11 (commit 7df1cbe)
+### MULTI-REGION UNDER NEWTON: DONE 2026-09-11 (commit 10b7b2c)
 
 `outerSolver newton` now accepts `multiRegionPoisson`. The dielectric and
 far-field regions are packed into the RAGGED TAIL of the DOF layout -- phi

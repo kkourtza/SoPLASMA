@@ -126,7 +126,7 @@ This dimension covers what a numerical-analysis agent and a physics-validator ag
 
 
 ### A HARDCODED `-ksp_max_it 100` produced EVERY negative JFNK verdict. Measured on grubert2009_pseudo (2000 cells, dt=1e-10, 400 steps, same 398 SNES solves): kspMaxIt 100 -> 10.6% failure rate, 38 DIVERGED_LINEAR_SOLVE, KSP median/p90/max 4/14/89, 121,161 evals, 326.1 s. kspMaxIt 1000 -> 1.0% rate, 0 linear-solve failures, 4/14/115, 123,234 evals, 334.2 s. The 38 killed solves needed 104 to 115 iterations — 4 to 15 short, 0.92% of 4,235 solves. PETSc reports it as DIVERGED_LINEAR_SOLVE, which reads as failure but is a budget expiring.
-**Evidence:** memory ksp-cap-was-the-bug; commits d78a8d2, 04f815c; snesNewtonSolver.C:1530
+**Evidence:** memory ksp-cap-was-the-bug; commits f17a489, aed5dbe; snesNewtonSolver.C:1530
 
 **Rule:** Raise `kspMaxIt` to 1000 before diagnosing any DIVERGED_LINEAR_SOLVE. Never read a tail statistic off a CAPPED distribution — the 'bimodal preconditioner cliff' was the cap truncating the distribution; the true one is median 4, p90 14, max 115.
 
@@ -134,7 +134,7 @@ This dimension covers what a numerical-analysis agent and a physics-validator ag
 
 
 ### The physics-based PCSHELL is the STRONGER preconditioner, contrary to an earlier reading. Same bed: PCSHELL (`assembledPmat false`) gives KSP median/p90/max 3/6/22 against PCFIELDSPLIT's 4/14/115 (5x tighter tail) and 113,208 vs 121,161 residual evaluations (8% fewer), with 0 linear-solve failures. Its 4.3% headline rate is ALL line-search failures (17 of them, reason -6) — a different defect. Both `kspMaxIt` and `assembledPmat` are now reachable from the `newtonSolver` dict, defaulting to prior behaviour.
-**Evidence:** memory ksp-cap-was-the-bug (table); commits d78a8d2, 04f815c; docs/CAPABILITIES.md
+**Evidence:** memory ksp-cap-was-the-bug (table); commits f17a489, aed5dbe; docs/CAPABILITIES.md
 
 **Rule:** Compare preconditioners by the REASON BREAKDOWN (-3 linear solve / -5 maxIt / -6 line search) and the KSP iteration distribution, never by a single failure-rate number.
 
@@ -397,7 +397,7 @@ This dimension covers what a numerical-analysis agent and a physics-validator ag
 **Cost:** Four separate 'measurements that turned out to be measuring nothing' in one day, now rule 42.
 
 
-### NEWTON'S CURRENT RESTRICTIONS, verified: it supports only `singleRegionPoisson` (needleDBD refuses because its regionProperties declares a `dielectric` MESH REGION) and only `driftDiffusion` transport models (FatalError at construction otherwise). Surface charge ITSELF works under Newton — proved with `thinDielectricOnElectrode` (pmma, 100 um, Vb=0) on the coarse streamer bed, exercising the surfCharge field, the chargingSurface wall flux and the Robin potential condition. The photoionisation refusal guard was keyed on `photoionization_.valid()`, and that autoPtr is ALWAYS valid (a case with none holds the null object `noPhotoionization`, TypeName "none"), so the guard refused every case in existence until commit e07d0bb.
+### NEWTON'S CURRENT RESTRICTIONS, verified: it supports only `singleRegionPoisson` (needleDBD refuses because its regionProperties declares a `dielectric` MESH REGION) and only `driftDiffusion` transport models (FatalError at construction otherwise). Surface charge ITSELF works under Newton — proved with `thinDielectricOnElectrode` (pmma, 100 um, Vb=0) on the coarse streamer bed, exercising the surfCharge field, the chargingSurface wall flux and the Robin potential condition. The photoionisation refusal guard was keyed on `photoionization_.valid()`, and that autoPtr is ALWAYS valid (a case with none holds the null object `noPhotoionization`, TypeName "none"), so the guard refused every case in existence until commit 4547e95.
 **Evidence:** docs/CAPABILITIES.md section on surface charge under Newton; docs/design/newton-ignition-experiments.md:974-997 (section 26); memory newton-vs-picard-benchmark-state
 
 **Rule:** Before offering Newton for a new case, check for multiRegionPoisson, non-driftDiffusion transport models, photoionisation and the legacy Townsend `!rates_` source. Dielectric cases under Newton are currently UNGUARDED — a correctness hole, not an enhancement.
@@ -406,7 +406,7 @@ This dimension covers what a numerical-analysis agent and a physics-validator ag
 
 
 ### THE LEGACY TOWNSEND FIT IS NOT MISCALIBRATED — a claim of the author's own that was committed twice and then corrected. `alpha = A*exp(-2.73e7/Emag)` expects RAW V/m and is correct for air at 1 atm: alpha = 19 cm^-1 at the 30 kV/cm breakdown field, 1.06e3 cm^-1 at 100 kV/cm, mu = 2.398*E^-0.26 -> 0.036 m^2/V/s at 1e7 V/m, eta = 3.4 cm^-1. The fit is gas- and pressure-SPECIFIC, not miscalibrated. The 2026-09-09 measurement that motivated gating it off (S_iz ~250 orders low) stands, but because it was taken in a 100 Pa ARGON glow — outside the fit's regime.
-**Evidence:** docs/design/newton-ignition-experiments.md:974-997 (section 26); commit d4db586
+**Evidence:** docs/design/newton-ignition-experiments.md:974-997 (section 26); commit ef0a59b
 
 **Rule:** Distinguish 'a correlation applied outside its regime' from 'a correlation with wrong units'. Check the gas and pressure the fit was built for before concluding a normalisation error.
 

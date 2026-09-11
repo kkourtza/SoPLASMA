@@ -3,7 +3,7 @@
 **Status: PARTLY SUPERSEDED, 2026-09-11. Section 2's "no new code" first step
 DOES NOT EXIST.** The plan proposes `ddtSchemes { default steadyState; }` as a
 case setting. It was tried the DAY AFTER this plan was written and the solver
-now refuses it outright (`plasmaTimeControl.C`, commit `0ccdea1`, 2026-09-09):
+now refuses it outright (`plasmaTimeControl.C`, commit `028ec73`, 2026-09-09):
 
 > "The ddt term IS the diagonal of a segregated species transport equation.
 > Removing it leaves rows with no diagonal for any species without an implicit

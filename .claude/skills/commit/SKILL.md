@@ -108,7 +108,7 @@ and the date), or STALE BASELINE (say so explicitly). If you cannot tell which â
 ask**. Never update a baseline to make a test pass.
 
 **6. Write the message: WHAT changed, WHY, and the measured number.**
-Repo style (see `615adb0`, `5251c2d`, `d78a8d2`): a subject that states the fact, an
+Repo style (see `6505eb4`, `0f88693`, `f17a489`): a subject that states the fact, an
 optional `scope:` prefix, ~72 chars; then the reason, the number with its date (D2), the
 rule ID the change implements, and what verification was actually run. `-F -` reads the
 message from stdin, so the blank lines and the footer survive.

@@ -56,7 +56,7 @@ echo "last commit $(date -d @$C '+%F %H:%M')   newest output $(date -d @$M '+%F 
 
 Runtime 0.01 s. **Output newer than the last commit means a measurement exists with no
 commit, no COMPARE.md verdict and no memory** — the exact state at 2026-09-11 18:47
-against commit 04f815c at 17:50, where ~1 h of Newton measurement sat unread and two arms
+against commit aed5dbe at 17:50, where ~1 h of Newton measurement sat unread and two arms
 had been cut off mid-run. Read it before launching anything: a completed measurement
 silently redone is the cost R0 exists to prevent.
 
