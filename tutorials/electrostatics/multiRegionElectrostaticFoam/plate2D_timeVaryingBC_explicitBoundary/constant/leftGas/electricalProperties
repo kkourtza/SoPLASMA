@@ -1,0 +1,29 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA                                                                    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant/leftGas";
+    object      electricalProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../../configuration/config"
+
+// This region's RELATIVE PERMITTIVITY, and nothing else.
+//
+// Same place and same shape as constant/<region>/thermophysicalProperties in
+// OpenFOAM's own chtMultiRegionFoam: constant/<region>/ is that region's
+// physical description, one small file per physics. Adding a region means
+// adding a DIRECTORY -- no global file is edited -- and adding a physics (a
+// solid heat solve, say) means adding a file next to this one.
+//
+// It replaces a global constant/electromagneticsProperties that carried a
+// sub-dictionary per region and was then copied byte-identically into every
+// region directory by Allrun, so every copy held every region's data. Those
+// copies were never actually read.
+epsilonR    $epsilonRleftGas;
+
+// ************************************************************************* //

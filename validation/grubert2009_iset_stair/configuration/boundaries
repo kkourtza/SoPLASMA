@@ -1,0 +1,110 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Grubert 2009 dc glow -- the SEMANTIC boundary description.                  |
+|                                                                              |
+|  G2: this says WHAT each surface IS. Every dictionary in 0/ is DERIVED from   |
+|  it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.                   |
+|                                                                              |
+|  Only the two electrodes are declared. side_lo/side_hi are `symmetryPlane`   |
+|  and front/back are `empty` -- CONSTRAINT patches, which carry their own      |
+|  condition by construction and are not a semantic choice.                     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+// The waveform is written LITERALLY, not as $appliedVoltage. A $var nested
+// inside a compound value is not expanded by OpenFOAM's dictionary reader --
+// `table ((0 0) ($t $V))` fails -- so the gap voltage is stated once, here,
+// and nowhere else.
+//
+// -500 V on the CATHODE, anode grounded: Grubert's polarity. The 100 ns ramp
+// is numerical hygiene only, 45x shorter than the 4.5 us ion transit time, so
+// it cannot influence the steady state this case is run to measure.
+cathode
+{
+    // BALLASTED, not driven: the potential is an OUTPUT of the external
+    // circuit declared in system/plasmaSimulationControls. See
+    // docs/design/external-circuit-plan.md for why a fixed-voltage gap above
+    // breakdown cannot select an operating point.
+    kind        currentDrivenElectrode;
+
+    // THE CURRENT IS THE CONTROL, and that is the whole point.
+    //
+    // A VOLTAGE ramp through a ballast OVER-DRIVES the gap: V keeps rising past
+    // the self-sustaining value, alpha*d reaches 2-4x its equilibrium, and the
+    // net growth rate gamma = nu_iz - nu_loss runs to 1.47e9 1/s. The stability
+    // analysis (tools/glow_stability.py, 2026-09-06) shows NO series R, RL or
+    // RLC circuit stabilises that state, because the blocking condition
+    // nu' > gamma/V contains no circuit parameter.
+    //
+    // A CURRENT ramp cannot over-drive: the discharge can never draw more than
+    // I_set, so gamma stays ~ 0 BY CONSTRUCTION -- and at gamma = 0 the same
+    // analysis says every circuit is STABLE, including the ballast that ran
+    // away. This reaches the operating point FROM SCRATCH, with no seeding.
+    circuit
+    {
+        type          currentSource;
+
+        // MAGNITUDE in amperes; the polarity comes from `compliance`.
+        //
+        // Ramped, not stepped, so the discharge tracks its own V-I
+        // characteristic quasi-statically. 1e-8 -> 1.022e-6 A over 10 us:
+        // the endpoint is Grubert's operating current (j = 0.511 mA/cm^2 on
+        // this 2.0e-3 cm^2 electrode), and 10 us is slow against the 3.7-6.7 us
+        // ion transit so the ion profile can follow.
+        // A STAIRCASE, NOT A RAMP. The linear ramp failed for a measured
+        // reason: through ignition its e-folding time was 945 ns against an
+        // ION TRANSIT of 3.7-6.7 us, so it drove the current 4-7x FASTER than
+        // the ions could follow. The discharge was never quasi-static, gamma
+        // never returned to 0, and the loop response bound tau_loop = C_gap/g
+        // was then 238x too slow to contain the excursion.
+        //
+        // Holding each level for 12 us -- 2-3 ion transits -- lets gamma relax
+        // to 0, which is the regime where the stability analysis says EVERY
+        // circuit is stable. Each plateau is then a genuine steady state and
+        // its (I, V) is a real point on the V-I characteristic.
+        //
+        // The risers are RAMPED over 4 us, not stepped: a discontinuous jump in
+        // I_set would create exactly the fast excursion this design avoids.
+        setCurrent    table ((0 5e-08) (2e-06 5e-08) (1.4e-05 5e-08) (1.8e-05 2e-07) (3e-05 2e-07) (3.4e-05 5e-07) (4.6e-05 5e-07) (5e-05 1.022e-06) (6.2e-05 1.022e-06) (6.6e-05 2e-06) (7.8e-05 2e-06));
+
+        // The supply rail, SIGNED. Grubert's gap sits at -500 V, so -1500 gives
+        // 3x headroom for the pre-ignition charging excursion.
+        compliance    -1500;
+
+        // ZERO, AND THIS IS THE LOAD-BEARING SETTING.
+        //
+        // With C_gap alone (1.77e-16 F) an excess conduction current discharges
+        // the gap in 0.286 ns -- FASTER than the 0.68 ns ionisation growth, so
+        // the source can quench a fast excursion. Adding the 5e-14 F shunt that
+        // the ballasted arms used makes that 80.9 ns, 119x TOO SLOW, and is
+        // exactly why they could not hold the discharge.
+        //
+        // The cost is a fast pre-ignition ramp, dV/dt = I_set/C_gap, but that
+        // is harmless here BECAUSE THE CURRENT IS PINNED: the gap is never
+        // over-driven in current, which is the quantity that matters.
+        capacitance   0;
+    }
+
+    gammaSEE            0.06;
+}
+
+anode
+{
+    kind        groundedElectrode;
+
+    // Grubert's anode electron reflection. This is a LARGE value and the
+    // reason V4 is worth running: nothing in this framework had ever exercised
+    // a non-zero reflection coefficient before (framework-state gap 16).
+    electronReflection  0.36;
+}
+
+// NOT DECLARED: their ion reflection of 5e-4. The ion wall condition takes no
+// reflection coefficient, and at 5e-4 it changes the ion wall flux by 0.05% --
+// far below the ~5% spread between our Boltzmann coefficients and theirs. It
+// is recorded here so its absence is a stated choice rather than an omission.

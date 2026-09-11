@@ -1,0 +1,108 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Grubert 2009 dc glow -- the SEMANTIC boundary description.                  |
+|                                                                              |
+|  G2: this says WHAT each surface IS. Every dictionary in 0/ is DERIVED from   |
+|  it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.                   |
+|                                                                              |
+|  Only the two electrodes are declared. side_lo/side_hi are `symmetryPlane`   |
+|  and front/back are `empty` -- CONSTRAINT patches, which carry their own      |
+|  condition by construction and are not a semantic choice.                     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+// The waveform is written LITERALLY, not as $appliedVoltage. A $var nested
+// inside a compound value is not expanded by OpenFOAM's dictionary reader --
+// `table ((0 0) ($t $V))` fails -- so the gap voltage is stated once, here,
+// and nowhere else.
+//
+// -500 V on the CATHODE, anode grounded: Grubert's polarity. The 100 ns ramp
+// is numerical hygiene only, 45x shorter than the 4.5 us ion transit time, so
+// it cannot influence the steady state this case is run to measure.
+cathode
+{
+    // BALLASTED, not driven: the potential is an OUTPUT of the external
+    // circuit declared in system/plasmaSimulationControls. See
+    // doc/external-circuit-plan.md for why a fixed-voltage gap above
+    // breakdown cannot select an operating point.
+    // BALLAST, ON THE VALIDATED pseudoSteady NUMERICS. 2026-09-08.
+    //
+    // WHY BACK TO A BALLAST. The capacitance pair (_ps_C25e15 / _ps_C5e15)
+    // established the pre-ignition ramp really is the trigger -- with
+    // dV/dt cut from 282 to 20 V/us the arm reached t = 7 us with 7841
+    // consecutive converged steps, 14 correctors against a 150 cap, n_e
+    // growing 8x slower (7.9e5 vs 6.5e6 /s), positive space charge of 200x
+    // (n_Arp 2.1e13 vs n_e 1e11) and the field concentrating at the cathode
+    // (E_cath/E_anode 1.24 -> 1.57 -> 2.63). That is an INCIPIENT CATHODE
+    // FALL, the first in this effort.
+    //
+    // It still ran away at ignition: I_cond/I_set went 0.85 -> 5.15 in 200 ns
+    // while V moved 3 V. The reason is structural, and it is the tension the
+    // old `capacitance 0` note half-saw: CAPACITANCE BUYS A SLOW RAMP AT THE
+    // COST OF A SLOW REGULATOR. I_set - I_cond = C dV/dt, so the larger C
+    // that tames the ramp is exactly what stops V from responding when the
+    // conductance runs away.
+    //
+    // A BALLAST HAS NO SUCH TRADE-OFF. V_gap = V_src - I*R is ALGEBRAIC:
+    // the response is instantaneous, so a doubling current drops the gap
+    // voltage in the same step, while the RAMP RATE is set independently by
+    // dV_src/dt. Slow ramp AND fast authority. It is also what Grubert
+    // actually used, and what every real dc glow rig uses.
+    //
+    // AND IT HAS NEVER HAD A CLEAN RUN. Every earlier ballast case predates
+    // `b6a7102`, in which 45-50% of timesteps executed ZERO correctors while
+    // `circuit.update()` ran anyway -- so the circuit advanced at ~2x the
+    // rate of the plasma in grubert2009_ballast, ballast_std, R1e9, R5e9,
+    // fix_n11, fix_n8, fix_fast and ballastCo_*. Their circuit coupling is
+    // void. This is that configuration run properly, on the pseudoSteady
+    // recipe (CompleteFlux, BDF2, fixed dt = 1 ns, adjustTimeStep false, no
+    // relaxationFactors) that has now logged ~9600 converged steps unbroken.
+    kind        ballastedElectrode;
+
+    circuit
+    {
+        // NO SHUNT CAPACITANCE -- the whole point is algebraic authority.
+        type          seriesResistor;
+
+        // TWO-LEG RAMP. Leg 1 crosses to -100 V in 1 us: that is safely
+        // below the measured -121 V breakdown, so nothing happens and no
+        // time is wasted. Leg 2 then creeps at 20 V/us -- the rate the
+        // capacitance arm proved gentle enough to grow space charge -- so
+        // ignition occurs near breakdown, where the net avalanche rate is
+        // ~0 by definition, with 4-7 us ion transits to build the fall.
+        sourceVoltage table ((0 0) (1e-6 -100) (26e-6 -600));
+
+        // R = 1e9 Ohm. At the expected operating point (I_op ~ 1e-6 A) this
+        // drops 1000 V, so the gap sits a few hundred volts below V_src and
+        // the load line crosses the CVC on its POSITIVE-SLOPE branch. A
+        // ballast stabilises negative differential resistance only while
+        // R > |dV/dI|, and a normal glow's CVC is nearly flat, so erring
+        // large is the safe direction. Earlier arms tried 1e8, 1e9, 5e9 --
+        // all void for the corrector bug above, so none of them measured
+        // this.
+        resistance    1e9;
+    }
+
+    gammaSEE            0.06;
+}
+
+anode
+{
+    kind        groundedElectrode;
+
+    // Grubert's anode electron reflection. This is a LARGE value and the
+    // reason V4 is worth running: nothing in this framework had ever exercised
+    // a non-zero reflection coefficient before (framework-state gap 16).
+    electronReflection  0.36;
+}
+
+// NOT DECLARED: their ion reflection of 5e-4. The ion wall condition takes no
+// reflection coefficient, and at 5e-4 it changes the ion wall flux by 0.05% --
+// far below the ~5% spread between our Boltzmann coefficients and theirs. It
+// is recorded here so its absence is a stated choice rather than an omission.

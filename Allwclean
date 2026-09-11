@@ -1,0 +1,50 @@
+#!/bin/bash
+
+#---------------------------------------------
+#  Allwclean script for foamPlasmaMultiRun suite
+#  Cleans all libraries and the solver
+#---------------------------------------------
+
+# Set colors
+GREEN='\033[1;32m'
+NC='\033[0m'
+
+set -e	# Exit on first error
+
+# Move to script directory (in case called from elsewhere)
+cd "${0%/*}" || exit 1
+
+# Libraries
+echo "Cleaning Libraries..."
+echo "-------------------------------------"
+echo ""
+
+wclean libso src/profilers
+wclean src/constants
+wclean libso src/numerics
+./src/models/Allwclean
+./src/bcs/Allwclean
+wclean libso src/tools
+
+# Executables
+echo ""
+echo "-------------------------------------"
+echo "Cleaning Executables..."
+echo "-------------------------------------"
+echo ""
+
+./src/applications/Allwclean
+
+# ThirdParty
+echo ""
+echo "-------------------------------------"
+echo "Cleaning ThirdParty..."
+echo "-------------------------------------"
+echo ""
+
+./ThirdParty/Allwclean
+
+echo ""
+echo "-------------------------------------"
+echo "Clean complete."
+echo "-------------------------------------"

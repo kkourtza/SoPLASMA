@@ -1,0 +1,137 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    constant;
+    object      plasmaProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+plasmaTimeControl
+{
+    adjustTimeStep                  $adjustTimeStep;
+
+    // OFF for the Option 4 gate: the stiff integrator must supply the
+    // stability the limiter was buying by shrinking dt ~12x.
+    limitEnergyRelaxation           false;
+
+    limitDielectricRelaxationRatio  $limitDielectricRelaxationRatio;
+    printDielectricRelaxationRatio  $printDielectricRelaxationRatio;
+    maxDielectricRelaxationRatio    $maxDielectricRelaxationRatio;
+    
+    limitSpeciesCo                  $limitSpeciesCo;
+    printSpeciesCo                  $printSpeciesCo;
+    maxSpeciesConvectiveCo          $maxSpeciesCo;
+    maxSpeciesDiffusiveCo           $maxSpeciesCo;
+    
+    limitChemistryCo                $limitChemistryCo;
+    printChemistryCo                $printChemistryCo;
+    maxChemistryCo                  $maxChemistryCo;
+
+    maxVoltageRisePerStep           $maxVoltageRisePerStep;
+    voltagePatchName                "cathode";
+}
+
+// Convergence of the OUTER (Poisson <-> species) loop.
+//
+// Within a timestep the field and the densities are lagged relative to each
+// other. Converging that loop is what makes the scheme second order: with a
+// single corrector it is FIRST order whatever ddtSchemes says, because no
+// amount of ddt accuracy repairs a lag. Measured on the shipped benchmark:
+// p = 0.87 at one corrector, p = 1.94 converged.
+//
+// So temporal order is not selected, it is ACHIEVED -- and the run reports
+// which it got rather than promising one.
+outerCoupling
+{
+    // converged -> chase the coupling residual, second order
+    // lagged    -> one corrector, deliberately first order, for scoping runs
+    target            converged;
+
+    // ADAPTIVE RELAXATION ON EXPLICITLY, for BOTH arms.
+    //
+    // It defaults to ON only under LMEA, so the LFA arm ran with the outer
+    // loop UNDAMPED and the contraction diagnostic reported `residual GREW`
+    // (rho = 1.0000001) at every step from t = 1.1e-7 s. The timestep governor
+    // then cut dt by 0.794 per step and printed "too slow to finish", with
+    // every physical limiter still at ~3% of its cap (Co_conv 0.05 of 1.5).
+    // Measured 2026-09-06. Set here rather than relying on the default so the
+    // two arms are numerically identical apart from electronEnergyModel.
+    adaptiveRelaxation  true;
+
+    // The coupling residual to reach. MUST be comfortably above the
+    // linear-solver tolerance (>= 10x); the solver refuses otherwise. An outer
+    // tolerance at the inner solver's own convergence floor can never be met,
+    // so the loop silently runs to maxCorrectors every step -- a fixed
+    // iteration count wearing the name of a convergence test.
+    // MEASURED ON THIS CASE 2026-09-05: at 1e-8 the loop exhausted its 20
+    // correctors and retryStep DISCARDED 1006 of ~4200 steps -- and 1001 of
+    // those 1006 retries succeeded on the FIRST halving, which is the
+    // signature of a target just out of reach rather than of real stiffness.
+    // dt was pinned near 7e-12 s by "rejection memory", putting a 45 us run at
+    // ~6e6 steps. 1e-6 is still 1e4 above the linear-solver floor of 1e-10.
+    tolerance         1e-6;
+
+    // A CAP, not a target: the loop exits as soon as the residual is met.
+    // 150, not 60. TUNED on the LFA arm 2026-09-06 (../TUNE_LFA.md): at 60
+    // it rejected 15.9% of steps, all "outer loop did not converge"; at 150 it
+    // rejects 5.1%. Damping harder instead (relaxOmegaStart 0.4 / 0.2) reached
+    // only 7.6% / 7.3%, so the loop needed ITERATIONS, not more damping --
+    // which is what separating those two knobs was for. Applied to BOTH arms:
+    // tuning one alone would buy a running LFA case at the cost of the two
+    // arms differing in exactly one key.
+    maxCorrectors     150;
+
+    // What to do when the cap is exhausted unconverged. `reduceDeltaT` halves
+    // the step and is applied alongside the Courant and dielectric limits, so
+    // the smallest limit still wins.
+    onNonConvergence  retryStep;   // discard a non-converged step instead of accepting it
+}
+
+// Sato's equation: external circuit current. See
+// docs/discharge-current-sato-plan.md
+dischargeCurrent
+{
+    enabled         true;
+    drivenPatch     cathode;
+    groundedPatches (anode);
+    perSpecies      true;
+    writeInterval   50;     // this run is 3.7e5 steps, not a ns pulse: every
+                            // destroyed by sampling at the field cadence
+    printInterval   2000;
+    crossCheck      true;   // electrode surface integral, plan 5.2
+}
+
+// The GLOBAL Poisson numerics -- uniform over the gas and every dielectric.
+//
+// These moved here from constant/electromagneticsProperties, which is gone.
+// They are SOLUTION CONTROL, so they belong in system/ beside the timestep and
+// outer-loop settings; constant/ holds physical properties, and permittivity --
+// which IS physical -- now lives per region in
+// constant/<region>/electricalProperties.
+poisson
+{
+    // explicit     -- the charge is a pure source term
+    // semiImplicit -- the conductivity is also brought in implicitly, which
+    //                 stabilises the space-charge / Poisson coupling
+    //
+    // This is a SCHEME. The LINEAR SOLVER for ePotential is in fvSolution. The
+    // old name for this key was `PoissonScheme` but the case variable feeding
+    // it was called `poissonSolver`, which invited exactly that confusion.
+    scheme                      $poissonScheme;
+
+    // How E is formed from the potential: grad | reconstruct
+    EScheme                     grad;
+
+    nNonOrthogonalCorrectors    $nNonOrthogonalCorrectors;
+}
+
+// ************************************************************************* //

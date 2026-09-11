@@ -1,0 +1,138 @@
+#!/bin/bash
+#------------------------------------------------------------------------------
+# thinDielectricPotential vs ANALYTIC ground truth. Measured 2026-09-03.
+#
+# 1D column, gas gap L = 1 m (gas epsilonR = 1), `top` at V0 = 1 V, `sides`
+# zeroGradient so the problem is exactly one-dimensional.
+#
+# With V = A y + B on 0 <= y <= 1, V(1) = V0, and the outward normal at `bottom`
+# being -y (so dV/dn = -A), the condition
+#       eps_g dV/dn = sigma - C (V_s - V_b),   C = eps0*epsR/d
+# gives the surface potential in closed form:
+#       V_s = B = (sigma + C V_b + eps_g V0) / (eps_g + C)
+# and for the free-standing branch (C = 0):
+#       V_s = V0 + sigma/eps_g
+#------------------------------------------------------------------------------
+cd "${0%/*}" || exit 1
+
+EPS0=8.854187817620389e-12      # 1/(mu0 c^2), as plasmaConstants.C builds it
+
+run_one () {  # name epsEntry thickEntry backEntry sigma expected
+    #  Each of epsEntry/thickEntry/backEntry is a WHOLE DICTIONARY ENTRY or
+    #  EMPTY -- free-standing patches must emit none of the three.
+    local n=$1 e=$2 t=$3 b=$4 sig=$5 exp=$6
+    rm -rf run_$n; mkdir run_$n
+    cp -r 0.orig system configuration run_$n/
+    cp run_$n/system/fvSolution-foam run_$n/system/fvSolution
+    mv run_$n/0.orig run_$n/0
+    EPSR=$e THICK=$t BACK=$b SIG=$sig /usr/bin/python3 -c "
+import os,pathlib
+p=pathlib.Path('run_$n/0/ePotential'); s=p.read_text()
+for k in ('EPSR','THICK','BACK'): s=s.replace('__'+k+'__',os.environ[k])
+p.write_text(s)
+q=pathlib.Path('run_$n/0/surfCharge')
+q.write_text(q.read_text().replace('__SIGMA__',os.environ['SIG']))"
+    ( cd run_$n && blockMesh > log.blockMesh 2>&1 \
+        && singleRegionElectrostaticFoam > log.solve 2>&1 )
+    local T=$(ls run_$n | grep -E '^[0-9]+$' | sort -n | tail -1)
+    EXPECTED=$exp /usr/bin/python3 -c "
+import re,sys,os
+try: s=open('run_$n/$T/ePotential').read()
+except Exception as ex: print('  $n  RUN FAILED (%s)'%ex); sys.exit(1)
+m=re.search(r'^\s*bottom\s*\n\s*\{(.*?)\n\s*\}', s, re.S|re.M)
+if not m: print('  $n  no bottom patch'); sys.exit(1)
+v=re.search(r'\bvalue\s+(?:nonuniform[^(]*\((.*?)\)|uniform\s+([-\d.eE+]+))', m.group(1), re.S)
+xs=[float(x) for x in (v.group(1) or v.group(2)).split()]
+mn,mx=min(xs),max(xs); exp=float(os.environ['EXPECTED'])
+VSCALE=1.0          # V0, the only voltage in the problem
+meas=0.5*(mn+mx); absErr=abs(meas-exp)
+err=absErr/max(abs(exp),VSCALE)
+print('  %-4s Vs=%-12.8g analytic=%-12.8g  |err|=%.2e  err/Vscale=%.2e  %s'
+      %('$n',meas,exp,absErr,err,'PASS' if err<2e-6 else 'FAIL'))
+sys.exit(0 if err<2e-6 else 1)"
+}
+
+NL=$'\n'
+BACKED="        backingPotential 0;${NL}"
+EPS5="        epsilonR 5;${NL}"
+EPS2="        epsilonR 2;${NL}"
+D05="        thickness 0.5;${NL}"
+D50="        thickness 5.0;${NL}"
+fail=0
+
+# NOTE: for a FREE-STANDING patch all three of epsilonR/thickness/backingPotential
+# are REJECTED by the BC, so those arguments must be EMPTY -- not zero, not a
+# placeholder value. An earlier revision of this script passed `epsilonR ;` and
+# the resulting parse error looked exactly like a physics failure.
+
+echo "=== sigma = 0: the CAPACITANCE alone"
+run_one a "$EPS5" "$D05" "$BACKED" 0 0.0909090909090909 || fail=1
+run_one b "$EPS5" "$D50" "$BACKED" 0 0.5                || fail=1
+run_one c "$EPS2" "$D05" "$BACKED" 0 0.2                || fail=1
+run_one d ""      ""     ""        0 1.0                || fail=1
+
+echo "=== sigma /= 0: the SURFACE CHARGE, and its SIGN"
+# free-standing: Vs = V0 + sigma/eps_g. sigma = +eps0 -> 2.0 ; sigma = -eps0 -> 0.0
+run_one e ""      ""     ""        "$EPS0"  2.0 || fail=1
+run_one f ""      ""     ""        "-$EPS0" 0.0 || fail=1
+# backed: Vs = (sigma + eps_g V0)/(eps_g + C), C = eps0*5/0.5 = 10 eps0
+#         = (eps0 + eps0)/(eps0 + 10 eps0) = 2/11
+run_one g "$EPS5" "$D05" "$BACKED" "$EPS0"  0.1818181818181818 || fail=1
+
+# --- NEGATIVE tests: the guards must FIRE. A guard nobody exercises is not a
+# --- guard; each of these keys would otherwise be silently ignored.
+expect_fatal () {  # name epsEntry thickEntry backEntry mustSay
+    local n=$1 e=$2 t=$3 b=$4 say=$5
+    rm -rf run_$n; mkdir run_$n
+    cp -r 0.orig system configuration run_$n/
+    cp run_$n/system/fvSolution-foam run_$n/system/fvSolution
+    mv run_$n/0.orig run_$n/0
+    EPSR=$e THICK=$t BACK=$b /usr/bin/python3 -c "
+import os,pathlib
+p=pathlib.Path('run_$n/0/ePotential'); s=p.read_text()
+for k in ('EPSR','THICK','BACK'): s=s.replace('__'+k+'__',os.environ[k])
+p.write_text(s)
+q=pathlib.Path('run_$n/0/surfCharge'); q.write_text(q.read_text().replace('__SIGMA__','0'))"
+    ( cd run_$n && blockMesh > log.blockMesh 2>&1 \
+        && singleRegionElectrostaticFoam > log.solve 2>&1 )
+    if grep -q "$say" run_$n/log.solve; then
+        echo "  $n  guard FIRED as required"
+        return 0
+    fi
+    echo "  $n  GUARD DID NOT FIRE -- expected a fatal saying: $say"
+    return 1
+}
+
+echo "=== negative tests: guards must fire"
+expect_fatal bad_pair "" "$D05" ""       "must be given TOGETHER" || fail=1
+expect_fatal bad_eps  "$EPS5" ""    ""   "has NO EFFECT on a free-standing" || fail=1
+
+# --- ROUND-TRIP test: a field the BC WROTE must be re-readable.
+# --- All of epsilonR/thickness/backingPotential are backed-only, so write()
+# --- must emit none of them on a free-standing patch. It used to emit
+# --- `epsilonR 1` unconditionally, which made every restart abort.
+echo "=== round-trip: restart from a written field"
+for n in d a; do
+    T=$(ls run_$n 2>/dev/null | grep -xE '[0-9]+' | sort -n | tail -1)
+    # A SKIP IS A FAILURE. There is always a written time here (endTime 10,
+    # writeInterval 1), so "nothing to restart from" means the earlier run
+    # died -- and a skipped check that still reports ALL PASS is the exact
+    # trap this suite exists to catch.
+    if [ -z "$T" ] || [ "$T" = "0" ]; then
+        echo "  $n  NO WRITTEN TIME to restart from -- the run must have failed"
+        fail=1; continue
+    fi
+    ( cd run_$n && sed -i "s|^startFrom .*|startFrom       latestTime;|" system/controlDict \
+        && sed -i "s|^endTime .*|endTime         $((T+2));|" system/controlDict \
+        && singleRegionElectrostaticFoam > log.restart 2>&1 )
+    if grep -q "FOAM FATAL" run_$n/log.restart; then
+        echo "  $n  RESTART FAILED -- the written field is not re-readable:"
+        sed -n "/FOAM FATAL/,/^$/p" run_$n/log.restart | head -4
+        fail=1
+    else
+        echo "  $n  restart from t=$T OK"
+    fi
+done
+
+echo; [ $fail -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
+exit $fail

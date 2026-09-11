@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#---------------------------------------------
+#  Allwmake script for SoPLASMA suite
+#  Builds all applications in src/applications
+#---------------------------------------------
+
+set -e
+
+# Move to the directory where this script is located
+cd "${0%/*}" || exit 1
+
+echo ">>> Building Applications in src/applications"
+echo "----------------------------------------------"
+
+# Build solvers
+wmake solvers/singleRegionElectrostaticFoam
+wmake solvers/multiRegionElectrostaticFoam
+wmake solvers/soPlasmaFoam
+
+# Build utilities
+wmake utilities/foamPlasmaCreateSpeciesFields
+
+echo "----------------------------------------------"
+echo ">>> Done building applications."

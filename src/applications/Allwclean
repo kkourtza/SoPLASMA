@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#---------------------------------------------
+#  Allwclean script for SoPLASMA suite
+#  Cleans all applications in src/applications
+#---------------------------------------------
+
+set -e
+
+# Move to the directory where this script is located
+cd "${0%/*}" || exit 1
+
+echo ">>> Cleaning Applications in src/applications"
+echo "----------------------------------------------"
+
+# Solvers
+wclean solvers/singleRegionElectrostaticFoam
+wclean solvers/multiRegionElectrostaticFoam
+wclean solvers/soPlasmaFoam
+
+# Utilities
+wclean utilities/foamPlasmaCreateSpeciesFields
+
+echo "----------------------------------------------"
+echo ">>> Done cleaning applications."

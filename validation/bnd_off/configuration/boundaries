@@ -1,0 +1,72 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Grubert 2009 dc glow -- the SEMANTIC boundary description.                  |
+|                                                                              |
+|  G2: this says WHAT each surface IS. Every dictionary in 0/ is DERIVED from   |
+|  it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.                   |
+|                                                                              |
+|  Only the two electrodes are declared. side_lo/side_hi are `symmetryPlane`   |
+|  and front/back are `empty` -- CONSTRAINT patches, which carry their own      |
+|  condition by construction and are not a semantic choice.                     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+// The waveform is written LITERALLY, not as $appliedVoltage. A $var nested
+// inside a compound value is not expanded by OpenFOAM's dictionary reader --
+// `table ((0 0) ($t $V))` fails -- so the gap voltage is stated once, here,
+// and nowhere else.
+//
+// -500 V on the CATHODE, anode grounded: Grubert's polarity. The 100 ns ramp
+// is numerical hygiene only, 45x shorter than the 4.5 us ion transit time, so
+// it cannot influence the steady state this case is run to measure.
+cathode
+{
+    // CURRENT-DRIVEN, not ballasted. Voltage+ballast cannot select the DC-glow
+    // operating point: at the CVC minimum the differential resistance passes
+    // through zero, so the load line is tangent to the characteristic
+    // (Almeida & Benilov 2017; README.md:607 states the same).
+    kind        currentDrivenElectrode;
+
+    circuit
+    {
+        // setCurrent is a MAGNITUDE in amperes -- the electrode area is a mesh
+        // property. compliance is the supply rail, REQUIRED and SIGNED, and its
+        // sign is what gives the current its polarity. capacitance sets the
+        // pre-ignition ramp, dV/dt = I_set/C.   (etc/boundaryRoles:377)
+        type        currentSource;
+        setCurrent  1.022e-6;   // [A] Grubert's operating point
+        compliance  -1500;      // [V] signed -> cathode
+        // 2e-15 F, NOT 5e-14: dV/dt = I_set/C, so 5e-14 needed 1.22e-5 s of
+        // ramp to reach breakdown -- 3x the whole endTime, i.e. guaranteed
+        // no ignition. 2e-15 ramps to 250 V in 4.89e-7 s (0.51 V per ns
+        // step). C drops out of the regulation once ignited: dV =
+        // dt(I_set-I_cond)/(C+|g|dt) and post-ignition |g|dt >> C.
+        capacitance 5e-14;      // [F]  RESTORED 2026-09-11: 2e-15 gave 5.11e8 V/s
+                                //  = 511 V per ion transit, which OVER-VOLTED the gas into a
+                                //  discharge 35x too conductive for the setpoint -- the source
+                                //  hit V=0 with nothing left. 5e-14 is 2.04e7 V/s ~ 20 V per
+                                //  transit: quasi-static, so it ignites near static breakdown.
+    }
+    gammaSEE            0.06;
+}
+
+anode
+{
+    kind        groundedElectrode;
+
+    // Grubert's anode electron reflection. This is a LARGE value and the
+    // reason V4 is worth running: nothing in this framework had ever exercised
+    // a non-zero reflection coefficient before (framework-state gap 16).
+    electronReflection  0.36;
+}
+
+// NOT DECLARED: their ion reflection of 5e-4. The ion wall condition takes no
+// reflection coefficient, and at 5e-4 it changes the ion wall flux by 0.05% --
+// far below the ~5% spread between our Boltzmann coefficients and theirs. It
+// is recorded here so its absence is a stated choice rather than an omission.

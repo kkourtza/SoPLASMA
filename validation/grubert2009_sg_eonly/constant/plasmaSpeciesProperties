@@ -1,0 +1,109 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- the plasma. Everything derivable is DERIVED, not restated.     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      plasmaSpeciesProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+// ONE SWITCH configures the whole electron energy treatment. Under LMEA the
+// solver derives the transport lookup key, the chemistry rate key and the
+// entire energyModelCoeffs block from the mechanism's own tables -- so none of
+// that is written here. Stating it by hand is how a case comes to disagree
+// with its own mechanism.
+electronEnergyModel LMEA;
+
+activeSpecies fromMechanism;
+
+mechanismSpecies
+{
+    // SMOKE TEST 2026-09-07: pin ions to `standard` so the ONLY species on
+    // SG is the electron -- the pre-2026-09-07 behaviour. Discriminates a
+    // pre-existing electron-SG defect from the new ion inheritance.
+    ionFluxScheme standard;
+
+    mechanism           "constant/argon_plasma.foam";
+    include             chargedAndExcited;
+
+    // Neutrals do not move: their chemical lifetime is far shorter than any
+    // transport time here.
+    neutralTransport    immobile;
+
+    // IONS DO. With this one word every charged non-electron species gets a
+    // drift-diffusion model with `muN_<species>` and `DLN_<species>` from the
+    // mechanism, and its charge and mass from the mechanism too -- so a case
+    // cannot get them wrong. Previously this case restated all of it, 100+
+    // lines that could only ever agree or drift.
+    ionTransport        driftDiffusion;
+}
+
+backgroundGas
+{
+    name        "Ar";
+    pressure    $gasPressure;
+
+    energy
+    {
+        solve       false;    // Grubert's model is isothermal -- matching it
+        T           $gasTemperature;
+        kappa       0.0177;   // Ar at 300 K, W/(m K); inert while solve=false
+        pressure    $gasPressure;
+    }
+}
+
+speciesProperties
+{
+    // ONLY WHAT CANNOT BE DERIVED: the number-density floors.
+    //
+    // In a case with no seeded blob the floor IS the initial condition -- the
+    // discharge initiates from this background in the enhanced tip field.
+    //
+    // The positive-ion floors are the electron floor times the parent's MOLE
+    // FRACTION, which the mechanism already declares
+    // (composition { N2 0.79; O2 0.21; }), so the initial state is exactly
+    // quasineutral: 7.9e10 + 2.1e10 = 1e11. Negative ions start negligible --
+    // they are products, not background.
+    e
+    {
+        transportModel  driftDiffusion;
+        minNumberDensity 1e9;
+
+        driftDiffusionCoeffs
+        {
+            fluxScheme  $driftDiffusionFluxScheme;
+
+            mobility    { type fromMechanism; quantity muN;  tableDir "constant/plasmaTables"; }
+            diffusivity { type fromMechanism; quantity DLN;  tableDir "constant/plasmaTables"; }
+        }
+    }
+
+    // THE 1e11 FLOOR IS THE INITIAL CONDITION, AND IT MUST STAY WEAK.
+    //
+    // Measured 2026-09-06: seeding the domain QUASI-NEUTRAL at 1e15 instead --
+    // which was done to spare the LMEA arm a violent avalanche under the old
+    // 100 ns ramp -- makes the LFA arm run away. A 1e15 plasma shields the
+    // bulk and forces the whole applied drop into a sheath thinner than a
+    // cell, where E/N spikes; the LFA then keys its ionisation rate on that
+    // local field with no energy relaxation to damp it, and the loop closes:
+    // field -> ionisation -> charge -> sharper field. It reached Emag 8.22e7
+    // V/m (E/N = 3.4e6 Td, 60x past the top of the tables) on 11 V applied,
+    // n_e 1e15 -> 2.25e19, 3022 rejected steps, and stalled at t = 1.1e-7 s.
+    //
+    // With the weak 1e11 seed and the 5 us ramp the field stays essentially
+    // UNIFORM (Emag max 13183 V/m against a 12200 V/m mean), the avalanche is
+    // gradual, and the same arm reaches t = 1.22e-6 s in 477 steps with ZERO
+    // rejections, dt ~ 2.6e-9 s, limited by Co_conv -- a physical limiter.
+    //
+    // So there is no `internalField uniform 1e15` override anywhere in this
+    // case, deliberately. The clamp supplies the background; see
+    // clampNumberDensity(), which raises the field rather than capping it.
+    Arp  { minNumberDensity 1e9; }   // == the electron floor: starts neutral
+    Ar2p { minNumberDensity 1e5;  }   // minor species, token floor
+}
+
+// ************************************************************************* //

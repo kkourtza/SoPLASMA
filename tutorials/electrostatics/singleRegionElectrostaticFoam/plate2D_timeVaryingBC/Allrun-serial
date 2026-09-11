@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+cd ${0%/*} || exit 1
+
+./Allclean
+
+# Source run functions
+. $WM_PROJECT_DIR/bin/tools/RunFunctions
+
+blockMesh
+
+cp -r 0.orig 0
+
+# PETSc is OPT-IN, and this line used to be the other way round: the case
+# installed fvSolution-petsc while controlDict leaves "libpetscFoam.so"
+# commented out, so every run died with `Unknown symmetric matrix solver type
+# petsc` -- and Allrun-serial still exited 0, which is how it went unnoticed.
+# Corrected 2026-09-03. To use PETSc, swap these two lines AND uncomment the
+# library in system/controlDict.
+cp system/fvSolution-foam system/fvSolution
+# cp system/fvSolution-petsc system/fvSolution
+
+runApplication $(getApplication)
+solverStatus=$?
+
+mkdir -p logs
+mv log.* logs/
+
+touch case.foam
+
+# Propagate the solver's status. Without this the script exits 0 on a dead run,
+# so `EXIT=0` says only that the SCRIPT finished -- see tools/run_electrostatics_tests.sh,
+# which checks the LOG for exactly this reason.
+exit $solverStatus

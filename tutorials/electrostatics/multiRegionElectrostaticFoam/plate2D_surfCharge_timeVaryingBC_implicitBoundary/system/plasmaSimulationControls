@@ -1,0 +1,32 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA                                                                    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      plasmaSimulationControls;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// The GLOBAL Poisson numerics -- uniform over the gas and every dielectric.
+//
+// Moved here from constant/electromagneticsProperties, which is gone. These are
+// SOLUTION CONTROL and so belong in system/; constant/ holds physical
+// properties, and each region's permittivity now lives in
+// constant/<region>/electricalProperties.
+poisson
+{
+    // How E is formed from the potential: grad | reconstruct
+    EScheme     grad;
+
+    // `scheme` (explicit | semiImplicit) is deliberately NOT set here.
+    // multiRegionElectrostaticFoam calls the plain solve() unconditionally --
+    // there is no conductivity to treat implicitly in a pure electrostatics
+    // run -- so the key would be inert, and an inert key that looks live is
+    // worse than an absent one. It matters only under soPlasmaFoam.
+}
+
+// ************************************************************************* //

@@ -1,0 +1,753 @@
+/*---------------------------------------------------------------------------*\
+  File: ddWallFluxMixedFvPatchScalarField.C
+  Part of: SoPLASMA
+  Developed using the OpenFOAM framework and linked against OpenFOAM libraries.
+
+  Description:
+    Implementation of Foam::ddWallFluxMixedFvPatchScalarField.
+
+  Copyright (C) 2026 Rention Pasolari
+  License: GNU General Public License v3 or later
+      See: <http://www.gnu.org/licenses/>.
+\*---------------------------------------------------------------------------*/
+
+#include "fvPatchFieldMapper.H"
+
+#include "ddWallFluxMixedFvPatchScalarField.H"
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+namespace Foam
+{
+
+bool ddWallFluxMixedFvPatchScalarField::tolerateSingular_ = false;
+
+defineTypeNameAndDebug(ddWallFluxMixedFvPatchScalarField, 0);
+
+// * * * * * * * * * * * * Protected Member Functions  * * * * * * * * * * * //
+
+//- THE CONSISTENT WALL LOSS SPEED, Hagelaar HDR chapter 6.
+//
+//  This returns eq. (6.6)'s thermal term, vT/sqrt(pi) with vT = sqrt(2eT/m),
+//  written here as 0.5*sqrt(8 k T/(pi m)) so the mean-speed form is visible.
+//
+//  IT IS TWICE WHAT THIS FUNCTION USED TO RETURN, and the factor is not a
+//  correction bolted on -- it is the difference between two derivations:
+//
+//    eq. (6.3)  w_w = (1/2) vT/sqrt(pi) = (1/4) n <v> / n
+//               The half-space integral of a MAXWELLIAN. Hagelaar calls this
+//               "the simplest approach" and notes it "does not account for the
+//               effects of the electric field and particle density gradient
+//               and gives a bad description in case of significant directed
+//               motion". This is what the code computed before 2026-09-04.
+//
+//    eq. (6.6)  w_w = max( vT/sqrt(pi) - Gamma_w/n , 0 )
+//               The SHIFTED-Maxwellian treatment, integrated over the
+//               half-space and closed self-consistently with eq. (6.1). In
+//               Hagelaar's words: "without reflection or wall creation the
+//               effective loss speed is TWICE AS LARGE as (6.3), but it is
+//               reduced as Gamma_w increases."
+//
+//  WHY TWICE: the one-way flux from a FULL Maxwellian of density n is
+//  (1/4) n <v>. At an absorbing wall the outgoing half of velocity space is
+//  empty, so the density the fluid solves for is only the inward half -- half
+//  of the full-Maxwellian density that produces that flux. Expressed in terms
+//  of the ACTUAL wall density, the flux is therefore (1/2) n <v>.
+//
+//  Hagelaar's eq. (6.8) -- thermal-and-creation clamped at zero, plus a
+//  separately clamped drift term -- "has consistent limits for all particle
+//  species and is RECOMMENDED INSTEAD OF EQUATION (6.4)", and (6.4) is the
+//  form this family implemented. Hence the change, and hence that it applies
+//  to EVERY species and to the energy condition, not only to electrons: the
+//  derivation is purely kinematic, with no charge or mass in it.
+//
+//  STILL TO DO, and deliberately not done in this step: the -Gamma_w/n term
+//  and its max(...,0) clamp, which move secondary emission INSIDE the loss
+//  speed. Emission is currently still added separately to refGradient. See the
+//  note in electronDDWallFluxMixed.
+//
+//  Source: Hagelaar, G. J. M., HDR thesis, chapter 6, eqs. (6.1)-(6.8);
+//  Literature/hdr-hagelaar.pdf. Footnote 30 there notes that many of the
+//  chapter's equations "are not standard".
+//- Thermal velocity for a single constant temperature (dimensionedScalar)
+dimensionedScalar ddWallFluxMixedFvPatchScalarField::calcThermalVelocity
+(
+    const dimensionedScalar& m,
+    const dimensionedScalar& T
+) const
+{
+    return 0.5 * sqrt 
+    (
+        (8.0 * constant::plasma::kappaBoltzmann * T)
+        /
+        (constant::mathematical::pi * m)
+    );
+}
+
+//- Thermal velocity for a field temperature (scalarField)
+tmp<scalarField> ddWallFluxMixedFvPatchScalarField::calcThermalVelocity
+(
+    const dimensionedScalar& m,
+    const scalarField& T
+) const
+{
+    return 0.5 * sqrt 
+    (
+        (8.0 * constant::plasma::kappaBoltzmann.value() * T)
+        /
+        (constant::mathematical::pi * m.value())
+    );
+}
+
+// * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
+
+// Standard Constructor
+ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
+(
+    const fvPatch& p,
+    const DimensionedField<scalar, volMesh>& iF
+)
+:
+    mixedFvPatchScalarField(p, iF),
+    TName_("none"),
+    speciesNameOverride_(word::null),
+    TValue_("T", dimTemperature, 300.0)
+{
+    this->refValue()      = 0.0;
+    this->refGrad()       = 0.0;
+    this->valueFraction() = 0.0;
+}
+
+// Dictionary Constructor
+ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
+(
+    const fvPatch& p,
+    const DimensionedField<scalar, volMesh>& iF,
+    const dictionary& dict
+)
+:
+    mixedFvPatchScalarField(p, iF),
+    TName_("none"),
+    speciesNameOverride_(dict.lookupOrDefault<word>("species", word::null)),
+    TValue_("T", dimTemperature, 300.0)
+{
+    // Record WHAT THE CASE STATED before anything defaults. See suppliedKeys_
+    // in plasmaWallBC for why a defaulted value must not be written back.
+    suppliedKeys_ = dict.toc();
+
+    // THE WALL TEMPERATURE. Three ways in, and exactly one applies:
+    //
+    //   T     <fieldName>   -- follow a solved field (T_e under LMEA)
+    //   TeV   <electronVolts> -- a FIXED value, in the unit electron
+    //                            temperatures are actually quoted in
+    //   (neither)           -- the condition's own default; 1 eV for electrons
+    //
+    // `TeV` exists because requiring Kelvin here made the user do the
+    // conversion, and the two conventions in circulation (eps = 3/2 kT vs the
+    // temperature equivalent of eps) differ by 1.5. `TeV 1` means kT = 1 eV,
+    // which is what "Te = 1 eV" means everywhere in the literature.
+    const bool haveT = dict.found("T");
+    const bool haveTeV = dict.found("TeV");
+
+    if (haveT && haveTeV)
+    {
+        FatalIOErrorInFunction(dict)
+            << "both `T` and `TeV` are set. They are the same control." << nl
+            << "    Use `T <fieldName>` to follow a field, or `TeV <eV>` for a"
+               " fixed value." << exit(FatalIOError);
+    }
+
+    if (haveTeV)
+    {
+        const scalar TeV = dict.get<scalar>("TeV");
+
+        if (TeV <= 0)
+        {
+            FatalIOErrorInFunction(dict)
+                << "TeV must be positive; got " << TeV << "." << nl
+                << "    It is a wall temperature in eV (kT), not an energy"
+                   " offset." << exit(FatalIOError);
+        }
+
+        // kT = TeV [eV]  =>  T = TeV * e / k_B  (1 eV = 11604.5 K)
+        TValue_.value() =
+            TeV*constant::plasma::eCharge.value()
+               /constant::plasma::kappaBoltzmann.value();
+        TName_ = "none";
+    }
+    else if (haveT)
+    {
+        const entry& e = dict.lookupEntry("T", keyType::LITERAL);
+        ITstream& is = e.stream();
+
+        if (is.peek().isWord())
+        {
+            is >> TName_;
+        }
+        else if (is.peek().isNumber())
+        {
+            is >> TValue_.value();
+            TName_ = "none";
+        }
+        else
+        {
+            FatalIOErrorInFunction(dict)
+                << "Entry 'T' must be a word (field name) or a scalar in"
+                   " KELVIN." << nl
+                << "    For a fixed electron temperature use `TeV <eV>`"
+                   " instead." << exit(FatalIOError);
+        }
+    }
+    else
+    {
+        // No field, no explicit value: the condition's own default rather
+        // than a hard error, so a case that has no electron-temperature field
+        // at all (LFA runs the `gasTemperature` energy model and registers
+        // none) still starts.
+        TValue_ = this->defaultTValue();
+        TName_ = "none";
+    }
+
+    if (this->readMixedEntries(dict))
+    {
+        // Full restart or values provided in dictionary
+    }
+    else
+    {
+        this->refValue()      = 0.0;
+        this->refGrad()       = 0.0;
+        this->valueFraction() = 0.0;
+    }
+
+    // INITIALISE THE PATCH VALUE. Without this the boundary field is the
+    // uninitialised memory handed out by `mixedFvPatchScalarField(p, iF)`:
+    // that constructor allocates the patch Field and does NOT set it, and
+    // nothing here read the `value` entry, so a case supplying
+    // `value $internalField;` was silently ignored.
+    //
+    // The consequence is not subtle. The first assembly that touches this
+    // field -- chargeDensity, before any species is solved -- picks up that
+    // garbage, and the Poisson solve diverges to nan (measured: ePotential
+    // initial residual 1, final nan, 2000 iterations) or trips SIGFPE. It
+    // looks like a physics blow-up and is not one.
+    //
+    // The IMPLICIT sibling (ddWallFluxImplicit) never had this: it passes the
+    // dictionary down as `fvPatchScalarField(p, iF, dict)`, which reads
+    // `value`. This is the same contract, restored for the mixed family.
+    if (dict.found("value"))
+    {
+        fvPatchScalarField::operator=
+        (
+            scalarField("value", dict, p.size())
+        );
+    }
+    else
+    {
+        // No `value` given: the internal field is the only defensible
+        // starting point, and is what OpenFOAM's own mixed BC falls back to.
+        fvPatchScalarField::operator=(this->patchInternalField());
+    }
+}
+
+// Mapping Constructor
+ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
+(
+    const ddWallFluxMixedFvPatchScalarField& ptf,
+    const fvPatch& p,
+    const DimensionedField<scalar, volMesh>& iF,
+    const fvPatchFieldMapper& mapper
+)
+:
+    mixedFvPatchScalarField(ptf, p, iF, mapper),
+    TName_(ptf.TName_),
+    speciesNameOverride_(ptf.speciesNameOverride_),
+    TValue_(ptf.TValue_)
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
+
+// Copy Constructor (from another patch field)
+ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
+(
+    const ddWallFluxMixedFvPatchScalarField& ptf
+)
+:
+    mixedFvPatchScalarField(ptf),
+    TName_(ptf.TName_),
+    speciesNameOverride_(ptf.speciesNameOverride_),
+    TValue_(ptf.TValue_)
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
+
+// Copy Constructor (from patch field and new internal field)
+ddWallFluxMixedFvPatchScalarField::ddWallFluxMixedFvPatchScalarField
+(
+    const ddWallFluxMixedFvPatchScalarField& ptf,
+    const DimensionedField<scalar, volMesh>& iF
+)
+:
+    mixedFvPatchScalarField(ptf, iF),
+    TName_(ptf.TName_),
+    speciesNameOverride_(ptf.speciesNameOverride_),
+    TValue_(ptf.TValue_)
+{
+    // A cloned/mapped field inherits WHAT THE CASE STATED, so a defaulted
+    // value still is not written back. See plasmaWallBC::suppliedKeys_.
+    suppliedKeys_ = ptf.suppliedKeys_;
+}
+
+// * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
+
+Foam::word
+Foam::ddWallFluxMixedFvPatchScalarField::resolveSpeciesName() const
+{
+    if (!speciesNameOverride_.empty())
+    {
+        return speciesNameOverride_;
+    }
+
+    word name = this->internalField().name();
+    if (name.startsWith("n_"))
+    {
+        name.erase(0, 2);
+    }
+    return name;
+}
+
+
+void ddWallFluxMixedFvPatchScalarField::updateCoeffs()
+{
+    if (updated()) return;
+
+    const fvPatch& p = patch();
+    if (p.size() == 0)
+    {
+        mixedFvPatchScalarField::updateCoeffs();
+        return;
+    }
+
+    // Access the normal vector and delta coeffs
+    const scalarField& delta = p.deltaCoeffs();
+
+    // Determine species name (e.g., n_e -> e), or take the override.
+    const word speciesName = resolveSpeciesName();
+
+    // Lookup Transport Registry and Species Data
+    if (!db().foundObject<plasmaTransport>("plasmaTransport"))
+    {
+        FatalErrorInFunction
+            << "plasmaTransport not found in registry." << nl
+            << exit(FatalError);
+    }
+    const plasmaTransport& transport =
+                          db().lookupObject<plasmaTransport>("plasmaTransport");
+
+    const plasmaSpecies& speciesDB = transport.species();
+
+    const label speciesID = speciesDB.speciesID(speciesName);
+    const dimensionedScalar& m = speciesDB.speciesMass(speciesID);
+    const scalar Z = speciesDB.speciesChargeNumber(speciesID);
+
+    // Access the drift-diffusion model
+    const plasmaTransportModel& baseModel = transport.model(speciesID);
+
+    if (!isA<driftDiffusion>(baseModel))
+    {
+        FatalErrorInFunction
+            << "Species '" << speciesName << "' must use the driftDiffusion "
+            << "transport model for this boundary condition." << nl
+            << "Current model: " << baseModel.type() << nl
+            << exit(FatalError);
+    }
+
+    const driftDiffusion& ddModel = refCast<const driftDiffusion>(baseModel);
+
+    // Access the patch mobility, diffusivity and electric field.
+    // Through the virtuals, so the energy condition can substitute its own.
+    const tmp<scalarField> tmuf(this->patchMobility(ddModel));
+    const tmp<scalarField> tDf(this->patchDiffusivity(ddModel));
+    const scalarField& muf = tmuf();
+    const scalarField& Df = tDf();
+    const surfaceScalarField& phiE =
+            p.boundaryMesh().mesh().lookupObject<surfaceScalarField>("phiE");
+
+    const scalarField& phiEp = phiE.boundaryField()[p.index()];
+    const scalarField uDrift_n(Z * muf * (phiEp / p.magSf()));
+
+    // Physics Calculations
+    tmp<scalarField> tUEff;
+    tmp<scalarField> tUAbs;
+
+    if (TName_ == "none")
+    {
+        const scalarField Tconst(p.size(), TValue_.value());
+        
+        tUEff = this->calcEffectiveWallVelocity(m, Tconst, uDrift_n);
+        tUAbs = this->calcAbsorptionVelocity(m, Tconst, uDrift_n);
+    }
+    else
+    {
+        const auto* TPtr = db().findObject<volScalarField>(TName_);
+
+        if (!TPtr)
+        {
+            FatalErrorInFunction
+                << "Temperature field '" << TName_ << "' not found in registry." << nl
+                << "Either set T to a constant scalar value (e.g., T 300;)," << nl
+                << "or ensure the volScalarField exists in the mesh registry." << nl
+                << exit(FatalError);
+        }
+
+        const scalarField& TField = TPtr->boundaryField()[p.index()];
+
+        tUEff = this->calcEffectiveWallVelocity(m, TField, uDrift_n);
+        tUAbs = this->calcAbsorptionVelocity(m, TField, uDrift_n);
+    }
+
+    const scalarField& uEff = tUEff();
+    const scalarField& uAbs = tUAbs();
+
+    // Set mixed b.c. parameters
+    this->refValue() = 0.0;
+    this->refGrad() = 0.0;
+    this->operator==(this->patchInternalField());
+    scalarField& f = this->valueFraction();
+
+    // Set the D/Δ 
+    const scalarField D_delta(Df * delta);
+    const word scheme = ddModel.fluxScheme();
+
+    // WHY EACH BRANCH USES THE `f` IT DOES, and why they differ.
+    //
+    // The mixed condition does not set a flux. It sets the FACE VALUE: with
+    // refValue = 0 and refGradient = 0 it gives n_p = (1 - f) n_c, and the
+    // flux is whatever the DISCRETISATION'S OWN face-flux formula makes of
+    // that n_p. So f must be chosen to make that flux equal the closure's
+    // n_p*W -- and since the two schemes extract the boundary flux with
+    // DIFFERENT formulae, they need different f. Each is exact for its own.
+    //
+    // STANDARD: the boundary flux is diffusion plus drift,
+    //     Gamma = (D/delta)(n_c - n_p) + uDrift n_p
+    // and f = uEff/(D/delta + uEff) gives (D/delta)(n_c - n_p) = n_p uEff,
+    // hence Gamma = n_p(uEff + uDrift) = n_p W.          [Hagelaar eq. (6.1)]
+    //
+    // SCHARFETTER-GUMMEL: fvm::ScharfetterGummel builds boundary coefficients
+    // pCoeffP = (D/delta) Bern(-Pe) and pCoeffB = (D/delta) Bern(Pe) and
+    // combines them with this condition's own valueInternalCoeffs, so
+    //     Gamma = (D/delta)[Bern(-Pe) n_c - Bern(Pe) n_p]
+    // (see ScharfetterGummel.H, the physical-boundary branch). Requiring that
+    // to equal n_p W and using the Bernoulli identity Bern(-x) - Bern(x) = x,
+    //
+    //     f = (W + (D/delta)Bern(Pe) - (D/delta)Bern(-Pe))/(W + (D/delta)Bern(Pe))
+    //       = uEff/((D/delta)Bern(Pe) + W)
+    //
+    // and uAbs IS W in every one of the four conditions -- calcAbsorption-
+    // Velocity returns the total loss speed, and for ions
+    // v_th + max(0,u_d) equals u_d + uEff on both drift branches -- so this is
+    // exactly `D_delta*Bern(Pe) + uAbs` below.
+    //
+    // BOTH REDUCE TO EACH OTHER AS Pe -> 0: Bern(0) = 1 and u_drift -> 0, so
+    // W -> uEff and both give uEff/(D/delta + uEff).
+    //
+    // VERIFIED 2026-09-06 in testWallFlux: each branch imposes its own
+    // closure flux to 1.0000 over Pe = 0.01..100 and r = 0, 0.36.
+    //
+    // A WARNING FROM THE DAY THIS COMMENT WAS WRITTEN. Earlier the same day I
+    // reported the SG branch as a defect imposing "up to 50x" the intended
+    // flux, and briefly made it fatal. THAT WAS A MEASUREMENT ERROR: I pushed
+    // SG's n_p through the STANDARD extraction formula, which is meaningless --
+    // it compares each branch's f against the other's discretisation. The
+    // numbers did not even reproduce on recheck. If you are tempted to compare
+    // the two branches' f directly, DON'T: compare each branch's imposed flux
+    // against n_p*W under ITS OWN extraction formula, which is what
+    // testWallFlux now does.
+    // CompleteFlux TAKES THE SG BRANCH, and must.
+    //
+    // CFS = SG (the homogeneous part of the flux) + an explicit,
+    // source-carrying inhomogeneous part. The `f` this condition builds has to
+    // match the HOMOGENEOUS discretisation the interior uses, and for CFS that
+    // is SG exactly. Falling through to the `standard` branch would impose a
+    // face value extracted under the wrong flux formulation -- testWallFlux
+    // measures that mismatch at 18.4% of the imposed flux one way and 99.3%
+    // the other.
+    //
+    // The inhomogeneous part is deliberately NOT represented here. It is an
+    // explicit face flux added to the matrix by the CFS operator, including on
+    // boundary faces, so adding it again in `f` would double-count it.
+    if (scheme == "ScharfetterGummel" || scheme == "CompleteFlux")
+    {
+        const auto Bern = [](scalar x) -> scalar
+        {
+            const scalar ax = mag(x);
+            if (ax < 1e-4) return 1.0 - 0.5*x + (x*x)/12.0;
+            if (x > 100.0)  return 0.0;
+            if (x < -100.0) return -x;
+            return x / (Foam::exp(x) - 1.0);
+        };
+
+        forAll(p, faceI)
+        {
+            const scalar Pe = uDrift_n[faceI] / (D_delta[faceI] + VSMALL);
+            const scalar num = uEff[faceI];
+            const scalar den = D_delta[faceI] * Bern(Pe) + uAbs[faceI];
+            f[faceI] = num / (den + VSMALL);
+        }
+    }
+    else // Standard schemes (e.g. upwind(div) + central(laplacian))
+    {
+        // WELL-POSEDNESS OF THE STANDARD BRANCH.
+        //
+        // The condition imposes a TOTAL wall flux n_p*(uDrift_n + uEff) and
+        // sets n_p = (1 - f)*n_c with f = uEff/(D/delta + uEff). Under
+        // `includeDriftFlux false` -- the electron default -- uEff is
+        // u_th - uDrift_n, chosen so the drift the convective term already
+        // carries cancels and the total flux is the THERMAL flux alone,
+        // Gamma = (1/4) n v_th. That subtraction is deliberate, not a defect.
+        //
+        // Its consequence is that uEff goes NEGATIVE once the drift into the
+        // wall exceeds the thermal speed. That much is still self-consistent:
+        // holding the total flux at (1/4) n v_th while the field drives more
+        // than that into the wall requires diffusion to carry the surplus back
+        // out, which needs n_p > n_c. The wall value legitimately rises above
+        // the interior.
+        //
+        // What is NOT self-consistent is the denominator reaching zero, at
+        //     uDrift_n = u_th + D/delta,
+        // where f diverges and changes sign: the boundary value becomes
+        // unbounded and the discretisation has inverted. Nothing detected
+        // that -- `+ SMALL` turns the singularity into an overflow rather
+        // than a guard, exactly as `+ VSMALL` did on the diffusivity.
+        //
+        // MEASURED margin on the positive-streamer anode cell at 0.5 ns:
+        // u_th 1.0225e5, uDrift_n 1.0113e5, D/delta 4.44e4 m/s, so the
+        // denominator is 4.55e4 -- positive, but only because D/delta is
+        // carrying it. A stronger field or a coarser near-wall cell closes it.
+        //
+        // The ScharfetterGummel branch above cannot reach this: its
+        // denominator is D/delta*Bern(Pe) + uAbs, and both terms are
+        // non-negative with uAbs >= u_th > 0.
+        //
+        // Reported before it bites, fatal once it has. Auto-correcting an
+        // inverted boundary condition would be inventing a wall flux nobody
+        // asked for; the two real remedies are named in the message.
+        scalar minDenFrac = GREAT;
+
+        forAll(p, faceI)
+        {
+            const scalar den = D_delta[faceI] + uEff[faceI];
+
+            minDenFrac = min(minDenFrac, den/(D_delta[faceI] + VSMALL));
+
+            f[faceI] = uEff[faceI] / (den + SMALL);
+        }
+
+        // NO reduce() HERE, DELIBERATELY -- and this is a parallel-correctness
+        // fix, not an optimisation.
+        //
+        // updateCoeffs() RETURNS EARLY at the top when `p.size() == 0`, i.e. on
+        // every rank that holds no faces of this patch. A `reduce` here was
+        // therefore called by a SUBSET of the ranks, which is not a collective
+        // at all: the reduction paired mismatched data and returned garbage.
+        // Measured 2026-09-07 in parallel -- it reported
+        // `(D/delta + uEff)/(D/delta) = -1e+300` and killed the run after one
+        // timestep on every decomposition tried (simple, scotch, hierarchical;
+        // 2 and 4 ranks). There was nothing wrong with D/delta; the number was
+        // an artefact of the broken reduction.
+        //
+        // Checking LOCALLY is both correct and better. Each rank convicts on
+        // its own faces, the union of those checks is exactly the global check,
+        // and FatalErrorInFunction aborts the whole job in parallel anyway --
+        // so nothing is missed. It also names the rank that actually holds the
+        // bad face, which a global minimum did not. In serial the behaviour is
+        // unchanged, a reduction over one rank being a no-op.
+        //
+        // The general rule this cost us twice today: a collective must never
+        // sit downstream of a guard or an early return that depends on a LOCAL
+        // patch size. See plasmaExternalCircuit for the same defect with a
+        // gAverage.
+        if (minDenFrac <= 0 && tolerateSingular_)
+        {
+            // TRIAL ITERATE (Newton residual evaluation): clamp rather than
+            // abort, so F stays finite and the nonlinear solver rejects this
+            // step itself. See tolerateSingular_ for why this exists.
+            static bool reported = false;
+            if (!reported)
+            {
+                reported = true;
+                WarningInFunction
+                    << "wall-flux condition on patch " << p.name()
+                    << " for field " << this->internalField().name()
+                    << " went singular during a TRIAL residual evaluation"
+                    << " ((D/delta+uEff)/(D/delta) = " << minDenFrac << ")."
+                    << nl
+                    << "    Clamping it so the trial state stays finite and the"
+                    << " outer solver can reject the step." << nl
+                    << "    This is reported ONCE. If the run later fails at an"
+                    << " ACCEPTED state you will get the full diagnosis and its"
+                    << " remedies." << endl;
+            }
+
+            forAll(p, faceI)
+            {
+                const scalar den = D_delta[faceI] + uEff[faceI];
+                if (den <= VSMALL)
+                {
+                    // Fully absorbing is the physically sensible limit of a
+                    // wall the drift is pouring into faster than the closure
+                    // can represent.
+                    f[faceI] = 1.0;
+                }
+            }
+        }
+        else if (minDenFrac <= 0)
+        {
+            FatalErrorInFunction
+                << "wall-flux condition on patch " << p.name()
+                << " for field " << this->internalField().name()
+                << " has become singular." << nl << nl
+                << "    The drift into the wall now exceeds the thermal speed"
+                   " by more than the" << nl
+                << "    near-wall diffusive velocity D/delta, so"
+                   " D/delta + uEff <= 0 and the boundary" << nl
+                << "    value it implies is unbounded. Worst face:"
+                   " (D/delta + uEff)/(D/delta) = "
+                << minDenFrac << "." << nl << nl
+                << "    Three remedies, all physical:" << nl
+                << "      * `includeDriftFlux true` on this patch -- the"
+                   " Hagelaar & Kroesen (2000) wall" << nl
+                << "        flux Gamma = (1/4) n v_th + mu n E. THIS REMOVES"
+                   " THE MODE ONLY FOR A" << nl
+                << "        NON-REFLECTING WALL. With reflection r the closure"
+                   " returns" << nl
+                << "        W = (1-r)*w_w, so uEff = (1-r)/(1+r)*(A + uDrift)"
+                   " - uDrift, which is" << nl
+                << "        negative once uDrift > (1-r)/(2r)*A -- at r = 0.36"
+                   " that is only" << nl
+                << "        0.889*A. At r = 0 it reduces to uEff = A > 0"
+                   " always, which is why" << nl
+                << "        this remedy was stated unconditionally before"
+                   " 2026-09-06." << nl
+                << "      * `fluxScheme ScharfetterGummel` -- its denominator"
+                   " is" << nl
+                << "        D/delta*Bern(Pe) + uAbs, and both terms are"
+                   " non-negative for ANY r," << nl
+                << "        so it cannot invert. It is also the better scheme"
+                   " for the" << nl
+                << "        drift-dominated cell this failure happens in." << nl
+                << "      * refine the near-wall cell: D/delta grows as the"
+                   " cell shrinks, which is the" << nl
+                << "        term holding the denominator open. Needed here:"
+                   " D/delta larger by" << nl
+                << "        about " << (1.0 - minDenFrac)
+                << "x." << nl << nl
+                << "    Present settings on this patch: reflection r = "
+                << this->reflectionCoefficient() << ", fluxScheme `"
+                << scheme << "`." << nl
+                << exit(FatalError);
+        }
+
+        if (minDenFrac < 0.1 && !nearSingularReported_)
+        {
+            nearSingularReported_ = true;
+
+            WarningInFunction
+                << "wall-flux condition on patch " << p.name()
+                << " for field " << this->internalField().name()
+                << " is approaching its singularity:" << nl
+                << "    (D/delta + uEff)/(D/delta) = " << minDenFrac
+                << " at the worst face (fatal at 0)." << nl
+                << "    The drift into the wall is close to the thermal"
+                   " speed. See `includeDriftFlux`" << nl
+                << "    and near-wall refinement. Reported once."
+                << endl;
+        }
+    }
+
+    mixedFvPatchField<scalar>::updateCoeffs();
+}
+
+dimensionedScalar ddWallFluxMixedFvPatchScalarField::defaultTValue() const
+{
+    // The base has no business guessing a temperature for an arbitrary
+    // species: an ion or neutral wall is at the GAS temperature, an electron
+    // wall is not, and silently picking one would be wrong half the time.
+    FatalErrorInFunction
+        << "no wall temperature given for patch " << patch().name()
+        << " on field " << this->internalField().name() << "." << nl
+        << "    Set `T <fieldName>` to follow a field, or `TeV <eV>` for a"
+           " fixed value." << nl
+        << "    (Only the electron conditions carry a default.)" << nl
+        << exit(FatalError);
+
+    return dimensionedScalar("T", dimTemperature, 0.0);
+}
+
+
+tmp<scalarField> ddWallFluxMixedFvPatchScalarField::patchMobility
+(
+    const driftDiffusion& ddModel
+) const
+{
+    return tmp<scalarField>::New(ddModel.mobility().muPatch(patch().index()));
+}
+
+
+tmp<scalarField> ddWallFluxMixedFvPatchScalarField::patchDiffusivity
+(
+    const driftDiffusion& ddModel
+) const
+{
+    return tmp<scalarField>::New
+    (
+        ddModel.diffusivity().DPatch(patch().index())
+    );
+}
+
+
+void ddWallFluxMixedFvPatchScalarField::write(Ostream& os) const
+{
+    // Write standard Mixed BC entries (valueFraction, refValue, etc.)
+    mixedFvPatchScalarField::write(os);
+
+    // Write our custom entries so the simulation can be restarted
+    if (TName_ != "none")
+    {
+        os.writeEntry("T", TName_);
+    }
+    else
+    {
+        os.writeEntry("T", TValue_.value());
+    }
+}
+
+void ddWallFluxMixedFvPatchScalarField::reportOverriddenDefault
+(
+    const word& k,
+    const scalar supplied,
+    const scalar dflt
+) const
+{
+    if (!wasSupplied(k) || mag(supplied - dflt) <= SMALL*max(scalar(1), mag(dflt)))
+    {
+        return;
+    }
+
+    Info<< "  " << this->internalField().name() << " on patch `"
+        << this->patch().name() << "`: " << k << " = " << supplied
+        << " (READ from the case; this build's default is " << dflt << ")"
+        << nl
+        << "    If that was not intended, DELETE the entry -- a value written"
+        << " into 0/ by an earlier run pins the old default." << nl;
+}
+
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+} // End namespace Foam
+
+// ************************************************************************* //

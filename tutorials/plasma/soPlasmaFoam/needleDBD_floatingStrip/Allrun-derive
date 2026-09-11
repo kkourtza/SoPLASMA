@@ -1,0 +1,129 @@
+#!/bin/bash
+#------------------------------------------------------------------------------
+# Derive this case from needleDBD, run it, and check the ledger and Gauss
+# closure. See COMPARE.md. 2026-09-03.
+#
+# NOTHING IS REGENERATED: the mesh, the Boltzmann tables and the initial fields
+# are COPIED from the parent case, so the two cannot drift apart -- and the
+# expensive Boltzmann sweep runs once, in the parent, not here.
+#------------------------------------------------------------------------------
+cd "${0%/*}" || exit 1
+HERE=$PWD
+PARENT=$(cd ../needleDBD && pwd) || { echo "parent case not found" >&2; exit 2; }
+
+if [ -z "${WM_PROJECT_DIR:-}" ]; then
+    echo "ERROR: OpenFOAM is not sourced." >&2; exit 2
+fi
+
+if [ ! -d "$PARENT/constant/gas/polyMesh" ] || [ ! -d "$PARENT/constant/plasmaTables" ]; then
+    echo "The parent case has not been built. Run it first:"
+    echo "    cd $PARENT && ./Allrun-serial"
+    exit 2
+fi
+
+rm -rf run; mkdir run
+cp -r "$PARENT"/{0,constant,system,etc,configuration} run/ 2>/dev/null
+rm -rf run/0.orig
+
+# --- the one physical change: air_dielectric becomes a floating conductor ---
+/usr/bin/python3 - "$HERE/run" <<'PY'
+import sys, pathlib, re, glob
+r = pathlib.Path(sys.argv[1])
+p = r/"0/gas/ePotential"; s = p.read_text()
+s = re.sub(r'(\n\s*air_dielectric\s*\n\s*\{)(.*?)(\n\s*\})', """
+    air_dielectric
+    {
+        type            floatingElectrodePotential;
+        initialCharge   0;
+        value           uniform 0;
+    }""".rstrip(), s, count=1, flags=re.S)
+p.write_text(s)
+assert "floatingElectrodePotential" in s, "ePotential patch not converted"
+
+# A conductor has NO local sigma -- charge redistributes, so only the total is
+# meaningful. The wall-flux conditions themselves are unchanged: a floating
+# electrode is metal and emits like any other. Leaving enableSurfaceCharging
+# true here is a contradiction and the solver refuses it.
+n = 0
+for f in glob.glob(str(r/"0/gas/*")):
+    q = pathlib.Path(f)
+    if q.name in ("ePotential", "surfCharge") or q.is_dir(): continue
+    t = q.read_text()
+    m = re.search(r'(\n\s*air_dielectric\s*\n\s*\{)(.*?)(\n\s*\})', t, re.S)
+    if not m or "enableSurfaceCharging" not in m.group(2): continue
+    nb = re.sub(r'enableSurfaceCharging\s+\w+;', 'enableSurfaceCharging false;', m.group(2))
+    q.write_text(t[:m.start(2)] + nb + t[m.end(2):]); n += 1
+print(f"  air_dielectric -> floating conductor; local surface charging off in {n} field(s)")
+PY
+
+# Short by design: the closure check runs EVERY step, so a few tens of steps
+# already prove it. See the honest limits in COMPARE.md.
+sed -i 's|^endTime .*|endTime         1e-10;|; s|^writeInterval .*|writeInterval   5e-11;|' run/system/controlDict
+
+( cd run && soPlasmaFoam > log.soPlasmaFoam 2>&1 )
+rc=$?
+
+grep -A5 'floatingElectrode:' run/log.soPlasmaFoam | head -7
+
+if [ $rc -ne 0 ]; then
+    echo "  SOLVER FAILED (exit $rc):"
+    sed -n '/FOAM FATAL/,/^$/p' run/log.soPlasmaFoam | head -12
+    exit 1
+fi
+
+/usr/bin/python3 - "$HERE/run" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])/"postProcessing/floatingElectrode/floating.csv"
+hdr, rows = None, []
+for line in open(p):
+    line = line.strip()
+    if not line or line.startswith('#'): continue
+    if line.startswith('time'):
+        hdr = line.split(','); continue
+    # variable column count: the per-species columns follow the fixed five
+    rows.append([float(x) for x in line.split(',')])
+assert hdr is not None, "no header row in floating.csv"
+
+fail = 0
+
+# 1. the ledger: Q_k must be Q_k-1 + I_k dt_k, the rectangle rule it uses
+worst = 0.0; pt = 0.0; pQ = 0.0
+for r in rows:
+    t, Vf, Q, I, c = r[0], r[1], r[2], r[3], r[4]
+    pred = pQ + I*(t - pt)
+    if abs(Q) > 1e-30: worst = max(worst, abs(Q - pred)/abs(Q))
+    pt, pQ = t, Q
+
+# 2. Gauss closure, in volts
+closure = max(abs(r[4]) for r in rows)
+
+Q, I, Vf = rows[-1][2], rows[-1][3], rows[-1][1]
+
+def check(name, ok, got, want):
+    global fail
+    print(f"  {name:<26} {got:<24} {'PASS' if ok else 'FAIL'}   ({want})")
+    if not ok: fail = 1
+
+check("ledger self-consistency", worst < 1e-9,  f"{worst:.2e} rel",  "< 1e-9")
+check("Gauss closure",           closure < 1e-9, f"{closure:.2e} V", "< 1e-9 V")
+check("I_collected sign",           I < 0,          f"{I:.3e} A",       "negative: electrons")
+
+# PER-SPECIES: the point of the breakdown is that "do the ions contribute?" is
+# answered BY THE OUTPUT, not inferred from a total that moved -- the total also
+# moves because ions now absorb at every surface, which changes the discharge.
+eIdx = hdr.index("I_n_e") if "I_n_e" in hdr else None
+ionIdx = [i for i, k in enumerate(hdr)
+          if k.startswith("I_") and k not in ("I_collected", "I_n_e")]
+Iions = sum(rows[-1][i] for i in ionIdx)
+print("  per-species, last step:")
+for i in ([eIdx] if eIdx is not None else []) + ionIdx:
+    print(f"      {hdr[i]:<10} {rows[-1][i]:+.4e} A")
+check("ions contribute", abs(Iions) > 0,
+      f"{Iions:+.3e} A over {len(ionIdx)} ion(s)", "non-zero ion current")
+check("Q sign",                  Q < 0,          f"{Q:.3e} C",       "negative: charges negative")
+print(f"  {'V_f at t_end':<26} {Vf:.6g} V             (induction-dominated here"
+      f", charge term {Q/7.03018250107e-16:.1e} V)")
+print()
+print("  ALL PASS" if not fail else "  SOME FAILED")
+sys.exit(fail)
+PY

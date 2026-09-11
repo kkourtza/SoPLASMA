@@ -1,0 +1,7 @@
+xMeshCells              40;
+yMeshCells              40;
+
+dirichletValueTop		1.0;
+
+endTime                 10;
+

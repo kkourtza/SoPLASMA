@@ -1,0 +1,280 @@
+/*---------------------------------------------------------------------------*\
+License
+    This file is part of the SoPLASMA.
+
+    The SoPLASMA is not part of OpenFOAM but is developed using the
+    OpenFOAM framework and linked against OpenFOAM libraries.
+
+    Copyright (C) 2026 Rention Pasolari
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+    This program is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+Class
+    Foam::ddWallFluxMixedFvPatchScalarField
+
+Description
+    Abstract base class for scalar flux boundary conditions at solid surfaces,
+    derived from mixedFvPatchScalarField.
+
+    Enforces the particle flux at absorbing walls by setting the relation of 
+    the face and the cell center value. The wall flux is imposed through the 
+    valueFraction field of the mixed BC.
+
+    This is an abstract class. It cannot be used directly in a case file
+    as the 'type'. Derived classes must implement the pure virtual function.
+
+Usage
+    This class is not instantiated directly. Derived classes are instantiated.
+    
+SourceFiles
+    ddWallFluxMixedFvPatchScalarField.C
+\*---------------------------------------------------------------------------*/
+
+#ifndef ddWallFluxMixedFvPatchScalarField_H
+#define ddWallFluxMixedFvPatchScalarField_H
+
+#include "mixedFvPatchFields.H"
+#include "HashSet.H"
+
+#include "SoPLASMAConstants.H"
+#include "plasmaSpecies.H"
+#include "plasmaTransport.H"
+#include "driftDiffusion.H"
+#include "plasmaWallBC.H"
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+namespace Foam
+{
+
+/*---------------------------------------------------------------------------*\
+         Class ddWallFluxMixedFvPatchScalarField Declaration
+\*---------------------------------------------------------------------------*/
+
+class ddWallFluxMixedFvPatchScalarField
+:
+    public mixedFvPatchScalarField,
+    public plasmaWallBC
+{
+protected:
+
+    // Protected Data
+
+
+        //- The name of the temperature field (e.g., "T_e"). 
+        word TName_;
+
+        //- OPTIONAL override for which species this field belongs to.
+        //
+        //  The family otherwise infers it from the field's own name
+        //  (`n_e` -> `e`) and then resolves a speciesID, mobility and
+        //  diffusivity from it. That breaks for any field which is a property
+        //  OF a species without being its density -- the LMEA electron energy
+        //  density being the first: `nEps_e` would resolve to a species
+        //  `nEps_e` that does not exist.
+        //
+        //  Empty means "infer from the field name", so existing cases are
+        //  untouched.
+        word speciesNameOverride_;
+
+        //- The species this condition acts for: the override when set,
+        //  otherwise inferred from the field name by stripping a leading "n_".
+        //
+        //  VIRTUAL, because that inference is wrong for any field not named
+        //  `n_<species>`. The energy condition sits on `nEps_e`, which does
+        //  NOT start with "n_" ("nE"), so the base returns "nEps_e" and the
+        //  species lookup fails with a list of species names and no hint that
+        //  the fix is to set `species`. See the energy override.
+        virtual word resolveSpeciesName() const;
+
+        //- Print, ONCE per patch, every optional key whose supplied value
+        //  differs from this build's default. That is the actionable case: a
+        //  case pinning a value it may not have meant to pin.
+        //
+        //  Not keyed to any particular number -- a guard against the specific
+        //  old value of one key would not generalise and would need deleting
+        //  later.
+        void reportOverriddenDefault
+        (
+            const word& k,
+            const scalar supplied,
+            const scalar dflt
+        ) const;
+
+        //- Latch so the "approaching the singularity" warning is printed
+        //  once per patch, not once per corrector per time step.
+        mutable bool nearSingularReported_ = false;
+
+        //- Wall temperature to use when the case names no field. eV is the
+        //  natural unit for electrons, so the electron conditions default to
+        //  1 eV; anything carrying a real temperature must say so.
+        virtual dimensionedScalar defaultTValue() const;
+
+        //- Transport coefficients this condition builds its wall flux from.
+        //
+        //  VIRTUAL because the field being solved decides them. A density
+        //  equation is carried by the SPECIES' mu and D; the LMEA energy
+        //  equation is carried by the ENERGY's mu_eps and D_eps, which are
+        //  tabulated from the EEDF and are NOT a fixed multiple of the
+        //  electron ones. Hard-coding the species coefficients here silently
+        //  gave the energy condition the electron's wall flux.
+        virtual tmp<scalarField> patchMobility(const driftDiffusion&) const;
+        virtual tmp<scalarField> patchDiffusivity(const driftDiffusion&) const;
+
+        //- Constant Temperature Value
+        dimensionedScalar TValue_;
+
+    // Protected Member Functions
+
+        //- Calculate thermal velocity (account for the 1/4)
+        //- For a single constant temperature (dimensionedScalar)
+        dimensionedScalar calcThermalVelocity
+        (
+            const dimensionedScalar& m,
+            const dimensionedScalar& T
+        ) const;
+
+        //- Calculate thermal velocity (account for the 1/4)
+        //- For a field temperature (scalarField)
+        tmp<scalarField> calcThermalVelocity
+        (
+            const dimensionedScalar& m,
+            const scalarField& T
+        ) const;
+
+        //- Calculate the wall absorption velocity
+        virtual tmp<scalarField> calcAbsorptionVelocity
+        (
+            const dimensionedScalar& m,
+            const scalarField& T,
+            const scalarField& uDriftNormal
+        ) const = 0;
+
+        //- Calculate the effective wall velocity
+        //- The reflection coefficient this condition applies, for
+        //  DIAGNOSTICS ONLY. Zero for every member that has no notion of
+        //  reflection, which is why it is not pure virtual. The singularity
+        //  message needs it: whether `includeDriftFlux true` removes the
+        //  failure mode depends entirely on whether r is zero.
+        virtual scalar reflectionCoefficient() const
+        {
+            return 0.0;
+        }
+
+        virtual tmp<scalarField> calcEffectiveWallVelocity
+        (
+            const dimensionedScalar& m,
+            const scalarField& T,
+            const scalarField& uDriftNormal
+        ) const = 0;
+
+public:
+
+    //- TOLERATE a singular wall-flux denominator instead of aborting.
+    //
+    //  Set ONLY around a Newton residual evaluation (see snesNewtonSolver).
+    //  A matrix-free Jacobian and a line search MUST evaluate F at trial
+    //  iterates, and some of those are unphysical -- that is how they work. A
+    //  boundary condition that raises FatalError at such a point kills the run
+    //  over a state the solver was about to REJECT.
+    //
+    //  MEASURED 2026-09-10 on grubert2009_ballast400: the run died at
+    //  t = 1.949675e-06 with `wall-flux condition on patch anode has become
+    //  singular`, and the fatal fired INSIDE an unfinished SNES solve, 828
+    //  residual evaluations into the step -- i.e. at a trial iterate, not at an
+    //  accepted solution. Picard never hits it because its states are always
+    //  the output of a solve rather than exploratory.
+    //
+    //  While set, a singular face CLAMPS its valueFraction to a finite value
+    //  and the condition reports once, so the residual stays finite and large
+    //  and the nonlinear solver can back off on its own. The hard error is
+    //  RETAINED for every other caller, because for an accepted state it is a
+    //  genuine and well-diagnosed physical failure.
+    static bool tolerateSingular_;
+
+
+
+    //- Runtime type information
+    TypeName("ddWallFluxMixed");
+
+    // Constructors
+
+        //- Construct from patch and internal field
+        ddWallFluxMixedFvPatchScalarField
+        (
+            const fvPatch&,
+            const DimensionedField<scalar, volMesh>&
+        );
+
+        //- Construct from patch, internal field and dictionary
+        ddWallFluxMixedFvPatchScalarField
+        (
+            const fvPatch&,
+            const DimensionedField<scalar, volMesh>&,
+            const dictionary&
+        );
+
+        //- Construct by mapping given BC onto a new patch
+        ddWallFluxMixedFvPatchScalarField
+        (
+            const ddWallFluxMixedFvPatchScalarField&,
+            const fvPatch&,
+            const DimensionedField<scalar, volMesh>&,
+            const fvPatchFieldMapper&
+        );
+
+        //- Construct as copy
+        ddWallFluxMixedFvPatchScalarField
+        (
+            const ddWallFluxMixedFvPatchScalarField&
+        );
+
+        //- Construct as copy setting internal field reference
+        ddWallFluxMixedFvPatchScalarField
+        (
+            const ddWallFluxMixedFvPatchScalarField&,
+            const DimensionedField<scalar, volMesh>&
+        );
+
+        //- Return a clone
+        virtual tmp<fvPatchField<scalar>> clone() const = 0;
+
+        //- Construct and return a clone
+        virtual tmp<fvPatchField<scalar>> clone
+        (
+            const DimensionedField<scalar, volMesh>& iF
+        ) const = 0;
+
+        // Member Functions
+
+            //- Update the coefficients
+            virtual void updateCoeffs();
+
+            //- Returns the enableSurfaceCharging flag
+            virtual bool enableSurfaceCharging() const override
+            {
+                return false; 
+            }
+
+            //- Write dictionary entries
+            virtual void write(Ostream& os) const;
+};
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+} // End namespace Foam
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+#endif

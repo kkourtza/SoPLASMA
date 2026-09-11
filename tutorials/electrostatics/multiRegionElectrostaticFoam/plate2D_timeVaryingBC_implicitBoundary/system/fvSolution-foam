@@ -1,0 +1,78 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2412                                  |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSolution;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// EDIT THIS FILE, NOT system/fvSolution.
+//
+// Allrun does `cp system/fvSolution-foam system/fvSolution` and then copies the
+// result into each system/<region>/, so fvSolution is a BUILD ARTEFACT and any
+// edit to it is silently overwritten on the next run.
+
+solvers
+{
+    ePotential
+    {
+        // MONOLITHIC COUPLING NEEDS AN ASSEMBLY-AWARE AGGLOMERATOR.
+        //
+        // With `useImplicit true` both regions are assembled into ONE matrix,
+        // whose mesh is an `lduPrimitiveMeshAssembly`, not an `fvMesh`. GAMG's
+        // DEFAULT agglomerator (`faceAreaPair`) does `refCast<const fvMesh>` on
+        // it and the run aborts:
+        //
+        //     --> FOAM FATAL ERROR:
+        //     Attempt to cast type lduPrimitiveMeshAssembly to type fvMesh
+        //
+        // which reads like an internal error and is a solver-configuration
+        // error. OpenFOAM ships `assembledFaceAreaPair` for exactly this case
+        // (src/finiteVolume/lduPrimitiveMeshAssembly/
+        // assemblyFaceAreaPairGAMGAgglomeration). Remove the line below and the
+        // abort is reproducible in one run.
+        //
+        // MEASURED 2026-09-01, this case, 20000 cells, per timestep:
+        //
+        //   solver                          iters/step   V_interface (exact 1/6)
+        //   ------------------------------------------------------------------
+        //   smoothSolver/GaussSeidel        2000 (cap)   0.154443   7.3% WRONG
+        //   PCG/DIC                          114         0.166667   ok
+        //   GAMG, default agglomerator      ABORT        --
+        //   GAMG + assembledFaceAreaPair      11         0.166667   ok
+        //
+        // The first row is what this case shipped with. Gauss-Seidel needs O(N)
+        // sweeps to carry information across a Laplace problem, so 2000 is far
+        // too few at 20000 cells; every step returned a final residual of 3e-4
+        // against the requested 1e-9 and the log reported it as a normal solve,
+        // because reaching `maxIter` is not an error. Raising maxIter only buys
+        // wall time for the same answer.
+        //
+        // PCG/DIC is the simpler alternative and is correct here -- the matrix
+        // is symmetric, being a pure Laplacian with a permittivity jump:
+        //
+        //     solver PCG; preconditioner DIC;
+        //
+        // For a NON-symmetric matrix -- what soPlasmaFoam has once the
+        // conductivity is treated semi-implicitly -- use PBiCGStab/DILU.
+        solver                  GAMG;
+        agglomerator            assembledFaceAreaPair;
+        nCellsInCoarsestLevel   20;
+        mergeLevels             1;
+        smoother                GaussSeidel;
+
+        tolerance               1e-9;
+        relTol                  0;
+        maxIter                 2000;
+    }
+}
+
+
+// ************************************************************************* //

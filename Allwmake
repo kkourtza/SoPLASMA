@@ -1,0 +1,55 @@
+#!/bin/bash
+
+#---------------------------------------------
+#  Allwmake script for SoPLASMA suite
+#  Builds all libraries and the solver
+#---------------------------------------------
+
+# Set colors
+GREEN='\033[1;32m'
+NC='\033[0m'
+
+set -e	# Exit on first error
+
+# Move to script directory (in case called from elsewhere)
+cd "${0%/*}" || exit 1
+
+# Never rebuild over a library a running solver has mapped: it can kill the run
+# mid-flight with SIGBUS, hours in, with no hint of the cause. Override with
+# FORCE=1. See check-no-running-solvers.sh.
+./check-no-running-solvers.sh || exit 1
+
+# Libraries
+echo "Building Libraries..."
+echo "-------------------------------------"
+echo ""
+
+wmake libso src/profilers
+wmake libso src/constants
+wmake libso src/numerics
+./src/models/Allwmake
+./src/bcs/Allwmake
+wmake libso src/tools
+
+# Executables
+echo ""
+echo "-------------------------------------"
+echo "Building Executables..."
+echo "-------------------------------------"
+echo ""
+
+./src/applications/Allwmake
+
+# ThirdParty
+echo "Building ThirdParty..."
+echo "-------------------------------------"
+echo ""
+
+./ThirdParty/Allwmake
+
+echo
+echo "-------------------------------------"
+echo -e "${GREEN}Build complete.${NC}"
+echo "Libraries are in: \$FOAM_USER_LIBBIN ($FOAM_USER_LIBBIN)"
+echo "Solvers are in:   \$FOAM_USER_APPBIN ($FOAM_USER_APPBIN)"
+echo "-------------------------------------"

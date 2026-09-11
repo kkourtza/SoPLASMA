@@ -1,0 +1,445 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA -- SHIPPED LIBRARY of boundary ROLES                                |
+|                                                                              |
+| G2: the user says WHAT a surface IS; each module decides HOW it treats it.    |
+| G3: one vocabulary across every module -- the KIND names here are that        |
+|     vocabulary, and a new module adds a sub-dictionary rather than a name.    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      boundaryRoles;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// HOW THIS WORKS
+//
+// A case declares, per patch, WHAT the surface is -- in configuration/boundaries:
+//
+//     active_electrode { kind drivenElectrode; waveform table ((0 0) (1e-7 8e3)); }
+//
+// This file says what each KIND means to each MODULE. The generator joins the
+// two and writes the dictionaries. Nothing here is a physics choice the user
+// makes; it is the translation from a physical description to each module's
+// boundary condition.
+//
+// PER KIND:
+//   description   one line, shown in errors and in the generated comment
+//   requires      parameters the case MUST supply for this kind
+//   optional      parameters it MAY supply, with their defaults
+//   electrostatics{}  the ePotential condition, verbatim, with "<param>" slots
+//   plasmaTransport{} what SPECIES do here -- see `surface` below
+//
+// `"<param>"` in an electrostatics block is substituted from the PATCH's own
+// entry of that name. `"<material:>"<property>` is resolved through the material
+// library, so a surface names a material once and both modules follow.
+//
+// plasmaTransport/surface takes ONE of four values, and it is the only thing
+// the species generator needs to know:
+//   mechanical        not a physical surface -- empty/wedge/symmetry/processor.
+//                     Derived from the MESH, never declared here.
+//   open              nothing is absorbed and nothing accumulates.
+//   conductor         absorbs (wall flux), but the arriving charge LEAVES --
+//                     through the external circuit, or into a floating
+//                     conductor's total charge Q(t). NO local sigma: charge
+//                     cannot sit still on a metal, and accumulating it there is
+//                     refused, not merely defaulted off.
+//   chargingSurface   absorbs AND accumulates a local surface charge, because
+//                     the potential condition on it CONSUMES that charge.
+//
+// OVERRIDING `surface` ON ONE PATCH -- `speciesSurface`
+//
+// Every electrode kind implies `conductor`, because a metal absorbs the flux
+// that reaches it. That is the physics and it is the default.
+//
+// A BENCHMARK, however, is not a physical surface. The positive-streamer
+// reference problem (Bagheri et al.; Pasolari & Kourtzanidis arXiv:2607.05137
+// sec 6.1) prescribes the electrode POTENTIAL while imposing homogeneous
+// Neumann on the densities -- a non-absorbing electrode, which does not exist.
+// It is chosen so the reference case is unambiguous, and reproducing published
+// numbers requires being able to state it:
+//
+//     active_electrode
+//     {
+//         kind            drivenElectrode;
+//         waveform        constant 18.75e3;
+//         speciesSurface  open;          // BENCHMARK: densities pass through
+//     }
+//
+// Deliberately NOT a new `kind`. A non-physical idealisation must not sit in
+// the same vocabulary as real surfaces, and no one should be able to switch a
+// wall flux off by accident. The generator ANNOUNCES every use, because "the
+// electrodes do not absorb" silently changes an answer.
+//
+// `mechanical` cannot be overridden: it is read from the mesh.
+//
+// THE RULE BEHIND THAT LAST DISTINCTION: sigma accumulates exactly where the
+// electrostatics condition reads it. A dielectric surface charges because
+// something reads the charge; a metal does not, because nothing does.
+//
+//
+// EMISSION MECHANISMS PER KIND
+//
+// A kind may declare an `emission { ... }` block, which is copied verbatim into
+// the ELECTRON wall-flux condition of every patch of that kind. The models are
+// documented in src/bcs/emissionModels/emissionModel.H.
+//
+// EVERY KIND SHIPS WITH NO EMISSION, DELIBERATELY. Emission decides whether a
+// discharge is SELF-SUSTAINING rather than a single avalanche, so switching a
+// mechanism on by default would change the physics of every existing case
+// silently, in the one place where "plausible but wrong" is hardest to notice.
+// Each kind below says which mechanisms are PHYSICALLY appropriate for it, so
+// enabling one is a one-line, informed decision rather than a search.
+//
+// `material` is accepted on the conductor kinds for this reason: it is what
+// lets an emission model resolve a work function, a secondary yield or a band
+// structure from the shipped libraries instead of being handed a number. A
+// patch can now say what it is MADE OF, which is what non-uniform gamma needs.
+//
+// INTERFACES BETWEEN MESHED REGIONS ARE NOT DECLARED HERE OR IN A CASE.
+// `<gas>_to_<dielectric>` and its partner are created by splitMeshRegions and
+// are DERIVED: the topology already says what they are, and asking the user to
+// restate it is the second source of truth G1 forbids. The generator emits
+// `coupledElectricPotential` on a gas/dielectric pair (with surface charging on
+// the GAS side only -- exactly one owner, or the charge is double-counted) and
+// `zeroGradient` with no charging on a gas/farField pair, because a farField
+// region is fictitious air and not a surface.
+
+// ---------------------------------------------------------------------------
+// CONDUCTORS -- the three things a conductor can know
+//
+//                        potential            charge
+//   drivenElectrode      known (a waveform)   whatever the supply provides
+//   groundedElectrode    known (zero)         whatever flows to ground
+//   floatingElectrode    UNKNOWN, solved for  KNOWN, conserved
+// ---------------------------------------------------------------------------
+
+drivenElectrode
+{
+    description "A conductor held at a known, usually time-varying potential.";
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { material none; gammaSEE -1; electronReflection -1; }
+    // APPROPRIATE MECHANISMS: ionInducedSEE (the classical cathode process),
+    // fieldEmission at a sharp tip, thermionicEmission if the electrode is hot,
+    // electronInducedSEE where the sheath is energetic. None is active unless
+    // asked for. Example, with the material supplying phi:
+    //     emission { fieldEmission { fieldEnhancement 50; } }
+    requires    ( waveform );
+
+    electrostatics
+    {
+        type            uniformFixedValue;
+        value           uniform 0;
+        uniformValue    "<waveform>";
+    }
+
+    plasmaTransport { surface conductor; }
+}
+
+groundedElectrode
+{
+    description "A conductor held at zero potential.";
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { material none; gammaSEE -1; electronReflection -1; }
+    // APPROPRIATE MECHANISMS: as drivenElectrode. A grounded electrode is
+    // still a metal surface and still emits.
+
+    electrostatics
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+
+    plasmaTransport { surface conductor; }
+}
+
+floatingElectrode
+{
+    description "A conductor connected to nothing: charge known, potential solved.";
+    // APPROPRIATE MECHANISMS: as any electrode. Note that emission from a
+    // FLOATING conductor feeds back on itself -- emitted electrons leave, so
+    // the conductor charges POSITIVE, which raises its potential and changes
+    // the flux arriving. That coupling is physical and is handled, but it is
+    // worth expecting.
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { initialCharge 0; gammaSEE -1; electronReflection -1; }
+
+    // No potential entry, deliberately: supplying one would make this a driven
+    // electrode. The condition itself rejects `potential`/`uniformValue`/`V`.
+    electrostatics
+    {
+        type            floatingElectrodePotential;
+        initialCharge   "<initialCharge>";
+        value           uniform 0;
+    }
+
+    plasmaTransport { surface conductor; }
+}
+
+// ---------------------------------------------------------------------------
+// DIELECTRIC SURFACES -- charge stays where it lands
+//
+// For a barrier that IS meshed as its own region, do not use these: declare the
+// region in constant/regionProperties and the interface condition is derived.
+// These are for a barrier too thin to mesh, or absent from the domain.
+// ---------------------------------------------------------------------------
+
+thinDielectricSurface
+{
+    description "A free-standing insulating sheet: open gas or vacuum behind it.";
+    // APPROPRIATE MECHANISMS: ionInducedSEE with `surface insulator`, which
+    // uses the band gap and electron affinity rather than a work function;
+    // electronInducedSEE, whose delta can exceed 1 and is what makes an
+    // insulator charge POSITIVE. delta_max is NOT shipped for insulators -- see
+    // etc/materials/workFunctions for why -- so it must be given explicitly.
+    requires    ( material );
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { gammaSEE -1; electronReflection -1; }
+
+
+    // C = 0, so pure Neumann: eps_g dV/dn = sigma. NO thickness and NO
+    // epsilonR -- with nothing behind the sheet there is no capacitance, and
+    // the layer's own permittivity does not enter. The condition REJECTS
+    // epsilonR here for exactly that reason.
+    electrostatics
+    {
+        type            thinDielectricPotential;
+        surfCharge      surfCharge;
+        value           "<internalField>";
+    }
+
+    plasmaTransport { surface chargingSurface; }
+}
+
+thinDielectricOnElectrode
+{
+    description "A thin barrier bonded to an electrode: a capacitor to it.";
+    requires    ( material thickness backingPotential );
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { gammaSEE -1; electronReflection -1; }
+
+
+    // C = eps0*epsilonR/d, so Robin: eps_g dV/dn = sigma - C (V - Vb).
+    // `thickness` and `backingPotential` are a PAIR and the condition rejects
+    // one without the other -- a thickness with nothing behind it is a
+    // capacitance to nowhere.
+    electrostatics
+    {
+        type                thinDielectricPotential;
+        epsilonR            "<material:epsilonR>";
+        thickness           "<thickness>";
+        backingPotential    "<backingPotential>";
+        surfCharge          surfCharge;
+        value               "<internalField>";
+    }
+
+    plasmaTransport { surface chargingSurface; }
+}
+
+// ---------------------------------------------------------------------------
+// EVERYTHING ELSE
+// ---------------------------------------------------------------------------
+
+openBoundary
+{
+    // A DOMAIN TRUNCATION, AND THE GAS CONTINUES OUTSIDE IT AT AMBIENT
+    // CONDITIONS. Species therefore get `inletOutlet`, which acts both ways:
+    //   OUTFLOW -- identical to zeroGradient. They drift out freely and no
+    //              diffusive flux is imposed; nothing is trapped.
+    //   INFLOW  -- the face takes the AMBIENT value, because what enters comes
+    //              from OUTSIDE the domain, not from the cell next to it.
+    //
+    // The inflow branch is not hypothetical: in a positive streamer the outer
+    // boundary IS an inflow boundary for electrons, which drift against E and
+    // so move inward across it. Under zeroGradient the boundary imports
+    // whatever the near-boundary cell holds, and in a net-attaching bulk that
+    // is progressively depleted -- so the background drains out of the domain.
+    //
+    // The ambient value is DERIVED from each species' own `minNumberDensity`
+    // (G1): a case already sets the floor TO the background level, precisely so
+    // the bulk cannot attach itself away, and restating the number in a
+    // boundary entry only lets the two drift apart.
+    description "An artificial outer boundary: the domain simply ends here.";
+
+    // zeroGradient on the potential is a MODELLING CHOICE and not a free one:
+    // it says the normal field vanishes, which is only true if the boundary is
+    // far enough away. If it is not, extend the ELECTROSTATIC domain with a
+    // `farField` region rather than moving this boundary -- Poisson is
+    // long-range and usually needs a larger domain than the plasma does.
+    electrostatics { type zeroGradient; }
+
+    plasmaTransport { surface open; }
+}
+
+ballastedElectrode
+{
+    description "A conductor fed from a VOLTAGE source through a ballast: the supply voltage is what you set, and the electrode's own potential is an OUTPUT, found where the load line meets the discharge characteristic.";
+    // THE CLASSIC CASE, and the one to reach for by default. You know your
+    // supply voltage and your ballast resistor; you do NOT generally know the
+    // current the discharge will settle at -- that is the answer, not an input.
+    //
+    // The circuit is declared HERE, on the electrode it feeds, so the patch
+    // name is never written twice and cannot drift:
+    //
+    //     circuit { type seriesResistor; sourceVoltage <Function1>;
+    //               resistance <Ohm>; }
+    //     circuit { type seriesRC;       sourceVoltage <Function1>;
+    //               resistance <Ohm>; capacitance <F>; }
+    //
+    // `sourceVoltage` is SIGNED -- negative for a cathode. Prefer seriesRC:
+    // the shunt capacitance is what makes a real rig light gently, and with
+    // the gap's own capacitance alone the electrode snaps to full voltage
+    // before any plasma exists.
+    //
+    // `type currentSource` here is FATAL: it imposes a current, so it belongs
+    // on `currentDrivenElectrode`. The role names WHICH QUANTITY THE SUPPLY
+    // IMPOSES, and that is a genuine physical difference, not a topology
+    // detail -- exactly as driven / grounded / floating are.
+    requires    ( circuit );
+    optional    { material none; gammaSEE -1; electronReflection -1; }
+    electrostatics
+    {
+        // Plain fixedValue, NOT uniformFixedValue: the circuit writes the
+        // value each step, and a uniformFixedValue would re-evaluate its own
+        // Function1 on every updateCoeffs and overwrite it.
+        type            fixedValue;
+        value           uniform 0;
+    }
+    // A metal surface, exactly as drivenElectrode: what the CIRCUIT does is
+    // invisible to the species, which see a conductor either way. Dropping
+    // this block is what broke both roles on 2026-09-06 -- the electrostatics
+    // half is not the whole role.
+    plasmaTransport { surface conductor; }
+}
+
+currentDrivenElectrode
+{
+    description "A conductor fed from a CURRENT source: the current is what you set, and both the electrode potential and the gap voltage are OUTPUTS.";
+    // USE THIS WHEN THE CURRENT IS THE KNOWN QUANTITY -- a paper quoting a
+    // current density, a supply run in constant-current mode, or a sweep that
+    // traces the V-I CHARACTERISTIC directly (Townsend, subnormal, normal,
+    // abnormal), which is not obtainable at fixed voltage at all because the
+    // flat normal-glow branch is not a function there.
+    //
+    // IT IS NOT THE DEFAULT, deliberately. The operating current is usually
+    // what you are trying to find out, and it is not known at the start of a
+    // case; the ballast is the honest instrument then. This role exists so
+    // that the choice is the user's rather than the framework's.
+    //
+    //     circuit { type currentSource; setCurrent <Function1>;
+    //               compliance <V>; capacitance <F>; }
+    //
+    // `setCurrent` is a MAGNITUDE in amperes -- not a density; the electrode
+    // area is a property of the mesh. `compliance` is the supply's voltage
+    // rail, REQUIRED and SIGNED, and its sign is what gives the current its
+    // polarity. `capacitance` is optional but sets the pre-ignition ramp,
+    // dV/dt = I_set/C, so a case that omits it gets whatever the gap's own
+    // capacitance gives -- usually far too fast.
+    //
+    // A `resistance` here is FATAL: a current source has no ballast, and
+    // silently ignoring it is how a case comes to believe it has one.
+    requires    ( circuit );
+    optional    { material none; gammaSEE -1; electronReflection -1; }
+    electrostatics
+    {
+        // Plain fixedValue, for the same reason as ballastedElectrode: the
+        // circuit writes the value each step.
+        type            fixedValue;
+        value           uniform 0;
+    }
+    plasmaTransport { surface conductor; }
+}
+
+insulatingWall
+{
+    description "A solid wall that is not an electrode and does not charge.";
+    // gammaSEE / electronReflection: SURFACE EMISSION AND REFLECTION, declared
+    // here so a case never has to reach into a changeDictionary for them.
+    //   gammaSEE            secondary-electron yield per incident ion. Giving
+    //                       it switches emission ON and sets the coefficient.
+    //                       It WINS over `material`, because a validation case
+    //                       reproducing a published gamma must use that number
+    //                       rather than one derived from a work function.
+    //   electronReflection  fraction of electrons reflected at the surface.
+    //                       Written on the ELECTRON and the ENERGY condition
+    //                       both -- the Hagelaar closure uses it in the energy
+    //                       weight as well as the particle flux.
+    // Neither is defaulted: an undeclared key is absent, and 0 is a real,
+    // different choice (a perfectly absorbing, non-emitting wall).
+    optional    { material none; gammaSEE -1; electronReflection -1; }
+    // APPROPRIATE MECHANISMS: as thinDielectricSurface, though a wall that
+    // does not accumulate charge is usually not the place emission matters.
+
+    // Absorbs particles but accumulates nothing, because the potential
+    // condition here reads no charge. If the wall SHOULD trap charge, it is a
+    // thinDielectricSurface, not this -- `zeroGradient` is the same equation
+    // with sigma forced to zero, so a wall meant to charge and left as this
+    // will quietly lose every charge that reaches it.
+    electrostatics { type zeroGradient; }
+
+    plasmaTransport { surface conductor; }
+}
+
+// ************************************************************************* //

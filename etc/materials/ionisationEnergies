@@ -1,0 +1,117 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA -- SHIPPED LIBRARY: first ionisation energies [eV]                  |
+|                                                                              |
+| G2: physics-rigid or literature-derived, with the reference in the entry.    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      ionisationEnergies;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// WHAT THIS IS FOR
+//
+// The first ionisation energy of a NEUTRAL species, in eV. It is indexed by the
+// NEUTRAL name (`N2`, `CO2`, ...), not by the ion, because that is the quantity
+// that exists: a singly-charged ion returning to neutral at a surface releases
+// exactly this energy.
+//
+// It drives ION-INDUCED SECONDARY EMISSION by potential (Auger) emission, which
+// is what matters below ~1 keV -- i.e. in every collisional discharge this
+// solver is aimed at. For a METAL of work function phi (see
+// etc/materials/workFunctions):
+//
+//     gamma_i ~ 0.016 (0.8 E_ion - 2 phi)          [Raizer 1991, sec. 4,
+//                                                   after Hagstrum]
+//
+// and the process is energetically FORBIDDEN when 0.8 E_ion < 2 phi. That
+// threshold is physical, not a fitting artefact: Auger neutralisation must
+// supply enough energy to lift a second electron over the barrier. It is why
+// O2+ (12.07 eV) barely emits from copper (2 phi = 9.3 eV) while N2+
+// (15.58 eV) does.
+//
+// FOR AN INSULATOR THE CRITERION IS DIFFERENT and phi does not apply. The
+// relevant quantities are the BAND GAP Eg and the ELECTRON AFFINITY chi, with
+// emission requiring roughly E_ion > Eg + 2 chi. Those are carried per material
+// in etc/materials/dielectrics. This is why MgO is exceptional: a low electron
+// affinity (~0.85 eV) makes the criterion easy to satisfy.
+//
+// NOTE ON KINETIC EMISSION, which is NOT covered here. Above roughly
+// 0.5-1 keV impact energy, momentum transfer starts to eject electrons and
+// gamma grows with energy. In an atmospheric-pressure discharge ions are
+// collisional and arrive with a few eV to tens of eV, so that channel is
+// negligible -- but it is not negligible in a low-pressure sheath, and this
+// library does not describe it.
+//
+// SOURCE for every value below, unless the entry says otherwise:
+//   NIST Atomic Spectra Database (atoms) and NIST Chemistry WebBook,
+//   Standard Reference Database 69 (molecules); values cross-checked against
+//   CRC Handbook of Chemistry and Physics, 95th ed. (2014), sec. 10.
+// Atomic values are known to ~1e-4 eV; molecular values are ADIABATIC
+// ionisation energies and are quoted to the precision the sources agree on,
+// typically 0.01 eV. Where a molecule's vertical and adiabatic values differ
+// materially the entry says so, because potential emission responds to the
+// energy actually RELEASED on neutralisation.
+
+// --- noble gases -----------------------------------------------------------
+He  { E 24.5874; reference "NIST ASD. The highest of any species -- which is why He+ emits from almost any surface."; }
+Ne  { E 21.5646; reference "NIST ASD."; }
+Ar  { E 15.7596; reference "NIST ASD. The reference ion of the cold-cathode literature (Phelps & Petrovic 1999)."; }
+Kr  { E 13.9996; reference "NIST ASD."; }
+Xe  { E 12.1298; reference "NIST ASD. Low enough that potential emission is weak on high-phi metals -- hence MgO in Xe/Ne display panels."; }
+
+// --- atoms -----------------------------------------------------------------
+H   { E 13.5984; reference "NIST ASD."; }
+C   { E 11.2603; reference "NIST ASD."; }
+N   { E 14.5341; reference "NIST ASD."; }
+O   { E 13.6181; reference "NIST ASD."; }
+F   { E 17.4228; reference "NIST ASD."; }
+Cl  { E 12.9676; reference "NIST ASD."; }
+S   { E 10.3600; reference "NIST ASD."; }
+Si  { E  8.1517; reference "NIST ASD."; }
+Ar_ { E 15.7596; reference "Alias for Ar, for mechanisms that suffix atomic species."; }
+
+// --- air, and its products -------------------------------------------------
+N2  { E 15.5808; reference "NIST WebBook. Adiabatic; vertical 15.58 eV -- the two coincide, N2+ being bound in the same geometry."; }
+O2  { E 12.0697; reference "NIST WebBook. Adiabatic; vertical 12.30 eV."; }
+NO  { E  9.2642; reference "NIST WebBook. The LOWEST of the common air species, so NO+ is a poor secondary-electron source."; }
+N2O { E 12.8860; reference "NIST WebBook."; }
+NO2 { E  9.5860; reference "NIST WebBook."; }
+O3  { E 12.4300; reference "NIST WebBook. Adiabatic; the literature spread is ~0.1 eV."; }
+OH  { E 13.0170; reference "NIST WebBook."; }
+H2O { E 12.6210; reference "NIST WebBook. Adiabatic; vertical 12.62 eV. Relevant for HUMID air, where it is the dominant proton donor."; }
+
+// --- carbon dioxide and carbon chemistry -----------------------------------
+CO2 { E 13.7770; reference "NIST WebBook. Adiabatic; vertical 13.78 eV."; }
+CO  { E 14.0142; reference "NIST WebBook."; }
+CH4 { E 12.6100; reference "NIST WebBook. Adiabatic; vertical 13.6 eV -- the difference is large because CH4+ is strongly distorted, so quote the adiabatic value for surface neutralisation."; }
+C2H2 { E 11.4000; reference "NIST WebBook."; }
+C2H4 { E 10.5138; reference "NIST WebBook."; }
+C2H6 { E 11.5200; reference "NIST WebBook."; }
+C3H8 { E 10.9400; reference "NIST WebBook."; }
+CH3OH { E 10.8400; reference "NIST WebBook."; }
+HCN { E 13.6000; reference "NIST WebBook."; }
+C6H6 { E  9.2438; reference "NIST WebBook. Benzene -- the lowest here, and a reminder that hydrocarbons make poor secondary emitters."; }
+
+// --- ammonia and nitrogen chemistry ----------------------------------------
+NH3 { E 10.0700; reference "NIST WebBook. Adiabatic; vertical 10.85 eV. LOW: on copper (2 phi = 9.3 eV) potential emission is nearly switched off."; }
+NH2 { E 11.1400; reference "NIST WebBook."; }
+NH  { E 13.4900; reference "NIST WebBook."; }
+N2H4 { E  8.1000; reference "NIST WebBook. Hydrazine."; }
+
+// --- hydrogen --------------------------------------------------------------
+H2  { E 15.4259; reference "NIST WebBook. High, so H2+/H3+ emit readily."; }
+
+// --- sulphur, halogens, electronegative additives --------------------------
+SO2 { E 12.3490; reference "NIST WebBook."; }
+H2S { E 10.4570; reference "NIST WebBook."; }
+SF6 { E 15.3200; reference "NIST WebBook. Spread ~0.3 eV across sources; SF6 ionises dissociatively, so the released energy on neutralisation is not well represented by a single number -- treat with caution."; }
+CF4 { E 16.2000; reference "NIST WebBook. As for SF6, dissociative -- indicative only."; }
+Cl2 { E 11.4800; reference "NIST WebBook."; }
+HCl { E 12.7440; reference "NIST WebBook."; }
+F2  { E 15.6970; reference "NIST WebBook."; }
+
+// ************************************************************************* //

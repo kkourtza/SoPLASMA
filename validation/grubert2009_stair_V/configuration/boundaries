@@ -1,0 +1,88 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Grubert 2009 dc glow -- the SEMANTIC boundary description.                  |
+|                                                                              |
+|  G2: this says WHAT each surface IS. Every dictionary in 0/ is DERIVED from   |
+|  it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.                   |
+|                                                                              |
+|  Only the two electrodes are declared. side_lo/side_hi are `symmetryPlane`   |
+|  and front/back are `empty` -- CONSTRAINT patches, which carry their own      |
+|  condition by construction and are not a semantic choice.                     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+// The waveform is written LITERALLY, not as $appliedVoltage. A $var nested
+// inside a compound value is not expanded by OpenFOAM's dictionary reader --
+// `table ((0 0) ($t $V))` fails -- so the gap voltage is stated once, here,
+// and nowhere else.
+//
+// -500 V on the CATHODE, anode grounded: Grubert's polarity. The 100 ns ramp
+// is numerical hygiene only, 45x shorter than the 4.5 us ion transit time, so
+// it cannot influence the steady state this case is run to measure.
+cathode
+{
+    // BALLASTED, not driven: the potential is an OUTPUT of the external
+    // circuit declared in system/plasmaSimulationControls. See
+    // docs/design/external-circuit-plan.md for why a fixed-voltage gap above
+    // breakdown cannot select an operating point.
+    kind        ballastedElectrode;
+
+    // THE VOLTAGE STAIRCASE -- the same experiment through the other
+    // instrument, at the user's suggestion (2026-09-06): if holding the
+    // CURRENT until gamma relaxes works, holding the VOLTAGE should too,
+    // because the stability analysis says every circuit is stable at
+    // gamma = 0 and the classical ballast criterion R > |dV/dI| is met with a
+    // 59x margin (R = 1e8 against 1/|g| = 1.7e6 Ohm).
+    //
+    // WHY IT IS WORTH RUNNING ALONGSIDE `grubert2009_iset_stair`: same
+    // destination, DIFFERENT ACTUATOR. Agreement between a current-imposed and
+    // a voltage-imposed trace is far stronger evidence than either alone,
+    // because the two have unrelated failure modes.
+    //
+    // THE ASYMMETRY, stated so the comparison is read correctly: with voltage
+    // control you set V and the current is wherever the load line intersects
+    // the characteristic, so on a FLAT normal-glow branch a small dV gives a
+    // large dj and the points cannot be placed where you want them. Current
+    // control sets j and reads V. That is why V-I curves are traced under
+    // current control, and why this arm is the CHECK rather than the primary.
+    circuit
+    {
+        // No shunt capacitance: tau = R*C_gap = 17.7 ns, so the ballast is
+        // fast on every timescale that matters once gamma = 0. The 5e-14 F
+        // shunt used earlier made tau = 5 us and was the reason that arm could
+        // not respond at all.
+        type          seriesResistor;
+
+        // V_src staircase. -602 V puts the load line V_gap = V_src - R*I
+        // through Grubert's operating point EXACTLY: -602 + 1e8*1.022e-6 =
+        // -500 V at j = 0.511 mA/cm^2.
+        //
+        // Held 12 us (2-3 ion transits) with 4 us ramped risers, matching the
+        // current staircase so the two are comparable step for step.
+        sourceVoltage table ((0 -250) (2e-06 -250) (1.4e-05 -250) (1.8e-05 -350) (3e-05 -350) (3.4e-05 -450) (4.6e-05 -450) (5e-05 -602) (6.2e-05 -602) (6.6e-05 -800) (7.8e-05 -800));
+        resistance    1e8;
+    }
+
+    gammaSEE            0.06;
+}
+
+anode
+{
+    kind        groundedElectrode;
+
+    // Grubert's anode electron reflection. This is a LARGE value and the
+    // reason V4 is worth running: nothing in this framework had ever exercised
+    // a non-zero reflection coefficient before (framework-state gap 16).
+    electronReflection  0.36;
+}
+
+// NOT DECLARED: their ion reflection of 5e-4. The ion wall condition takes no
+// reflection coefficient, and at 5e-4 it changes the ion wall flux by 0.05% --
+// far below the ~5% spread between our Boltzmann coefficients and theirs. It
+// is recorded here so its absence is a stated choice rather than an omission.

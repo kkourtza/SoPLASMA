@@ -1,0 +1,35 @@
+EXE_INC = \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaChemistry/lnInclude \
+    -I$(LIB_SRC)/ODE/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaReactionRates/lnInclude \
+    -I$(LIB_SRC)/finiteVolume/lnInclude \
+    -I$(LIB_SRC)/OpenFOAM/lnInclude \
+    -I$(LIB_SRC)/meshTools/lnInclude \
+    -I$(SoPLASMA_SRC)/bcs/plasmaTransportBcs/plasmaWallBC \
+    -I$(SoPLASMA_SRC)/constants/lnInclude \
+    -I$(SoPLASMA_SRC)/tools/lnInclude \
+    -I$(SoPLASMA_SRC)/models/electromagnetics/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaSpecies/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/photoionization/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/genericPlasmaProperties/lnInclude \
+    -I$(SoPLASMA_SRC)/numerics/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaEnergy/lnInclude \
+    -I$(SoPLASMA_SRC)/profilers/lnInclude
+
+LIB_LIBS = \
+    -L$(FOAM_USER_LIBBIN) -lplasmaChemistry \
+    -lODE \
+    -lplasmaReactionRates \
+    -L$(FOAM_USER_LIBBIN) \
+    -lfiniteVolume \
+    -lOpenFOAM \
+    -lmeshTools \
+    -lSoPLASMAConstants \
+    -lplasmaElectromagnetics \
+    -lplasmaSpecies \
+    -lphotoionization \
+    -lplasmaProperties \
+    -lplasmaNumerics \
+    -lplasmaEnergy \
+    -lplasmaProfilers
+    

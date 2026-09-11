@@ -1,0 +1,33 @@
+EXE_INC = \
+    -DMPICH_SKIP_MPICXX -DOMPI_SKIP_MPICXX \
+    -I/usr/lib/x86_64-linux-gnu/openmpi/include \
+    -I/usr/lib/x86_64-linux-gnu/openmpi/include/openmpi \
+    -I$(PETSC_DIR)/$(PETSC_ARCH)/include \
+    -I$(PETSC_DIR)/include \
+    -I$(LIB_SRC)/finiteVolume/lnInclude \
+    -I$(LIB_SRC)/meshTools/lnInclude \
+    -I$(SoPLASMA_SRC)/constants/lnInclude \
+    -I$(SoPLASMA_SRC)/models/electromagnetics/lnInclude \
+    -I$(SoPLASMA_SRC)/bcs/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaSpecies/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaTransport/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/plasmaEnergy/lnInclude \
+    -I$(SoPLASMA_SRC)/models/plasmaModels/genericPlasmaProperties/lnInclude \
+    -I$(SoPLASMA_SRC)/numerics/lnInclude \
+    -I$(SoPLASMA_SRC)/profilers/lnInclude
+
+LIB_LIBS = \
+    -L$(FOAM_USER_LIBBIN) \
+    -L$(PETSC_DIR)/$(PETSC_ARCH)/lib -lpetsc \
+    -lfiniteVolume \
+    -lmeshTools \
+    -lOpenFOAM \
+    -lSoPLASMAConstants \
+    -lplasmaElectromagnetics \
+    -lplasmaBcs \
+    -lplasmaSpecies \
+    -lplasmaTransport \
+    -lplasmaEnergy \
+    -lplasmaProperties \
+    -lplasmaNumerics \
+    -lplasmaProfilers

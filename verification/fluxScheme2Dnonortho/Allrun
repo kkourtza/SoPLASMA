@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# NON-ORTHOGONAL comparison, 2D manufactured solution.
+#
+#   n(x,y) = 1 + x + A sin(pi x) sin(pi y)
+#
+# with the EXACT value imposed on every patch at each face's own centre, so the
+# boundary data is consistent with WHATEVER shape the mesh has. SHEAR is then
+# the only variable: shear=0 is the orthogonal control, shear>0 the test.
+cd "${0%/*}" || exit 1
+source /usr/lib/openfoam/openfoam2412/etc/bashrc >/dev/null 2>&1
+export SoPLASMA=$HOME/soplasma-scratch
+export SoPLASMA_ETC=$SoPLASMA/etc
+export SoPLASMA_SRC=$SoPLASMA/src
+mkdir -p logs ; : > results.txt
+for SH in ${SHEARS:-0.0 0.20}; do
+  P1=$(python3 -c "print(1+$SH)")
+  for PE in 1 100 10000; do
+    for N in 10 20 40 80; do
+      sed -e "s/NCELLS/$N/" -e "s/SHEARP1/$P1/" -e "s/SHEAR0/$SH/" \
+          system/blockMeshDict.in > system/blockMeshDict
+      cp 0/n.in 0/n
+      blockMesh > logs/log.blockMesh 2>&1 || { echo "blockMesh FAILED"; exit 1; }
+      sed "s|div(phi,n) .*;|div(phi,n) Gauss upwind;|" system/fvSchemes.in > system/fvSchemes
+      for SCH in ScharfetterGummel CompleteFlux; do
+        testFluxScheme -v $PE -D 1 -S 1 -mms2d 0.5 -a 1 -b 2 -scheme $SCH \
+          > logs/log.$SCH.$SH.$PE.$N 2>&1
+        grep -h "^RESULT" logs/log.$SCH.$SH.$PE.$N \
+          | sed -e "s/N= */N=/" -e "s/scheme=/shear=$SH scheme=/" >> results.txt
+      done
+    done
+  done
+done
+echo "results in results.txt"

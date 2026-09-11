@@ -1,0 +1,89 @@
+/*--------------------------------*- C++ -*----------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      nEps_e;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// ELECTRON ENERGY DENSITY n_eps = n_e * eps_bar  [eV/m^3], the LMEA
+// transported variable.
+//
+// Present so the field has DEFINED boundary conditions. Constructed
+// programmatically it gets `calculated` everywhere, which is not a boundary
+// condition for a transported quantity -- it is the absence of one.
+//
+// The conditions MIRROR n_e, because the energy leaves on the same electrons:
+// pairing a flux condition here with zeroGradient there (or vice versa) is
+// incoherent. This case uses zeroGradient at the electrodes, so this does too.
+//
+// A case whose electron condition comes from the ddWallFlux family should use
+// `energyDDWallFluxMixed` here instead, which inherits that condition and
+// reweights it by the flux-averaged energy 2 k_B T_e = (4/3) eps:
+//
+//     active_electrode
+//     {
+//         type                     energyDDWallFluxMixed;
+//         species                  e;     // this field is a property OF e
+//         T                        T_e;
+//         secondaryElectronEnergy  2;     // eV, user-defined: depends on the
+//                                         // surface and the incident ion
+//         enableSEE                true;
+//     }
+
+dimensions      [0 -3 0 0 0 0 0];
+
+// 1 eV x the background electron density, i.e. the seed the model would apply
+// itself. Written explicitly so the initial state is in the case rather than
+// in the code.
+internalField   uniform 1e13;
+
+boundaryField
+{
+    ".*"
+    {
+        type            zeroGradient;
+    }
+
+    axis
+    {
+        type            empty;
+    }
+
+    wedge_0
+    {
+        type            wedge;
+    }
+
+    wedge_1
+    {
+        type            wedge;
+    }
+
+    grounded_electrode
+    {
+        type            zeroGradient;
+    }
+
+    active_electrode
+    {
+        type            zeroGradient;
+    }
+
+    far
+    {
+        type            inletOutlet;
+        phi             particleFlux_e;
+        inletValue      uniform 1e13;
+        value           $internalField;
+    }
+
+    "procBoundary.*"
+    {
+        type            processor;
+    }
+}
+
+// ************************************************************************* //

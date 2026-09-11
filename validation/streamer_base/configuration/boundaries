@@ -1,0 +1,65 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  positiveStreamer (LMEA fast bed) -- the SEMANTIC boundary description.      |
+|                                                                              |
+|  G2 / LAYER 1: this says WHAT each surface IS. Every dictionary in 0/ is     |
+|  DERIVED from it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.     |
+|                                                                              |
+|  ADDED 2026-09-10. The case previously configured its boundaries through     |
+|  `etc/changeDictionary`, which predates the boundary-role library, and it    |
+|  had never been swept onto layer 1 -- so `plasmaCreateSpeciesFields` refused |
+|  to run and the tutorial could not start AT ALL, under either outer solver.  |
+|  Every declaration below reproduces exactly what that changeDictionary set,  |
+|  so this is a translation and not a change of physics:                       |
+|                                                                              |
+|      grounded_electrode : fixedValue uniform 0                               |
+|      active_electrode   : uniformFixedValue, table ((0 0) (ramp, V))         |
+|      far                : the ".*" default, zeroGradient                     |
+|                                                                              |
+|  axis (empty) and wedge_0/wedge_1 (wedge) are CONSTRAINT patches: they carry |
+|  their own condition by construction and are not a semantic choice, so they  |
+|  are deliberately NOT declared here.                                         |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+// The powered needle/point electrode. RAMPED, not stepped -- and the ramp is
+// a deliberate deviation from the benchmark, which specifies a constant
+// 18.75 kV from t = 0. The original case comment is preserved because it
+// matters for interpreting early-time results:
+//
+//     "Ramped, not a step. The benchmark specifies a constant 18.75 kV from
+//      t=0; ramping withholds part of the applied field over the first ~94 ps,
+//      so early-time behaviour is NOT directly comparable with the reference.
+//      Kept deliberately: a step change puts a very large field transient on
+//      the electrode in the first timesteps."
+//
+// The numbers are $appliedVoltage and $voltageRampTime from
+// configuration/config, written out literally here: a $var nested inside a
+// compound value is not expanded by OpenFOAM's dictionary reader, which is the
+// same constraint grubert2009's own boundaries file documents.
+active_electrode
+{
+    kind        drivenElectrode;
+    waveform    table ((0 0) (9.375e-11 18.75e3));   // 18.75 kV over 93.75 ps
+}
+
+grounded_electrode
+{
+    kind        groundedElectrode;
+}
+
+// The artificial outer boundary: the domain simply ends here. This is the
+// `zeroGradient` that the old changeDictionary applied through its ".*"
+// catch-all.
+far
+{
+    kind        openBoundary;
+}
+
+// ************************************************************************* //

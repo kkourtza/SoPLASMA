@@ -1,0 +1,3 @@
+SoPLASMAConstants.C
+
+LIB = $(FOAM_USER_LIBBIN)/libSoPLASMAConstants

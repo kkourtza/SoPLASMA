@@ -1,0 +1,5 @@
+blockMatrixCOO.C
+snesNewtonSolver.C
+snesBridge.C
+
+LIB = $(FOAM_USER_LIBBIN)/libplasmaNewtonSolverPETSc

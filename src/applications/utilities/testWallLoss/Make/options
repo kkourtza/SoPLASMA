@@ -1,0 +1,4 @@
+EXE_INC = \
+    -I$(SoPLASMA_SRC)/applications/utilities/plasmaChemistry0D
+
+EXE_LIBS =

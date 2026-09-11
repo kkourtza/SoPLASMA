@@ -1,0 +1,214 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| SoPLASMA -- SHIPPED LIBRARY: electron work functions of CONDUCTORS [eV]      |
+|                                                                              |
+| G2: physics-rigid or literature-derived, with the reference in the entry.    |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      workFunctions;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// WHAT phi IS FOR -- three mechanisms, all of them electrode emission:
+//
+//   ION-INDUCED (potential/Auger) emission, below ~1 keV:
+//       gamma_i ~ 0.016 (0.8 E_ion - 2 phi)      Raizer 1991 sec. 4, after
+//                                               Hagstrum. Forbidden when
+//                                               0.8 E_ion < 2 phi.
+//   THERMIONIC emission (Richardson-Dushman):
+//       J = lambda_R A0 T^2 exp(-phi / kT),  A0 = 120.173 A cm^-2 K^-2
+//   FIELD emission (Fowler-Nordheim): phi enters the exponent, so the current
+//       is exponentially sensitive to it -- a 0.2 eV error is a large error.
+//
+// phi IS A SURFACE PROPERTY, NOT A BULK ONE, and this is the single most
+// important caveat in this file. It varies with:
+//
+//   * CRYSTAL FACE, by 0.3-1.0 eV on the same metal. W(110) is 5.25 eV while
+//     W(111) is 4.47 eV -- a 0.8 eV spread, larger than the difference between
+//     most metals here. The values below are POLYCRYSTALLINE averages, which
+//     is the right choice for a technical electrode but wrong for a single
+//     crystal.
+//   * ADSORBATES AND OXIDE. An air-exposed metal is not the metal: oxygen and
+//     water adsorption typically RAISE phi by 0.3-1 eV, caesium and other
+//     alkalis LOWER it by more. A machined aluminium electrode in room air is
+//     an alumina surface, not aluminium.
+//   * TEMPERATURE, weakly (~1e-4 eV/K), which is negligible here.
+//
+// So: THE SPREAD FROM SURFACE STATE IS COMPARABLE TO OR LARGER THAN THE SPREAD
+// BETWEEN THESE MATERIALS. Use these values to get the right order of magnitude
+// and the right ORDERING, not to predict an absolute emission current. If an
+// emission current matters quantitatively to your result, phi is a number to
+// measure or fit for YOUR surface, and the case should say so.
+//
+// FOR INSULATORS, phi IS NOT THE RIGHT QUANTITY and there are no insulator
+// entries here. Use the BAND GAP and ELECTRON AFFINITY carried per material in
+// etc/materials/dielectrics.
+//
+// SOURCE for every value unless the entry says otherwise:
+//   Michaelson, H. B. (1977) "The work function of the elements and its
+//   periodicity", J. Appl. Phys. 48, 4729 -- the standard polycrystalline
+//   compilation; cross-checked against CRC Handbook 95th ed., sec. 12.
+
+// ---------------------------------------------------------------------------
+// ELECTRON-INDUCED SECONDARY YIELD: deltaMax and energyDeltaMax
+//
+// Vaughan's universal curve needs two numbers per material -- the PEAK yield
+// and the energy at which it peaks. The curve's SHAPE is material-independent,
+// which is what makes electron-induced emission generalizable where a fitted
+// gamma_eff(E/N) is not.
+//
+// Given below ONLY for metals, and only where the compilations agree to better
+// than about 20%. Metal yields are reasonably reproducible because the surface
+// conducts and does not charge while it is being measured.
+//
+// DELIBERATELY ABSENT FOR THE INSULATORS in etc/materials/dielectrics. Their
+// published spread is enormous -- MgO is quoted from about 4 to 25 depending on
+// preparation, Al2O3 from 2 to 9 -- because an insulator CHARGES while it is
+// measured, altering the very quantity being measured. That spread is far
+// larger than the difference between materials, which is exactly the case G2
+// says must not be given a point value. An insulator must be given deltaMax
+// explicitly, from a source describing that surface.
+//
+// SOURCE for every pair below: Seiler, H., J. Appl. Phys. 54 (1983) R1, the
+// standard secondary-emission review; cross-checked against Joy, D. C.,
+// Scanning 17 (1995) 270.
+// ---------------------------------------------------------------------------
+
+// --- the common technical electrode metals ---------------------------------
+copper
+{
+    phi              4.65;
+    deltaMax         1.3;
+    energyDeltaMax   600.0;
+    // delta_max 1.28-1.35 across sources.
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline. The reference cathode of the cold-cathode discharge literature.";
+}
+aluminium
+{
+    phi              4.28;
+    deltaMax         1.0;
+    energyDeltaMax   300.0;
+    // Peak near UNITY: an aluminium surface barely multiplies.
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline. NOTE: an air-exposed aluminium electrode is really alumina -- see etc/materials/dielectrics.";
+}
+stainlessSteel
+{
+    phi              4.40;
+    deltaMax         1.3;
+    energyDeltaMax   400.0;
+    // Dominated by the Cr-rich oxide, not the alloy; indicative only.
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Not an element and not in Michaelson: a representative value for austenitic (300-series) stainless, whose surface is a Cr-rich oxide. The literature spans 4.3-4.5 eV depending on alloy and finish. Indicative only.";
+}
+tungsten
+{
+    phi              4.55;
+    deltaMax         1.4;
+    energyDeltaMax   650.0;
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline. Faces span W(111) 4.47 to W(110) 5.25 -- a 0.8 eV spread.";
+}
+molybdenum
+{
+    phi              4.60;
+    deltaMax         1.25;
+    energyDeltaMax   375.0;
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline.";
+}
+nickel
+{
+    phi              5.15;
+    deltaMax         1.3;
+    energyDeltaMax   550.0;
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline.";
+}
+iron
+{
+    phi              4.50;
+    deltaMax         1.3;
+    energyDeltaMax   400.0;
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline.";
+}
+titanium        { phi 4.33; reference "Michaelson (1977), polycrystalline."; }
+graphite
+{
+    phi              5.00;
+    deltaMax         1.0;
+    energyDeltaMax   300.0;
+    // Carbon coatings are used to SUPPRESS multiplication.
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), carbon, polycrystalline graphite. Basal plane ~4.6, edge planes higher.";
+}
+brass           { phi 4.50; reference "Not an element: representative for Cu-Zn alloys, between copper (4.65) and zinc (4.33) and dominated by whichever segregates to the surface. Indicative only."; }
+
+// --- noble and high-phi metals (probes, coatings, catalysis) ---------------
+gold
+{
+    phi              5.10;
+    deltaMax         1.45;
+    energyDeltaMax   800.0;
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline.";
+}
+platinum
+{
+    phi              5.65;
+    deltaMax         1.8;
+    energyDeltaMax   700.0;
+    // The highest of the common metals.
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline. The highest common metal, so ion-induced emission is weakest here: 2 phi = 11.3 eV forbids potential emission for O2+, NO+, NH3+ and every hydrocarbon in the ionisation library.";
+}
+palladium       { phi 5.12; reference "Michaelson (1977), polycrystalline."; }
+silver
+{
+    phi              4.26;
+    deltaMax         1.5;
+    energyDeltaMax   800.0;
+    // SEE yield from Seiler (1983) R1; see the note above.
+    reference        "Michaelson (1977), polycrystalline.";
+}
+rhodium         { phi 4.98; reference "Michaelson (1977), polycrystalline."; }
+iridium         { phi 5.27; reference "Michaelson (1977), polycrystalline."; }
+ruthenium       { phi 4.71; reference "Michaelson (1977), polycrystalline."; }
+rhenium         { phi 4.96; reference "Michaelson (1977), polycrystalline."; }
+osmium          { phi 5.93; reference "Michaelson (1977), polycrystalline. The highest element in the compilation."; }
+
+// --- refractory metals (thermionic cathodes, arcs) -------------------------
+tantalum        { phi 4.25; reference "Michaelson (1977), polycrystalline."; }
+niobium         { phi 4.30; reference "Michaelson (1977), polycrystalline."; }
+zirconium       { phi 4.05; reference "Michaelson (1977), polycrystalline."; }
+hafnium         { phi 3.90; reference "Michaelson (1977), polycrystalline."; }
+vanadium        { phi 4.30; reference "Michaelson (1977), polycrystalline."; }
+chromium        { phi 4.50; reference "Michaelson (1977), polycrystalline."; }
+manganese       { phi 4.10; reference "Michaelson (1977), polycrystalline."; }
+thorium         { phi 3.40; reference "Michaelson (1977). Thoriated tungsten is the classic thermionic cathode BECAUSE a Th monolayer lowers W's 4.55 eV to ~2.6 eV -- a monolayer effect this bulk table cannot represent."; }
+uranium         { phi 3.63; reference "Michaelson (1977), polycrystalline."; }
+
+// --- low-phi metals (thermionic and photo-emissive cathodes) ---------------
+caesium         { phi 2.14; reference "Michaelson (1977), polycrystalline. The lowest element -- hence Cs coatings on photocathodes."; }
+rubidium        { phi 2.16; reference "Michaelson (1977), polycrystalline."; }
+potassium       { phi 2.30; reference "Michaelson (1977), polycrystalline."; }
+sodium          { phi 2.75; reference "Michaelson (1977), polycrystalline."; }
+lithium         { phi 2.93; reference "Michaelson (1977), polycrystalline."; }
+barium          { phi 2.70; reference "Michaelson (1977), polycrystalline. Ba and BaO coatings are the standard oxide-cathode emitters."; }
+calcium         { phi 2.87; reference "Michaelson (1977), polycrystalline."; }
+magnesium       { phi 3.66; reference "Michaelson (1977), polycrystalline. NOT to be confused with magnesia (MgO), which is an insulator -- see etc/materials/dielectrics."; }
+beryllium       { phi 4.98; reference "Michaelson (1977), polycrystalline."; }
+
+// --- other elemental metals, for completeness ------------------------------
+zinc            { phi 4.33; reference "Michaelson (1977), polycrystalline."; }
+tin             { phi 4.42; reference "Michaelson (1977), polycrystalline."; }
+lead            { phi 4.25; reference "Michaelson (1977), polycrystalline."; }
+cobalt          { phi 5.00; reference "Michaelson (1977), polycrystalline."; }
+silicon         { phi 4.85; reference "Michaelson (1977), n-type Si(111). Doping-dependent: a SEMICONDUCTOR work function moves with carrier concentration, so this is indicative."; }
+
+// ************************************************************************* //

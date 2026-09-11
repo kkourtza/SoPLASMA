@@ -1,0 +1,4 @@
+testSnesJFNK2Field.C
+snesBridge.C
+
+EXE = $(FOAM_USER_APPBIN)/testSnesJFNK2Field

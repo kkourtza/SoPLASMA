@@ -1,0 +1,19 @@
+#!/bin/bash
+
+#---------------------------------------------
+#  Allwmake script for SoPLASMA suite
+#  Builds all bcs in src/bcs
+#---------------------------------------------
+
+set -e
+
+# Move to the directory where this script is located
+cd "${0%/*}" || exit 1
+
+echo ">>> Building bcs in src/bcs"
+echo "----------------------------------------------"
+
+wmake libso
+
+echo "----------------------------------------------"
+echo ">>> Done building bcs."

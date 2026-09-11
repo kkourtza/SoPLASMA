@@ -1,0 +1,90 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  Grubert 2009 dc glow -- the SEMANTIC boundary description.                  |
+|                                                                              |
+|  G2: this says WHAT each surface IS. Every dictionary in 0/ is DERIVED from   |
+|  it by plasmaSetupBoundaries and plasmaCreateSpeciesFields.                   |
+|                                                                              |
+|  Only the two electrodes are declared. side_lo/side_hi are `symmetryPlane`   |
+|  and front/back are `empty` -- CONSTRAINT patches, which carry their own      |
+|  condition by construction and are not a semantic choice.                     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+
+// The waveform is written LITERALLY, not as $appliedVoltage. A $var nested
+// inside a compound value is not expanded by OpenFOAM's dictionary reader --
+// `table ((0 0) ($t $V))` fails -- so the gap voltage is stated once, here,
+// and nowhere else.
+//
+// -500 V on the CATHODE, anode grounded: Grubert's polarity. The 100 ns ramp
+// is numerical hygiene only, 45x shorter than the 4.5 us ion transit time, so
+// it cannot influence the steady state this case is run to measure.
+cathode
+{
+    // BALLASTED, not driven: the potential is an OUTPUT of the external
+    // circuit declared in system/plasmaSimulationControls. See
+    // doc/external-circuit-plan.md for why a fixed-voltage gap above
+    // breakdown cannot select an operating point.
+    kind        ballastedElectrode;
+
+    // THE BALLAST, RUN CLEANLY FOR THE FIRST TIME.
+    //
+    // Every earlier ballast run pre-dates `b6a7102`, in which 45-50% of
+    // timesteps executed ZERO correctors. `circuit.update()` sits AFTER the
+    // corrector loop (soPlasmaFoam.C:624) so it ran on those steps ANYWAY --
+    // the plasma was frozen while the circuit advanced by dt. **The circuit
+    // therefore ran at ~2x the rate of the plasma in every ballast case**:
+    // grubert2009_ballast, ballast_std, R1e9, R5e9, fix_n11, fix_n8, fix_fast,
+    // ballastCo_*. Their circuit coupling is void even though their plasma
+    // trajectories were smooth against the physical time axis.
+    //
+    // So the physically standard configuration -- a voltage source through a
+    // ballast -- has never had a clean, well-designed run. This is it.
+    circuit
+    {
+        // NO SHUNT CAPACITANCE. tau = R*C_gap = 17.7 ns, so the ballast is
+        // fast on the timescales that matter. The 5e-14 F shunt used earlier
+        // made tau = 5 us and was why that arm could not respond at all.
+        type          seriesResistor;
+
+        // Ramped from ZERO through the -121 V breakdown, at 10 V/us -- 9x
+        // slower than the 3.7-6.7 us ion transit, so the discharge can follow
+        // quasi-statically. Both arms share this RATE, so they ignite at the
+        // same instant (V_src = 121 V at t = 12.1 us) and the ONLY difference
+        // is where the ramp stops. That makes them a control pair.
+        //
+        // V_max = -200 V deliberately LOW, to tighten the current pin. I_sc = V_src/R =
+        // 2.0e-6 A = 1.96x I_op, against 5.9x at -602 V -- only 2x of
+        // headroom to overshoot into. If the discharge cannot sustain
+        // itself at 200 V it simply sits there drawing nothing, which is
+        // an equally clean answer.
+        sourceVoltage table ((0 0) (1e-06 -300));
+        resistance    1e8;
+    }
+
+    gammaSEE            0.06;
+}
+
+anode
+{
+    kind        groundedElectrode;
+
+    // Grubert's anode electron reflection. This is a LARGE value and the
+    // reason V4 is worth running: nothing in this framework had ever exercised
+    // a non-zero reflection coefficient before (framework-state gap 16).
+    // SET TO ZERO 2026-09-07 to mirror 0/n_e and 0/nEps_e, which is what the
+    // run actually used. Left at 0.36 this file would silently disagree with
+    // the fields and revert the change on any regeneration.
+    electronReflection  0.36;
+}
+
+// NOT DECLARED: their ion reflection of 5e-4. The ion wall condition takes no
+// reflection coefficient, and at 5e-4 it changes the ion wall flux by 0.05% --
+// far below the ~5% spread between our Boltzmann coefficients and theirs. It
+// is recorded here so its absence is a stated choice rather than an omission.

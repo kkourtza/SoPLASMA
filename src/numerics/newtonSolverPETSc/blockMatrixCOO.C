@@ -1,0 +1,444 @@
+/*---------------------------------------------------------------------------*\
+License
+    This file is part of SoPLASMA.
+
+    Copyright (C) 2026
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+\*---------------------------------------------------------------------------*/
+
+#include "blockMatrixCOO.H"
+#include "lduAddressing.H"
+
+// * * * * * * * * * * * * * * * * Constructors  * * * * * * * * * * * * * * //
+
+Foam::blockMatrixCOO::blockMatrixCOO
+(
+    const label nCells,
+    const label nFields,
+    const label nTail
+)
+:
+    nCells_(nCells),
+    nFields_(nFields),
+    nTail_(nTail),
+    // The GLOBAL numbering must span the tail as well, or the rank's
+    // ownership range is short by nTail and every tail row lands in the next
+    // rank's territory. nTail is 0 for a single-region case, so this is the
+    // identity there.
+    rowNumbering_(nFields*nCells + nTail)
+{
+    // Diagonal for every unknown, plus both triangles of every internal face
+    // for every field block. An estimate only -- DynamicList grows if the
+    // coupling blocks add more.
+    const label estimate = (nFields*nCells + nTail)*8;
+    rows_.reserve(estimate);
+    cols_.reserve(estimate);
+    vals_.reserve(estimate);
+}
+
+
+// * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
+
+void Foam::blockMatrixCOO::clear()
+{
+    rows_.clear();
+    cols_.clear();
+    vals_.clear();
+}
+
+
+void Foam::blockMatrixCOO::add
+(
+    const label row,
+    const label col,
+    const scalar v
+)
+{
+    rows_.append(row);
+    cols_.append(col);
+    vals_.append(v);
+}
+
+
+void Foam::blockMatrixCOO::addDiagonalBlock
+(
+    const label rowField,
+    const label colField,
+    const scalarField& coeff,
+    const scalar scaling
+)
+{
+    forAll(coeff, c)
+    {
+        add(globalRow(rowField, c), globalRow(colField, c), coeff[c]*scaling);
+    }
+}
+
+
+void Foam::blockMatrixCOO::addFvMatrix
+(
+    const label field,
+    const fvScalarMatrix& m,
+    const scalar scaling,
+    const scalarField& rowFactor
+)
+{
+    // A diagonal block is the off-diagonal case with rowField == colField.
+    addFvMatrixBlock(field, field, m, scaling, rowFactor);
+}
+
+
+void Foam::blockMatrixCOO::addFvMatrixTail
+(
+    const label tailOffset,
+    const fvScalarMatrix& m,
+    const scalar scaling,
+    const scalarField& rowFactor
+)
+{
+    // PARALLEL IS REFUSED, NOT SILENTLY WRONG. The gas blocks below exchange
+    // global row indices across processor interfaces so the matrix is not a
+    // set of disconnected subdomains. That exchange has not been written for
+    // the tail regions, and a Pmat that merely LOOKS assembled is exactly the
+    // failure mode this project has been bitten by; so say so instead.
+    if (Pstream::parRun())
+    {
+        FatalErrorInFunction
+            << "Extra Poisson regions (the ragged tail) are not yet supported"
+            << " in PARALLEL." << nl
+            << "    The tail's processor-interface coupling is not assembled,"
+            << " which would give a preconditioner built from disconnected"
+            << " subdomains rather than failing." << nl
+            << "    Run this case in serial, or use outerSolver picard."
+            << exit(FatalError);
+    }
+
+    const lduAddressing& addr = m.lduAddr();
+    const labelUList& upp = addr.upperAddr();
+    const labelUList& low = addr.lowerAddr();
+
+    // Diagonal, with the boundary contribution folded in -- same reasoning as
+    // addFvMatrixBlock: fvMatrix::addBoundaryDiag() is protected, and by the
+    // time a matrix would normally reach an lduMatrix solver solveSegregated()
+    // has already done this.
+    scalarField d(m.diag());
+    {
+        const FieldField<Field, scalar>& intCoeffs = m.internalCoeffs();
+        forAll(intCoeffs, patchi)
+        {
+            const labelUList& pa = addr.patchAddr(patchi);
+            const scalarField& pc = intCoeffs[patchi];
+            forAll(pa, i)
+            {
+                d[pa[i]] += pc[i];
+            }
+        }
+    }
+
+    forAll(d, c)
+    {
+        const label r = globalTailRow(tailOffset + c);
+        add(r, r, d[c]*scaling*rowFactor[c]);
+    }
+
+    const scalarField& uppVal = m.upper();
+    const scalarField& lowVal = (m.hasLower() ? m.lower() : m.upper());
+
+    forAll(upp, f)
+    {
+        add
+        (
+            globalTailRow(tailOffset + low[f]),
+            globalTailRow(tailOffset + upp[f]),
+            uppVal[f]*scaling*rowFactor[low[f]]
+        );
+        add
+        (
+            globalTailRow(tailOffset + upp[f]),
+            globalTailRow(tailOffset + low[f]),
+            lowVal[f]*scaling*rowFactor[upp[f]]
+        );
+    }
+}
+
+
+void Foam::blockMatrixCOO::addFvMatrixBlock
+(
+    const label rowField,
+    const label colField,
+    const fvScalarMatrix& m,
+    const scalar scaling,
+    const scalarField& rowFactor
+)
+{
+    const lduAddressing& addr = m.lduAddr();
+    const labelUList& upp = addr.upperAddr();
+    const labelUList& low = addr.lowerAddr();
+
+    // DIAGONAL, with the boundary contribution folded in.
+    //
+    // This is the step petsc4Foam does not appear to do only because
+    // fvMatrix::solveSegregated() has already done it by the time a matrix
+    // reaches an lduMatrix solver. Working from an fvScalarMatrix directly, we
+    // must do it ourselves -- on a COPY, so the caller's matrix is untouched.
+    scalarField d(m.diag());
+    {
+        // fvMatrix::addBoundaryDiag() is PROTECTED, so its (short) body is
+        // reproduced here from public API rather than reached by a cast:
+        // each patch's internalCoeffs are added into the diagonal at the
+        // patch's own cells. Keeping it explicit also documents the sign.
+        const lduAddressing& a = m.lduAddr();
+        const FieldField<Field, scalar>& intCoeffs = m.internalCoeffs();
+
+        forAll(intCoeffs, patchi)
+        {
+            const labelUList& pa = a.patchAddr(patchi);
+            const scalarField& pc = intCoeffs[patchi];
+
+            forAll(pa, i)
+            {
+                d[pa[i]] += pc[i];
+            }
+        }
+    }
+
+    forAll(d, c)
+    {
+        add(globalRow(rowField, c), globalRow(colField, c), d[c]*scaling*rowFactor[c]);
+    }
+
+    // OFF-DIAGONAL, both triangles. An asymmetric matrix carries a separate
+    // lower(); a symmetric one reuses upper(), which is the same convention
+    // petscSolver::buildMat uses.
+    const scalarField& uppVal = m.upper();
+    const scalarField& lowVal = (m.hasLower() ? m.lower() : m.upper());
+
+    forAll(upp, f)
+    {
+        // row = owner (lower-numbered cell), col = neighbour
+        add
+        (
+            globalRow(rowField, low[f]), globalRow(colField, upp[f]),
+            uppVal[f]*scaling*rowFactor[low[f]]
+        );
+
+        // and the transpose position
+        add
+        (
+            globalRow(rowField, upp[f]), globalRow(colField, low[f]),
+            lowVal[f]*scaling*rowFactor[upp[f]]
+        );
+    }
+
+    // ---- PROCESSOR INTERFACES: the entries that couple cells owned by
+    // DIFFERENT ranks. Without them the matrix describes a set of
+    // disconnected subdomains -- plausible-looking and wrong.
+    //
+    // The neighbour's GLOBAL row is obtained through OpenFOAM's own interface
+    // transfer rather than by computing rank offsets by hand: we send this
+    // rank's global row index for every cell adjacent to the interface, and
+    // receive the neighbour's. That is exactly how petsc4Foam's buildMat()
+    // does it, and it means the field-major-inside-rank layout needs no
+    // special treatment -- the number that arrives is already the right one.
+    //
+    // The transfer carries the global rows OF THIS FIELD, so it is done once
+    // per field rather than once per matrix.
+    if (Pstream::parRun())
+    {
+        const lduInterfacePtrsList interfaces(m.psi().mesh().interfaces());
+
+        labelList globalRowsThisField(nCells_);
+        forAll(globalRowsThisField, c)
+        {
+            globalRowsThisField[c] = globalRow(colField, c);
+        }
+
+        const label startOfRequests = UPstream::nRequests();
+
+        forAll(interfaces, patchi)
+        {
+            if (interfaces.set(patchi))
+            {
+                interfaces[patchi].initInternalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                );
+            }
+        }
+
+        UPstream::waitRequests(startOfRequests);
+
+        const FieldField<Field, scalar>& bouCoeffs = m.boundaryCoeffs();
+
+        forAll(interfaces, patchi)
+        {
+            if (!interfaces.set(patchi)) continue;
+
+            const labelUList& faceCells = addr.patchAddr(patchi);
+
+            const labelField nbrRows
+            (
+                interfaces[patchi].internalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                )
+            );
+
+            const scalarField& bc = bouCoeffs[patchi];
+
+            forAll(faceCells, i)
+            {
+                // MINUS the boundary coefficient: these are THIS side's
+                // coefficients, from discretising our own face rather than
+                // the neighbour's reversed one (petsc4Foam states the same
+                // convention explicitly at its own interface loop).
+                add
+                (
+                    globalRow(rowField, faceCells[i]),
+                    nbrRows[i],
+                    -bc[i]*scaling*rowFactor[faceCells[i]]
+                );
+            }
+        }
+    }
+}
+
+
+
+void Foam::blockMatrixCOO::addFvMatrixBlockPerCell
+(
+    const label rowField,
+    const label colField,
+    const fvScalarMatrix& m,
+    const scalarField& rowFactor,
+    const volScalarField& colFactor
+)
+{
+    const scalarField& cf = colFactor.primitiveField();
+    // Structurally identical to addFvMatrixBlock -- see the header for why it
+    // is a separate function rather than a generalisation. The ONLY difference
+    // is that every entry also carries colFactor at the COLUMN's cell, which
+    // is what a per-cell state scaling requires and a scalar cannot express.
+    const lduAddressing& addr = m.lduAddr();
+    const labelUList& upp = addr.upperAddr();
+    const labelUList& low = addr.lowerAddr();
+
+    scalarField d(m.diag());
+    {
+        const lduAddressing& a = m.lduAddr();
+        const FieldField<Field, scalar>& intCoeffs = m.internalCoeffs();
+
+        forAll(intCoeffs, patchi)
+        {
+            const labelUList& pa = a.patchAddr(patchi);
+            const scalarField& pc = intCoeffs[patchi];
+
+            forAll(pa, i)
+            {
+                d[pa[i]] += pc[i];
+            }
+        }
+    }
+
+    forAll(d, c)
+    {
+        add
+        (
+            globalRow(rowField, c), globalRow(colField, c),
+            d[c]*rowFactor[c]*cf[c]
+        );
+    }
+
+    const scalarField& uppVal = m.upper();
+    const scalarField& lowVal = (m.hasLower() ? m.lower() : m.upper());
+
+    forAll(upp, f)
+    {
+        // row = owner, col = neighbour: colFactor indexed at the NEIGHBOUR
+        add
+        (
+            globalRow(rowField, low[f]), globalRow(colField, upp[f]),
+            uppVal[f]*rowFactor[low[f]]*cf[upp[f]]
+        );
+
+        // transpose position: col is now the owner
+        add
+        (
+            globalRow(rowField, upp[f]), globalRow(colField, low[f]),
+            lowVal[f]*rowFactor[upp[f]]*cf[low[f]]
+        );
+    }
+
+    // ---- PROCESSOR INTERFACES. Same necessity as in addFvMatrixBlock -- without
+    // these the matrix describes disconnected subdomains -- and the same global-row
+    // transfer. The per-cell difference is the COLUMN factor: the column is a cell
+    // on ANOTHER RANK, so its sX comes from colFactor's processor-patch values,
+    // which correctBoundaryConditions() has already exchanged.
+    if (Pstream::parRun())
+    {
+        const lduInterfacePtrsList interfaces(m.psi().mesh().interfaces());
+
+        labelList globalRowsThisField(nCells_);
+        forAll(globalRowsThisField, c)
+        {
+            globalRowsThisField[c] = globalRow(colField, c);
+        }
+
+        const label startOfRequests = UPstream::nRequests();
+
+        forAll(interfaces, patchi)
+        {
+            if (interfaces.set(patchi))
+            {
+                interfaces[patchi].initInternalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                );
+            }
+        }
+
+        UPstream::waitRequests(startOfRequests);
+
+        const FieldField<Field, scalar>& bouCoeffs = m.boundaryCoeffs();
+
+        forAll(interfaces, patchi)
+        {
+            if (!interfaces.set(patchi)) continue;
+
+            const labelUList& faceCells = addr.patchAddr(patchi);
+
+            const labelField nbrRows
+            (
+                interfaces[patchi].internalFieldTransfer
+                (
+                    Pstream::commsTypes::nonBlocking,
+                    globalRowsThisField
+                )
+            );
+
+            const scalarField& bc = bouCoeffs[patchi];
+            // the NEIGHBOUR's per-cell scaling, already exchanged
+            const scalarField& nbrCf = colFactor.boundaryField()[patchi];
+
+            forAll(faceCells, i)
+            {
+                add
+                (
+                    globalRow(rowField, faceCells[i]),
+                    nbrRows[i],
+                    -bc[i]*rowFactor[faceCells[i]]*nbrCf[i]
+                );
+            }
+        }
+    }
+}
+
+// ************************************************************************* //

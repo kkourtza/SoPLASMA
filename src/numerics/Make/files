@@ -1,0 +1,10 @@
+relaxation/aitkenRelaxation/aitkenRelaxation.C
+relaxation/andersonRelaxation/andersonRelaxation.C
+relaxation/plasmaOuterRelaxation/plasmaOuterRelaxation.C
+
+schemes/fvm/ScharfetterGummel/ScharfetterGummel.C
+schemes/fvc/ScharfetterGummel/fvcScharfetterGummel.C
+
+newtonSolver/plasmaNewtonSolver.C
+
+LIB = $(FOAM_USER_LIBBIN)/libplasmaNumerics

@@ -1,0 +1,937 @@
+/*---------------------------------------------------------------------------*\
+License
+    This file is part of the SoPLASMA.
+
+    The SoPLASMA is not part of OpenFOAM but is developed using the
+    OpenFOAM framework and linked against OpenFOAM libraries.
+
+    Copyright (C) 2026
+        Rention Pasolari
+
+    This program is free software: you can redistribute it and/or modify it
+    under the terms of the GNU General Public License as published by the
+    Free Software Foundation, either version 3 of the License, or (at your
+    option) any later version.
+
+    This program is distributed in the hope that it will be useful, but
+    WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License along
+    with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Class
+    Foam::plasmaTimeControl
+
+Description
+    Class for automatic time-step control in plasma simulations.
+
+    This class serves as a specialized replacement for the standard OpenFOAM
+    'setDeltaT.H' functionality. It calculates the maximum permissible time
+    step based on plasma-specific stability criteria.
+
+    The class reads the 'plasmaTimeControl' dictionary (found within
+    system/plasmaSimulationControl) to determine which criteria to apply and
+    their limiting coefficients. It ultimately sets runTime.deltaT().
+
+    If 'adjustTimeStep' is false, this class performs no action.
+
+SourceFiles
+    plasmaTimeControl.C
+
+\*---------------------------------------------------------------------------*/
+
+#ifndef plasmaTimeControl_H
+#define plasmaTimeControl_H
+
+#include "HashTable.H"
+#include "DynamicList.H"
+#include "fvCFD.H"
+#include "IOdictionary.H"
+
+#include "SoPLASMAConstants.H"
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+namespace Foam
+{
+
+class plasmaTransport;    
+/*---------------------------------------------------------------------------*\
+                      Class plasmaTimeControl Declaration
+\*---------------------------------------------------------------------------*/
+
+class plasmaTimeControl
+{
+private:
+
+    // Private data
+
+        //- Reference to the Time object
+        Time& runTime_;
+
+        //- Reference to the mesh
+        const fvMesh& mesh_;
+
+        //- Dictionary to hold control parameters
+        dictionary dict_;
+
+        // Control switches and limits
+
+            //- Switch to enable/disable time step adjustment
+            //- Has read() already ANNOUNCED the resolved settings?
+            //  read() is called from adjustDeltaT() on EVERY step, so without
+            //  this its nine Info banners were printed once per step: 15036
+            //  copies in a 15034-step run, ~12 kB/step, a 58 MB log in four
+            //  minutes. Measured 2026-09-06. The settings themselves are
+            //  re-resolved every step (MUST_READ_IF_MODIFIED, so a user can
+            //  change them mid-run); only the ANNOUNCEMENT is once.
+            mutable bool settingsAnnounced_;
+
+            bool adjustTimeStep_;
+
+            //- WHAT KIND OF SIMULATION THIS IS: `transient` | `pseudoSteady`.
+            //
+            //  The single user-facing switch for steady operation, because the
+            //  settings it implies INTERLOCK: assembling them by hand hits a
+            //  fatal error or, worse, silently destroys convergence. Both
+            //  failures were MEASURED (see docs/design/steady-mode-spec.md):
+            //
+            //    * `onNonConvergence retryStep` retries by SHORTENING deltaT,
+            //      so it is meaningless once deltaT is fixed -- fatal.
+            //    * manual `relaxationFactors` took a converging pseudo-steady
+            //      run from 9472/9472 converged steps to 0/10, because
+            //      SoPLASMA already runs ADAPTIVE AITKEN outer relaxation
+            //      (`plasmaOuterRelaxation`, observed omega 0.371) and fixed
+            //      factors layered on top fight it.
+            //
+            //  `pseudoSteady` is PSEUDO-TRANSIENT CONTINUATION, not a steady
+            //  solver: the ddt term is retained and IS the matrix diagonal,
+            //  with deltaT demoted to a relaxation parameter. A true
+            //  `ddtSchemes steadyState` cannot work here -- with no ddt and no
+            //  implicit chemistry loss a species row has NO diagonal at all,
+            //  and Gauss-Seidel divides by zero on sweep 1 (MEASURED: SIGFPE
+            //  in GaussSeidelSmoother::smooth on iteration 1). simpleFoam gets
+            //  away with it because SIMPLE's pressure equation and
+            //  under-relaxation supply the diagonal dominance; a segregated
+            //  species equation has no such mechanism.
+            //
+            //  DEFAULT `transient`, so no existing case changes behaviour.
+            word simulationType_;
+
+            //- Maximum physical time step allowed
+            scalar maxDeltaT_;
+
+        // Plasma specific criteria
+
+            //- Switch to limit Dielectric Relaxation Ratio
+            Switch limitDielectricRelaxationRatio_;
+
+            //- Switch to print Dielectric Relaxation Ratio
+            Switch printDielectricRelaxationRatio_;
+
+            //- Coefficient for Dielectric Relaxation ratio 
+            scalar maxDielectricRelaxationRatio_;
+
+            //- Switch to enable/disable Species Courant limiting
+            Switch limitSpeciesCo_;
+
+            //- Switch to print Species Courant limiting
+            Switch printSpeciesCo_;
+
+            //- Maximum allowed convective Courant for the tracked species
+            scalar maxSpeciesConvectiveCo_;
+
+            // TEMPORAL ERROR CONTROL -- Phase 1: MEASURE AND REPORT ONLY.
+            //  Nothing here influences deltaT. See
+            //  docs/adaptive-timestep-error-control-plan.md.
+
+            //- Report the local temporal error estimate. Default OFF, and with
+            //  it off nothing is computed and no field history is extended.
+            Switch reportTemporalError_ = false;
+
+            //- Relative tolerance in the weighted RMS norm.
+            scalar errRtol_ = 1e-3;
+
+            //- Absolute tolerance, per field name, with a fallback.
+            //  atol IS the design: densities span eight orders and most cells
+            //  sit at the floor, so without a significance floor the norm is
+            //  dominated by cells containing nothing. A field with no atol and
+            //  no fallback is a FATAL error, never a silent omission.
+            //  Stored as a DICTIONARY, not a HashTable, so the keys can be
+            //  REGEXES: a mechanism with 13 species should need one entry
+            //  ("n_.*") and not thirteen. This is how the solver and BC
+            //  dictionaries already match names.
+            dictionary errAtolDict_;
+            scalar errAtolDefault_ = -1;
+
+            //- Last measured norm, the field that dominated it, and the step
+            //  that norm would ask for. Diagnostics only in Phase 1.
+            scalar errNorm_ = -1;
+            word errWorstField_ = "none";
+            scalar errDtSuggested_ = -1;
+            label errFieldsSeen_ = 0;
+            label errHistorySteps_ = 0;
+
+            //- Maximum |dt/dt_old - 1| over the levels used, so the reader can
+            //  see how far the equal-step assumption in the estimator is being
+            //  stretched.
+            scalar errStepRatioDev_ = 0;
+
+            // PHASE 2a: PI CONTROL OF deltaT FROM THE ERROR ESTIMATE.
+            //  Default OFF. Requires reportTemporalError, which supplies the
+            //  norm this acts on.
+
+            //- Let the error estimate SET deltaT (Phase 2a: no rejection yet;
+            //  a step whose error overshoots is accepted and the controller
+            //  shrinks the next one. Outer-loop rejection still applies).
+            Switch errorControlDeltaT_ = false;
+
+            //- Target for the weighted norm. The norm is already normalised by
+            //  rtol/atol, so 1 means "at tolerance" and 1 is the natural target.
+            scalar errTarget_ = 1.0;
+
+            //- PI gains, as fractions of 1/(p+1). Defaults are the classic
+            //  PI.4.2 values of Gustafsson, Lundh & Soderlind (BIT 28 (1988)
+            //  270): kI = 0.3/(p+1), kP = 0.4/(p+1) with p = 2 for BDF2.
+            //  Pure integral control (kP = 0) is the elementary controller and
+            //  is what oscillates on stiff problems -- which is why PI exists.
+            scalar errKi_ = 0.3/3.0;
+            scalar errKp_ = 0.4/3.0;
+
+            //- Safety factor on the requested step.
+            scalar errSafety_ = 0.9;
+
+            //- Bounds on the per-step change the controller may ask for.
+            scalar errMaxGrow_ = 2.0;
+            scalar errMaxShrink_ = 0.5;
+
+            //- Steps to skip before controlling. The old-time chain is filled
+            //  with COPIES of the current field when created, so the first few
+            //  estimates are meaningless -- measured as 3.8e-3 decaying to
+            //  1.93e-3 over ~5 steps on the streamer bed.
+            label errWarmupSteps_ = 5;
+
+            //- Previous norm, for the P term. MUST be excluded from the
+            //  discard path question: it is only ever written in
+            //  measureTemporalError(), which runs after a step is ACCEPTED, so
+            //  a discarded attempt never reaches it.
+            scalar errNormPrev_ = -1;
+
+            //- Maximum allowed convective Courant for the ENERGY equation.
+            //  Defaults to maxSpeciesConvectiveCo_ so an existing case is
+            //  bit-for-bit unchanged; it exists so the two CAN differ, because
+            //  they are not the same accuracy question.
+            //
+            //  WHY IT NEEDS TO BE SEPARATE (measured 2026-08-30, needle bed):
+            //  nEps rides the drift flux at mu_eps >~ mu_e, so sharing one
+            //  coefficient makes the ENERGY limit bind first -- it did so on
+            //  34220 of 34238 steps, pinned at exactly 1.000x its cap, while
+            //  the species number sat at 0.36 of the same cap. A user limited
+            //  by the energy Courant therefore had no knob that did not also
+            //  loosen the species limit.
+            //
+            //  THE PHYSICAL CEILING on this value is the energy relaxation
+            //  LENGTH, not stability (every transport term is implicit, so
+            //  this is an accuracy cap):
+            //      lambda_eps = v_drift * tau_eps
+            //  measured 1.70 um ~= 5 tip cells on that bed. A value near 5
+            //  steps one relaxation length per step; well past it the energy
+            //  layer at a sharp electrode is not resolved at all. Do not raise
+            //  this to "15" on the argument that the gas is inert without
+            //  checking lambda_eps/dx for the case in hand.
+            scalar maxEnergyConvectiveCo_;
+
+            //- Maximum allowed diffusive Courant for the tracked species
+            scalar maxSpeciesDiffusiveCo_;
+
+            //- Name of the species to track for Courant limiting (default: "e")
+            word courantSpeciesName_;
+
+            //- Fraction of the electron density used as the DERIVED absolute
+            //  tolerance. Same key and same default as plasmaChemistry0D's
+            //  `errAbsFrac` (G3): one concept, one name across the modules.
+            scalar errAbsFrac_;
+
+            //- max(n_e) this step -- the scale the derived atol follows.
+            scalar errElectronScale_;
+
+            //- One-shot report flags for the derived atol.
+            bool atolDerivedReported_;
+            bool atolFallbackReported_;
+
+            //- Weight the species Courant rate by the LOCAL RELATIVE VARIATION
+            //  of the density, so a flat field -- which any conservative scheme
+            //  advects exactly -- does not limit deltaT. Off by default: it
+            //  changes time-step selection for every case, and every validated
+            //  result here predates it. See adjustDeltaT() for the measurement
+            //  that motivated it.
+            Switch speciesCoGradientWeighted_ = false;
+
+            //- Name of the constraint that actually set deltaT on the last
+            //  adjustment. Printed with the limiter block, because the values
+            //  alone do not identify the binding one -- and several of the
+            //  constraints applied are not in that block at all.
+            word dtLimiterName_ = "none";
+
+            //- Switch to limit by Chemistry (Source term)
+            Switch limitChemistryCo_;
+
+            //- Switch to print Chemistry source restriction
+            Switch printChemistryCo_;
+
+            //- Maximum allowed relative change due to chemistry
+            scalar maxChemistryCo_;
+
+            //- Switch to limit voltage rise rate
+            Switch limitVoltageRiseRate_;
+
+            //- Switch to print voltage rise rate info
+            Switch printVoltageRiseRate_;
+
+            //- Maximum allowed voltage rise rate [V/s]
+            scalar maxVoltageRiseRate_;
+
+            //- Name of the patch where voltage is applied
+            word voltagePatchName_;
+
+            //- Previous timestep voltage on the applied patch [V]
+            scalar prevPatchVoltage_;
+
+            // A RELATIVE field-change limiter was built and then
+            // REMOVED, 2026-09-01. It computed correctly (instrumented: it
+            // asked for dt ~1.2e-11 while the active limiters gave 1e-12 to
+            // 3e-12) but was NEVER the binding constraint in four regimes:
+            // the 62 Td streamer bed, a short instrumented run, and a 10 Td
+            // low-field arm both short and with dt allowed to saturate
+            // (113 steps: growth cap 87, Co_chem 18, field change 0).
+            //
+            // WHY IT IS NOT NEEDED, which is the useful part: the 1.2x/step
+            // GROWTH CAP already prevents dt from jumping into a transient,
+            // and Co_chem covers the response through maxChemStateRate() --
+            // the fractional rate of change of the STATE over all species,
+            // which is loose exactly when nothing is happening and tight when
+            // it is. Between them there was nothing left for a field-change
+            // criterion to do. Do not re-add one without a case where those
+            // two are demonstrably slack.
+
+            //- Ceiling on the FIRST timestep [s]. 0 disables.
+            //
+            //  WHY A SEPARATE CONTROL, and why it cannot be delegated to any
+            //  of the limiters above: all of them are BACKWARD differences, so
+            //  on step 1 there is nothing to difference against. A case whose
+            //  `deltaT` exceeds the applied-voltage ramp therefore steps over
+            //  the entire ramp BEFORE any limiter has an opinion -- the
+            //  pathology is complete by the time the machinery wakes up.
+            //
+            //  WHY 1e-12 rather than the 1e-10 that first looks sufficient:
+            //  this repository's own streamer tutorial ramps in 93.75 ps, so
+            //  1e-10 would put 0.9 steps inside it. The intuition that "no
+            //  applied ramp is shorter than 1-2 ns" is contradicted by the
+            //  shipped benchmark. 1e-12 gives ~94 points across that ramp, and
+            //  is what all four tutorials already set, so this default changes
+            //  nothing for them.
+            //
+            //  WHY IT IS ALMOST FREE, measured from the 1.2x/step growth cap:
+            //  recovering from 1e-12 takes 51 steps to reach 1e-8 and 76 to
+            //  reach 1e-6. A run slow enough to want dt = 1e-6 needs thousands
+            //  of steps, so a <80-step warm-up is noise. This is the whole
+            //  reason a crude ceiling beats a clever predictive scheme here.
+            //
+            //  ON A RESTART it also applies, costing that same bounded
+            //  regrowth. Deliberate: the alternative is a restart-detection
+            //  test, and `timeIndex() == startTimeIndex()` is true for a
+            //  restart too (see the freshStart use in localEnergyEnergyModel,
+            //  which needs a second, field-based check to disambiguate). A
+            //  visible, bounded cost beats a subtly wrong condition.
+            scalar maxInitialDeltaT_;
+
+        // Outer (PIMPLE) coupling convergence
+        //
+        // The Poisson and species equations are lagged relative to each other
+        // within a timestep. Converging that loop is what makes the scheme
+        // second order -- with a single corrector it is FIRST order whatever
+        // `ddtSchemes` says, because no amount of ddt accuracy repairs a lag.
+        // Order is therefore not something a case selects; it is what the case
+        // ACHIEVES, and the run has to say which it got.
+
+            //- Chase the coupling to `tolerance` (true), or accept a single
+            //  lagged corrector (false)
+            bool outerChaseConvergence_;
+
+            //- Cap on outer correctors. A cap, not a target: the loop exits as
+            //  soon as residualControl is satisfied.
+            label outerMaxCorrectors_;
+
+            //- Coupling residual target. MUST exceed the linear-solver
+            //  tolerance, or the criterion can never be met and the loop
+            //  silently runs to the cap on every step.
+            scalar outerTolerance_;
+
+            //- Which measure decides outer convergence:
+            //  `residualControl` (OpenFOAM's normalised equation residual, the
+            //  default) or `relativeChange` (||dphi||/||phi||, well defined for
+            //  a uniform field where residualControl is unreachable).
+            word outerCriterion_;
+
+            //- Has prevPatchVoltage_ been given a real value yet? Until it
+            //  has, differencing against it would report the whole applied
+            //  voltage as a one-step rise. See the first-step guard.
+            bool voltageSeeded_;
+
+            //- warn | reduceDeltaT | retryStep | fatal
+            //
+            //  `reduceDeltaT` ACCEPTS the non-converged step and shrinks the
+            //  NEXT one, so an unconverged solution enters the history and
+            //  stays there. Measured on the streamer: 11% of steps at Co 1.5
+            //  and 16% at Co 2.5, against 0% for the Co 0.25 reference.
+            //
+            //  `retryStep` discards it instead -- the fields are reset to
+            //  oldTime(), deltaT is halved and the step is re-run, so no
+            //  unconverged state is ever kept. Measured correctors per step
+            //  are bimodal (converge within ~8, or not at all), so a retry
+            //  after a LOW cap is cheaper than accepting after a high one.
+            word outerOnNonConvergence_;
+
+            //- Retries already spent on the current step, and the cap on them.
+            //  Halving 5 times is deltaT/32; past that the step is accepted
+            //  with a warning rather than the run deadlocking.
+            label outerRetries_ = 0;
+            label outerMaxRetries_ = 5;
+
+            //- Time index the retry counter belongs to, so it resets itself
+            //  when the step changes without needing a call from the solver.
+            label outerRetryTimeIndex_ = -1;
+
+            //- Time value at the END of the last ACCEPTED step, captured by
+            //  the solver before it advances the clock.
+            //
+            //  It must be captured, NOT inferred. The obvious
+            //  `value() - deltaT()` is wrong here: ++runTime advances using
+            //  the PREVIOUS step's deltaT, while adjustDeltaT() then installs
+            //  a new one, so the two differ by the ramp factor (1.2x) -- and
+            //  across repeated retries the error compounds, because value()
+            //  has already been corrected once. MEASURED: that arithmetic sent
+            //  the clock NEGATIVE on the third retry (t = -6e-14).
+            scalar tStepStart_ = 0;
+
+            //- REJECTION MEMORY: the smallest deltaT known to have failed to
+            //  converge, and the ceiling derived from it.
+            //
+            //  Without it the controller rediscovers the failure scale over
+            //  and over. MEASURED on the Co 1.5 streamer: steps failed at
+            //  ~1.0e-11, succeeded at ~5e-12, regrew at 1.2x/step back through
+            //  the failure scale in about four steps, and failed again -- a
+            //  stable sawtooth between 4.3e-12 and 8.5e-12 that spent one
+            //  discarded attempt every fourth step for no accuracy gain,
+            //  because the SUSTAINABLE step lies between the two.
+            //
+            //  So a failure is remembered: growth is capped just below it
+            //  (retryCeilingFactor_), and the ceiling is relaxed only slowly
+            //  (retryCeilingRelax_ per successful step) so the solver can
+            //  still follow the physics -- on a timescale far longer than the
+            //  failure cycle. Zero disables the memory.
+            scalar dtFailCeiling_ = 0;
+            scalar retryCeilingFactor_ = 0.9;
+            scalar retryCeilingRelax_ = 1.05;
+
+            //- Set for the step FOLLOWING a rejection, which may not grow at
+            //  all. Standard in Hairer-style step control, and on its own it
+            //  removes the tightest oscillation: a step that has just been
+            //  halved has no business immediately climbing again.
+            bool noGrowthNextStep_ = false;
+
+            //- ABSOLUTE FLOOR on deltaT, and whether it was derived rather
+            //  than set by the user.
+            //
+            //  Without a floor the retry ladder descends forever. MEASURED on
+            //  a deliberately broken case (`maxCorrectors 3`, where nothing
+            //  can converge): deltaT fell 1.44e-12 -> 5.4e-14 -> 2.025e-15 in
+            //  three steps, because a step can lose 32x (five halvings) while
+            //  regrowth is capped at 1.2x per step. The run then never reaches
+            //  endTime -- for a user the worst failure mode there is: no
+            //  crash, no message, just a job that never finishes.
+            //
+            //  The default is derived from the requirement that the run be
+            //  able to FINISH: below (endTime - startTime)/minDeltaTMaxSteps_
+            //  it cannot, whatever the physics. That is a genuine impossibility
+            //  rather than a tuned magic number, which is why it is safe to
+            //  apply automatically.
+            //  TWO TERMS, because either alone is wrong:
+            //
+            //    tSpan/minDeltaTMaxSteps_   -- "this run can never finish"
+            //    deltaT0_/minDeltaTStepFactor_ -- "this is far below the
+            //                                  physical scale you started at"
+            //
+            //  The first scales with run LENGTH, which decouples from the
+            //  physical timescale: a 1 ms discharge would derive 1e-10 s while
+            //  its streamer still needs ~1e-12 s, so the floor would sit ABOVE
+            //  the step the Courant limiter legitimately demands and -- since
+            //  the floor is applied last and overrides the physical limiters
+            //  -- would silently clamp dt up to an unstable value. The second
+            //  term anchors to the scale the user themselves specified, so the
+            //  floor stays orders of magnitude below any real step size.
+            //  Taking the MINIMUM keeps the guard while removing that risk.
+            scalar minDeltaT_ = 0;
+            bool   minDeltaTAuto_ = true;
+            scalar minDeltaTMaxSteps_ = 1e7;
+            scalar minDeltaTStepFactor_ = 1e4;
+
+            //- The deltaT this run STARTED from, captured once. It must not be
+            //  re-sampled on a later read(): deltaT falls as the controller
+            //  works, so re-sampling would ratchet the floor down in step with
+            //  the very collapse it exists to stop.
+            scalar deltaT0_ = 0;
+
+            //- Outer-coupling stability margin from the adaptive (Aitken)
+        //  relaxation: min(omega) over the last step. 1 when adaptive
+        //  relaxation is off, so neither threshold below can bind.
+        scalar relaxMargin_ = 1.0;
+
+        //- Worst joint-residual contraction ratio over the last step,
+        //  max ||r_k||/||r_{k-1}||. DIAGNOSTIC ONLY at present: it is here to
+        //  be compared with relaxMargin_ before either is trusted to govern
+        //  deltaT. Unlike omega it is defined for a scheme that does not damp,
+        //  which is what Anderson acceleration needs.
+        scalar relaxContraction_ = 0.0;
+
+        //- Is the relaxation APPLYING damping? Reported so an inactive
+        //  relaxation is not mistaken for an undamped active one.
+        bool relaxActive_ = false;
+
+        //- PHASE 3a: the contraction target a governor should key on, DERIVED
+        //  from the user's own outerCoupling settings rather than tuned:
+        //
+        //      rho_target = outerTolerance ^ (1/maxCorrectors)
+        //
+        //  A Picard loop contracting at rho from a residual of order 1 reaches
+        //  `tolerance` in N correctors when rho^N <= tolerance. The target is
+        //  therefore "contract fast enough to FINISH" -- which is exactly what
+        //  the rho comment in adjustDeltaT() argues a governor must key on, and
+        //  NOT rho = 1, which only says the residual did not grow.
+        //
+        //  INDEPENDENT CORROBORATION: with the default tolerance 1e-8 and 20
+        //  correctors this gives 0.3981, against the ~0.38 MEASURED in
+        //  testAitken CASE 14 against ground truth. A formula derived from
+        //  first principles landing on a separately measured number is why this
+        //  is believed to be an invariant rather than a knob.
+        //
+        //  WHY rho AND NOT omega: omega is only defined for a scheme that
+        //  DAMPS. Measured 2026-08-31 on the inert-ramp bed, the omega-based
+        //  coupling-margin governor bound 31 of 48 steps under Aitken and
+        //  ZERO under Anderson, which then discovered its ceiling by failing --
+        //  14 discarded steps, 25% of its work. rho is defined for every
+        //  scheme, so it is the only governor that can be universal.
+        //
+        //  Phase 3a REPORTS it and governs nothing.
+        scalar rhoTarget_ = 0.0;
+
+        // PHASE 3b: CONTRACTION BACKOFF -- the robustness layer.
+        //
+        //  Accuracy (the PI controller on ||e||) sets deltaT from above;
+        //  this pulls it back when the outer loop is not contracting fast
+        //  enough to FINISH inside the corrector budget. Two measured
+        //  dimensionless signals, each with a DERIVED target, and no
+        //  bed-specific tuning -- which is the point, given that the Courant
+        //  cap, limitEnergyRelaxation and outerScheme were each measured to
+        //  need different values on different beds.
+
+        //- Enable the contraction backoff. Default OFF until measured.
+        Switch contractionBackoff_ = false;
+
+        //- Multiplicative decrease per triggering step. Multiplicative and not
+        //  proportional because rho is a THRESHOLD, not a linear response:
+        //  MEASURED on the ramp, rho went 0.189 -> 0.175 as deltaT DOUBLED and
+        //  then jumped to 2.005. There is nothing to invert, so the controller
+        //  walks deltaT down until rho drops back inside the target.
+        scalar contractionBackoffFactor_ = 0.8;
+
+        //- Consecutive steps above target before backing off.
+        //
+        //  DERIVED FROM THE MEASURED EXCURSION RATE, not picked. Below the
+        //  cliff, isolated excursions occur on 2/79 (ramp) and 1/34 (streamer)
+        //  steps, i.e. ~3%; above the cliff it is 39/39 and 30/30, i.e. 100%
+        //  persistent. So requiring 2 consecutive steps cuts the spurious rate
+        //  from ~3% to ~0.1% while costing at most one step of delay on a
+        //  genuine crossing.
+        label contractionBackoffSteps_ = 2;
+
+        //- Consecutive steps seen above target so far.
+        label rhoOverCount_ = 0;
+
+        //- CEILING form of the backoff, replacing the per-step multiplicative
+        //  cut that OSCILLATED against the PI controller.
+        //
+        //  WHY A CEILING. bind() already takes the minimum of every request, so
+        //  the oscillation was not a race -- it was coupled-loop windup: the
+        //  backoff cut deltaT, the error fell, the PI asked for more on the next
+        //  step, rho rose again, repeat. MEASURED on the LMEA ramp: deltaT went
+        //  4.3e-13 -> 5.5e-13 -> 4.06e-12 -> 1.39e-12 -> 7.1e-13 -> 3.65e-13 ->
+        //  1.15e-12 while rho swung 0.22 -> 6.21 -> 0.68 -> 0.48.
+        //
+        //  A ceiling the PI CANNOT EXCEED, drifting up only slowly while rho
+        //  stays inside target, breaks the cycle. This mirrors dtFailCeiling_
+        //  (rejection memory), which solves the same problem for rejected steps
+        //  and is already proven in this file.
+        scalar rhoCeiling_ = 0;
+
+        //- Per-step upward drift of the ceiling. Slow, so the PI cannot
+        //  immediately undo a backoff.
+        scalar rhoCeilingRelax_ = 1.05;
+
+        //- FLOOR for the backoff, as a multiple of minDeltaT_. A backoff whose
+        //  criterion is UNSATISFIABLE must stop and say so rather than walk
+        //  deltaT to zero: MEASURED on the LFA streamer, deltaT fell 55x while
+        //  rho stayed pinned just above 1, because without an active relaxation
+        //  rho measures the coupling and not the timestep. Any "reduce until a
+        //  criterion is met" loop needs this.
+        scalar rhoBackoffFloorFactor_ = 100;
+
+        //- Set once when the backoff floor is hit, so the diagnostic prints
+        //  once rather than every step.
+        bool rhoFloorReported_ = false;
+
+        //- Largest factor this step, reported beside the minimum
+        scalar relaxOmegaMax_ = 1.0;
+
+        //- Below this, deltaT is not allowed to GROW
+        scalar relaxMarginHold_ = 0.5;
+
+        //- Below this, deltaT is actively SHRUNK by relaxMarginBackoff_
+        scalar relaxMarginShrink_ = 0.2;
+
+        //- Shrink factor applied below relaxMarginShrink_
+        scalar relaxMarginBackoff_ = 0.7;
+
+        //- Whether the margin governed deltaT this step, for reporting
+        bool relaxMarginBound_ = false;
+
+        //- Steps accepted WITHOUT the outer loop converging, because the
+            //  dt lever was exhausted (at the floor, or out of retries).
+            //  Graceful degradation: the run completes and the user is told
+            //  exactly which steps are suspect, rather than the solver either
+            //  lying or deadlocking.
+            label degradedSteps_ = 0;
+            label degradedRun_ = 0;
+            label degradedConsecutive_ = 0;
+            label maxDegradedConsecutive_ = 10;
+
+            //- Times the floor actually clamped a requested reduction.
+            label floorHits_ = 0;
+
+            //- TREND detection, so a run ratcheting down is visible BEFORE it
+            //  becomes terminal. Absolute floors only fire at the very end of
+            //  a collapse; the ratio against the largest step the run has
+            //  sustained catches it while there is still something to do
+            //  about it.
+            scalar dtHighWater_ = 0;
+            scalar dtCollapseRatio_ = 100;
+
+            //- ENERGY transport RATE [1/s] when an LMEA energy equation is
+            //  transported, 0 when there is none. Co_energy = rate*dt.
+            //
+            //  The electron ENERGY convects and diffuses at 5/3 the particle
+            //  rates (Hagelaar & Kroesen Eqs. 11-13), so its Courant and
+            //  diffusion numbers are 5/3 of the species ones computed here.
+            //  A case switching to LMEA at its existing
+            //  maxSpeciesConvectiveCo is therefore silently 67% over that
+            //  limit -- MEASURED: at Co 1.5 the energy ran at ~2.5 and the
+            //  convective term drove n_eps negative on step 1, in cells whose
+            //  SOURCE was strongly positive.
+            //
+            //  Set from the energy model rather than by the user, so enabling
+            //  LMEA cannot leave the step silently unsafe.
+            scalar energyRate_ = 0;
+            bool   collapseWarned_ = false;
+
+            //- ENERGY RELAXATION rate, 1/tau_eps = P_loss/n_eps [1/s].
+            //
+            //  A SEPARATE constraint from energyRate_ above, which is a
+            //  CONVECTIVE (Courant) rate. The two are limited by different
+            //  coefficients on purpose: a Courant number of order 1 is
+            //  correct for transport and badly wrong for a stiff relaxation.
+            //
+            //  MEASURED on the 1.15M-cell streamer, 2026-08-21: at the cells
+            //  that reached the 100 eV clamp, tau_eps = n_eps/P_loss = 1.65 ps
+            //  while the step chosen by the SPECIES Courant number was
+            //  5.16 ps -- dt/tau = 3.1. The mean energy then oscillated
+            //  between the clamp and ~7 eV and the run died on SIGFPE. A
+            //  reference run pinned at dt = 0.25 ps (dt/tau = 0.15) passed
+            //  through the same window with ZERO clamps and a smooth monotone
+            //  settle, which is what fixes the ratio below at 0.2.
+            //
+            //  Set from the energy model, like energyRate_, so enabling LMEA
+            //  cannot leave the step silently unsafe.
+            scalar energyRelaxRate_ = 0;
+            bool   limitEnergyRelaxation_ = true;
+            scalar maxEnergyRelaxationRatio_ = 0.2;
+            bool   energyRelaxWarned_ = false;
+
+            //- Set when the last step exhausted the cap without converging;
+            //  read by adjustDeltaT() so the response is a time-step decision
+            //  alongside the Courant and dielectric criteria, not a separate
+            //  mechanism.
+            bool outerHitCap_;
+
+            //- Set when the NEWTON outer solve failed outright (there is no
+            //  corrector count to compare against the cap). Kept SEPARATE from
+            //  outerHitCap_ because noteOuterLoop() assigns that one
+            //  unconditionally and runs AFTER the Newton call, so a shared
+            //  flag would be erased by the very next statement. Cleared at
+            //  each step start and on each retry.
+            bool outerSolveFailed_ = false;
+
+            //- Correctors actually used on the last step, peak-held between
+            //  reports
+            label outerItersUsed_;
+
+            //- Steps since the last outer-coupling report
+            label outerReportCounter_;
+
+        // Private Member Functions
+
+            //- Read controls from dictionary
+            void read();
+
+            //- Compute average voltage on the applied patch
+            scalar patchVoltageAvg(const plasmaTransport& transport) const;
+
+public:
+
+    // Constructors
+
+        //- Construct from Time and Mesh
+        plasmaTimeControl(Time& runTime, const fvMesh& mesh);
+
+    //- Destructor
+    virtual ~plasmaTimeControl() {}
+
+    // Member Functions
+
+        //- Adjust deltaT using the specific plasmaTransport object
+        //  Note: We pass it by const reference
+        void adjustDeltaT(const plasmaTransport& transport);
+
+        //- Measure the local temporal error over the supplied transported
+        //  fields. Phase 1: REPORTS ONLY, never changes deltaT.
+        //
+        //  The caller supplies the field list because the SOLVER is what knows
+        //  which models are active -- the same place that orchestrates both
+        //  discardStep() calls. plasmaTimeControl resolves each field's atol by
+        //  NAME and aborts if one cannot be resolved.
+        void measureTemporalError
+        (
+            const DynamicList<const volScalarField*>& fields,
+            const DynamicList<word>& names
+        );
+
+        //- Is the temporal-error report switched on?
+        bool reportTemporalError() const noexcept
+        {
+            return reportTemporalError_;
+        }
+
+        //- Set the first time step of the simulation
+        void setInitialDeltaT(const plasmaTransport& transport);
+
+        //- Translate the `outerCoupling` block into PIMPLE's own
+        //  nOuterCorrectors and residualControl.
+        //
+        //  STATIC, and called BEFORE pimpleControl is constructed, because
+        //  that is when PIMPLE reads its dictionary. Driving OpenFOAM's loop
+        //  rather than replacing it keeps `finalIter()` exact -- and the
+        //  chemistry trailing half-step and the gas-energy solve are both
+        //  gated on it, so a hand-rolled loop that got it subtly wrong would
+        //  advance the chemistry by the wrong multiple of dt.
+        static void configureOuterCoupling(fvMesh& mesh);
+
+        //- Which measure decides outer convergence
+        inline const word& outerCriterion() const { return outerCriterion_; }
+
+        //- The outer convergence tolerance
+        inline scalar outerTolerance() const { return outerTolerance_; }
+
+        //- Record what the outer loop did on this step.
+        //  `used` is the number of correctors executed. Convergence is
+        //  inferred from the loop exiting BEFORE the cap, which is exactly
+        //  OpenFOAM's own residualControl decision rather than a second,
+        //  possibly disagreeing, criterion of ours.
+        void noteOuterLoop(const label used);
+
+        //- The NEWTON equivalent of hitting the corrector cap: the coupled
+        //  solve did not converge at all.
+        //
+        //  Under `outerSolver newton` there is no corrector count to compare
+        //  against maxCorrectors -- one SNES call either converges or does
+        //  not -- so this routes that verdict into the SAME rejection
+        //  machinery, and `onNonConvergence` keeps ONE meaning whichever outer
+        //  solver runs. A rejected Newton step is then retried at a shorter
+        //  deltaT, which is almost always the right response: the step
+        //  exceeded the problem's Newton stability ceiling.
+        void noteOuterFailure();
+
+        //- Should the step just solved be DISCARDED and re-run smaller?
+        //
+        //  True only under `onNonConvergence retryStep`, when the loop hit its
+        //  cap and retries remain. The caller must then reset the solution to
+        //  oldTime() and call prepareRetry() before solving again.
+        bool stepRejected() const;
+
+        //- Record the time the step is starting FROM. Call it in the solver
+        //  loop BEFORE ++runTime, which is the only place the value is
+        //  unambiguous. See tStepStart_ for why it cannot be inferred later.
+        void noteStepStart()
+        {
+            tStepStart_ = runTime_.value();
+            // A new step starts with no verdict; see outerSolveFailed_.
+            outerSolveFailed_ = false;
+        }
+
+        //- Declare that an LMEA energy equation is transported, so the step
+        //  is limited on ITS Courant number too. See energyCourantFactor_.
+        void setEnergyRate(const scalar r)
+        {
+            energyRate_ = r;
+        }
+
+        //- Declare the ENERGY RELAXATION rate 1/tau_eps = P_loss/n_eps, so
+        //  the step is limited by how fast the energy equilibrates as well as
+        //  by how fast it convects. See energyRelaxRate_ for the measurement
+        //  that motivates it.
+        void setEnergyRelaxRate(const scalar r)
+        {
+            energyRelaxRate_ = r;
+        }
+
+        //- Halve deltaT and move the clock back onto the shortened step.
+        //
+        //  The time VALUE has already advanced by the old deltaT, so it is
+        //  corrected here rather than rewound: t_prev + deltaT_new. The time
+        //  INDEX is deliberately left alone -- every per-step cache in the
+        //  solver is keyed on it, and oldTime() rotates on it, so holding it
+        //  fixed is what makes a retry land on the same start state.
+        //- Re-run the discarded step.
+        //
+        //  `keepDeltaT` re-runs at the SAME deltaT instead of halving, for the
+        //  adaptive scheme's one escalation to Anderson. Nothing else about
+        //  the retry changes; a second failure comes back here with
+        //  keepDeltaT false and takes the usual ladder.
+        void prepareRetry(const bool keepDeltaT = false);
+
+        //- Is deltaT sitting on the floor, so that halving it again would
+        //  achieve nothing? Retrying costs a full solve, so there is no point
+        //  spending one on a step size the controller is not allowed to use.
+        bool atMinDeltaT() const;
+
+        //- Record that a step was accepted WITHOUT the outer loop converging.
+        //  Warns per occurrence and, if degradation becomes systemic rather
+        //  than isolated, stops the run with an actionable diagnostic.
+        void noteDegradedStep();
+
+        //- Did the last step exhaust the corrector cap without converging?
+        inline bool outerHitCap() const
+        {
+            return outerHitCap_;
+        }
+
+        //- Number of non-converged steps accepted over the whole run.
+        inline label degradedRun() const
+        {
+            return degradedRun_;
+        }
+
+    // Accessors (Getters)
+
+        //- Is adjustable time stepping enabled?
+        inline bool adjustTimeStep() const
+        {
+            return adjustTimeStep_;
+        }
+
+        //- `transient` or `pseudoSteady`. See simulationType_.
+        inline const word& simulationType() const
+        {
+            return simulationType_;
+        }
+
+        //- Is this a pseudo-steady (pseudo-transient continuation) run?
+        inline bool pseudoSteady() const
+        {
+            return simulationType_ == "pseudoSteady";
+        }
+
+        //- Is dielectric relaxation limiting enabled?
+        inline bool limitDielectricRelaxationRatio() const
+        {
+            return limitDielectricRelaxationRatio_;
+        }
+
+        //- Get the max allowed dielectric relaxation ratio
+        inline scalar maxDielectricRelaxationRatio() const
+        {
+            return maxDielectricRelaxationRatio_;
+        }
+
+        //- Is species Courant number limiting enabled?
+        inline bool limitSpeciesCo() const
+        {
+            return limitSpeciesCo_;
+        }
+
+        //- Get the max allowed convective species Courant number
+        inline scalar maxSpeciesConvectiveCo() const
+        {
+            return maxSpeciesConvectiveCo_;
+        }
+
+        //- Get the max allowed diffusive species Courant number
+        inline scalar maxSpeciesDiffusiveCo() const
+        {
+            return maxSpeciesDiffusiveCo_;
+        }
+
+        //- Get the species name used for Courant number limiting
+        inline const word& courantSpeciesName() const
+        {
+            return courantSpeciesName_;
+        }
+
+        //- Is chemistry limiting enabled?
+        inline bool limitChemistryCo() const
+        {
+            return limitChemistryCo_;
+        }
+
+        //- Get the max allowed chemistry limit
+        inline scalar maxChemistryCo() const
+        {
+            return maxChemistryCo_;
+        }
+
+        //- Is voltage rise rate limiting enabled?
+        inline bool limitVoltageRiseRate() const
+        {
+            return limitVoltageRiseRate_;
+        }
+
+        //- Get the maximum allowed voltage rise rate [V/dt]
+        inline scalar maxVoltageRiseRate() const
+        {
+            return maxVoltageRiseRate_;
+        }
+
+        //- Get the name of the patch where voltage is applied
+        inline const word& voltagePatchName() const
+        {
+            return voltagePatchName_;
+        }
+};
+
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+} // End namespace Foam
+
+#endif
+
+// ************************************************************************* //

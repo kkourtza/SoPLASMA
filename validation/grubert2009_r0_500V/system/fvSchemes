@@ -1,0 +1,94 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSchemes;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+ddtSchemes
+{
+    default                         $ddtSchemes;
+}
+
+gradSchemes
+{
+    default                         $gradSchemes;
+}
+
+divSchemes
+{
+    div(phi_e,n_e)                  $electronDriftDivScheme;
+
+    // Same catch-all for the drift terms. ROUNDF is a bounded scheme, which is
+    // what a density that must stay positive needs.
+    "div\(phi_.*,n.*\)"             Gauss ROUNDF;
+    "div\(phi_.*,nEps_e\)"          Gauss ROUNDF;
+}
+
+laplacianSchemes
+{
+    laplacian(D_e,n_e)              $electronDiffusionLaplacianScheme;
+
+    laplacian((epsilon+(deltaT*electricalConductivity)),ePotential)  $ePotentialLaplacianScheme;
+    laplacian(epsilon,ePotential)                                    $ePotentialLaplacianScheme;
+
+    // Gas-temperature conduction, required when energy.solve is true.
+    laplacian(kappa,T_gas)          Gauss linear corrected;
+
+    // CATCH-ALL for every transported species, so a case does not have to
+    // enumerate them. The streamer bed this file came from had every ion
+    // `immobile`, so it needed none of these and listed only the electron --
+    // the first case with mobile ions then died at step 1 on
+    // `laplacian(D_Ar2p,n_Ar2p)`. A literal key still wins over a regex, so
+    // the electron entry above keeps its own scheme.
+    "laplacian\(D_.*,n.*\)"         Gauss harmonic corrected 0.33;
+    "laplacian\(D_.*,nEps_e\)"      Gauss harmonic corrected 0.33;
+}
+
+interpolationSchemes
+{
+    interpolate(n_e)                linear;
+
+    interpolate(mu_e)               $electronMobilityInterpolationScheme; 
+    interpolate(D_e)                $electronDiffusivityInterpolationScheme;
+
+    // Catch-all for every other transported species (see laplacianSchemes).
+    // harmonic on the transport coefficients, linear on the densities: the
+    // coefficients vary by orders across a sheath and harmonic is the
+    // face-value that does not let the large side dominate.
+    "interpolate\(mu_.*\)"          harmonic;
+    "interpolate\(D_.*\)"           harmonic;
+    "interpolate\(n_.*\)"           linear;
+    "interpolate\(nEps_e\)"         linear;
+}
+
+snGradSchemes
+{
+    snGrad(n_e)                     $snGradSpeciesScheme;
+    snGrad(ePotential)              $ePotentialSnGradScheme;
+
+    "snGrad\(n.*\)"                 $snGradSpeciesScheme;
+}
+
+fluxRequired
+{
+    default         no;
+
+    // Catch-all in the fluxRequired idiom (bare key, no value): every
+    // transported density needs its face flux, and a case should not have to
+    // enumerate its species. The air species this file used to list are gone
+    // with the streamer bed it came from.
+    "n.*"           ;
+    ePotential      ;
+}
+// ************************************************************************* //

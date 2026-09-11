@@ -1,0 +1,11 @@
+electromagneticsModel.C
+electrostaticModels/singleRegionPoisson/singleRegionPoisson.C
+electrostaticModels/multiRegionPoisson/multiRegionPoisson.C
+boundaryRoleLibrary/boundaryRoleLibrary.C
+materialLibrary/materialLibrary.C
+unitPotentialField/unitPotentialField.C
+floatingElectrode/floatingElectrode.C
+
+plasmaExternalCircuit/plasmaExternalCircuit.C
+
+LIB = $(FOAM_USER_LIBBIN)/libplasmaElectromagnetics

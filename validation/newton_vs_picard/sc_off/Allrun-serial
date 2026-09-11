@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# Fast LMEA bed. Target: the whole thing in well under two minutes, so an
+# electron-energy question can be asked without booking an hour on the 1.15M
+# cell streamer (~70 s PER TIME STEP).
+#
+# No topoSet/refineMesh chain: this is the bare 130x130 block. See
+# system/blockMeshDict for why that is deliberate, and for what it costs.
+cd "${0%/*}" || exit 1
+./Allclean
+touch case.foam
+. "$WM_PROJECT_DIR/bin/tools/RunFunctions"
+
+blockMesh > log.blockMesh 2>&1 || { echo "blockMesh FAILED"; exit 1; }
+extrudeMesh > log.extrudeMesh 2>&1 || { echo "extrudeMesh FAILED"; exit 1; }
+
+# Linear-solver stack, driven by `matrixSolver` in configuration/config so the
+# choice has ONE home. Previously this line hardcoded -foam, which made
+# matrixSolver look like the switch while doing nothing.
+MS=$(sed -n 's/^matrixSolver *"\{0,1\}\([a-zA-Z]*\)"\{0,1\};.*/\1/p' configuration/config | head -1)
+MS=${MS:-foam}
+if [ ! -f "system/fvSolution-$MS" ]; then
+    echo "matrixSolver '$MS': system/fvSolution-$MS does not exist." >&2
+    echo "  available: $(ls system/fvSolution-* 2>/dev/null | sed 's|system/fvSolution-||' | tr '\n' ' ')" >&2
+    exit 1
+fi
+cp "system/fvSolution-$MS" system/fvSolution
+
+mkdir -p 0 && cp -r 0.orig/* 0/
+plasmaCreateSpeciesFields > log.plasmaCreateSpeciesFields 2>&1 \
+    || { echo "plasmaCreateSpeciesFields FAILED"; exit 1; }
+
+cp etc/changeDictionary system/changeDictionaryDict
+changeDictionary > log.changeDictionary 2>&1
+
+# THE SEED IS THE CASE. `|| true` used to swallow its failure outright, so a
+# missing `fluidfoam` left a quiescent gas in a Laplace field: 2000 steps, 0
+# fatal errors, n_e pinned at its 1e13 background, no streamer anywhere.
+# Measured 2026-09-11. A tutorial that quietly solves the wrong problem is
+# worse than one that stops.
+python3 initGaussianSeed.py > log.initGaussianSeed 2>&1 || {
+    echo "" >&2
+    echo "initGaussianSeed.py FAILED -- refusing to run a streamer case with no streamer." >&2
+    echo "  It needs numpy and fluidfoam:   pip install fluidfoam" >&2
+    echo "  See log.initGaussianSeed. Without the seed every result is meaningless." >&2
+    exit 1
+}
+
+soPlasmaFoam > log.soPlasmaFoam 2>&1
+rc=$?
+echo "soPlasmaFoam exit $rc, $(grep -c '^Time = ' log.soPlasmaFoam) steps"
+exit $rc

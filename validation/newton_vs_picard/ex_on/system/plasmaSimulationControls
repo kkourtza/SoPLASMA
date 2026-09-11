@@ -1,0 +1,116 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    constant;
+    object      plasmaProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+plasmaTimeControl
+{
+    simulationType                  $simulationType;
+    adjustTimeStep                  $adjustTimeStep;
+
+    // OFF for the Option 4 gate: the stiff integrator must supply the
+    // stability the limiter was buying by shrinking dt ~12x.
+    limitEnergyRelaxation           false;
+
+    limitDielectricRelaxationRatio  $limitDielectricRelaxationRatio;
+    printDielectricRelaxationRatio  $printDielectricRelaxationRatio;
+    maxDielectricRelaxationRatio    $maxDielectricRelaxationRatio;
+    
+    limitSpeciesCo                  $limitSpeciesCo;
+    printSpeciesCo                  $printSpeciesCo;
+    maxSpeciesConvectiveCo          $maxSpeciesCo;
+    maxSpeciesDiffusiveCo           $maxSpeciesCo;
+    
+    limitChemistryCo                $limitChemistryCo;
+    printChemistryCo                $printChemistryCo;
+    maxChemistryCo                  $maxChemistryCo;
+
+    maxVoltageRisePerStep           $maxVoltageRisePerStep;
+    voltagePatchName                "active_electrode";
+}
+
+// Convergence of the OUTER (Poisson <-> species) loop.
+//
+// Within a timestep the field and the densities are lagged relative to each
+// other. Converging that loop is what makes the scheme second order: with a
+// single corrector it is FIRST order whatever ddtSchemes says, because no
+// amount of ddt accuracy repairs a lag. Measured on the shipped benchmark:
+// p = 0.87 at one corrector, p = 1.94 converged.
+//
+// So temporal order is not selected, it is ACHIEVED -- and the run reports
+// which it got rather than promising one.
+outerCoupling
+{
+    // converged -> chase the coupling residual, second order
+    // lagged    -> one corrector, deliberately first order, for scoping runs
+    target            converged;
+    outerSolver       $outerSolver;
+    newtonSolver      { type SNES; rtol 1e-8; maxIt 50; bounded false; extrapolateGuess true; petscOptions "-ksp_converged_reason"; }
+
+    // The coupling residual to reach. MUST be comfortably above the
+    // linear-solver tolerance (>= 10x); the solver refuses otherwise. An outer
+    // tolerance at the inner solver's own convergence floor can never be met,
+    // so the loop silently runs to maxCorrectors every step -- a fixed
+    // iteration count wearing the name of a convergence test.
+    tolerance         1e-8;
+
+    // A CAP, not a target: the loop exits as soon as the residual is met.
+    maxCorrectors     20;
+
+    // What to do when the cap is exhausted unconverged. `reduceDeltaT` halves
+    // the step and is applied alongside the Courant and dielectric limits, so
+    // the smallest limit still wins.
+    onNonConvergence  retryStep;   // discard a non-converged step instead of accepting it
+}
+
+// Sato's equation: external circuit current. See
+// docs/discharge-current-sato-plan.md
+dischargeCurrent
+{
+    enabled         true;
+    drivenPatch     active_electrode;
+    groundedPatches (grounded_electrode);
+    perSpecies      true;
+    writeInterval   1;      // every step: one scalar, and a ns pulse is
+                            // destroyed by sampling at the field cadence
+    printInterval   10;
+    crossCheck      true;   // electrode surface integral, plan 5.2
+}
+
+// The GLOBAL Poisson numerics -- uniform over the gas and every dielectric.
+//
+// These moved here from constant/electromagneticsProperties, which is gone.
+// They are SOLUTION CONTROL, so they belong in system/ beside the timestep and
+// outer-loop settings; constant/ holds physical properties, and permittivity --
+// which IS physical -- now lives per region in
+// constant/<region>/electricalProperties.
+poisson
+{
+    // explicit     -- the charge is a pure source term
+    // semiImplicit -- the conductivity is also brought in implicitly, which
+    //                 stabilises the space-charge / Poisson coupling
+    //
+    // This is a SCHEME. The LINEAR SOLVER for ePotential is in fvSolution. The
+    // old name for this key was `PoissonScheme` but the case variable feeding
+    // it was called `poissonSolver`, which invited exactly that confusion.
+    scheme                      $poissonScheme;
+
+    // How E is formed from the potential: grad | reconstruct
+    EScheme                     grad;
+
+    nNonOrthogonalCorrectors    $nNonOrthogonalCorrectors;
+}
+
+// ************************************************************************* //

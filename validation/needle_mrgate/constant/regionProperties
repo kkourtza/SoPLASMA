@@ -1,0 +1,106 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- which mesh regions exist, and what KIND each one is            |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      regionProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// FORMAT:  regions ( <kind> ( <meshRegionName> ... ) ... );
+//
+// THE KIND IS A FIXED KEYWORD. THE NAME IS YOURS.
+//
+//   THREE kinds, looked up by literal string. You cannot invent or rename them:
+//
+//     gas         the plasma -- species, chemistry, electron energy, Poisson.
+//                 Exactly one. epsilonR defaults to 1.0.
+//     dielectric  a solid barrier -- Poisson only. Any number.
+//                 epsilonR is REQUIRED, with no default.
+//     farField    a FICTITIOUS air region -- Poisson only. Any number.
+//                 epsilonR defaults to 1.0, which IS the definition of the kind.
+//
+//   `farField` exists to extend the ELECTROSTATIC domain without extending the
+//   plasma one: Poisson is long-range and often needs a much larger domain than
+//   the discharge, while species transport, chemistry and photoionization do
+//   not. Wrapping a small gas region in a large farField region is therefore
+//   nearly free. Not used in THIS case -- see the aside in TUTORIAL.md.
+//
+//   The names in parentheses are MESH region names -- the cellZone names, which
+//   become the directory names under constant/ and system/. They are FREE:
+//       dielectric  (plexiglass)      <- fine
+//       gas         (leftGap)         <- fine
+//   Here they happen to equal the kinds, which is convenient and not required;
+//   the two-region electrostatics tutorial uses `gas (leftGas)`.
+//
+// RENAMING A REGION PROPAGATES, so know what it touches:
+//   * constant/polyMesh/cellZones -- TWO places, the `meta { names ... }` list
+//     AND the zone entry. Cleanest is to rename the gmsh `Physical Volume` and
+//     re-import; otherwise edit both.
+//   * constant/polyMesh/sets/<name> -- a gmshToFoam byproduct; rename the file
+//     and its `object` header entry.
+//   * THE INTERFACE PATCH NAMES, which are DERIVED as `<a>_to_<b>` --
+//     `gas_to_plexiglass` and `plexiglass_to_gas`. Your etc/changeDictionary.*
+//     boundary conditions name those patches explicitly, so a region rename
+//     silently renames a patch you have to reference.
+//
+//   DO NOT `sed -i 's/dielectric/plexiglass/g' constant/polyMesh/*`. This mesh
+//   has a PATCH called `air_dielectric` -- a gmsh physical curve, nothing to do
+//   with the region -- and a global substitution renames it too, breaking the
+//   boundary condition that names it.
+//
+// USING A WRONG KIND IS FATAL, deliberately. `plexiglass (plexiglass)` instead
+// of `dielectric (plexiglass)` used to be SILENT: the kind matched nothing, the
+// dielectric list came back empty, the model was derived as singleRegionPoisson,
+// and the potential was solved in the gas alone -- a converged, plausible, wrong
+// DBD. Guarded since 2026-09-02 in electromagneticsModel::validateRegionKinds.
+// Note `foamListRegions` is no check: it flattens every list regardless of kind
+// and would have printed both names quite happily.
+//
+// THIS FILE IS HAND-WRITTEN. Nothing generates it. splitMeshRegions writes
+// constant/cellToRegion and the per-region polyMesh directories, but it does not
+// know which region is the plasma and which is a solid -- that distinction is
+// made here, and it decides what gets solved where.
+//
+// THIS FILE IS THE ONLY PLACE REGIONS ARE DECLARED. Everything else is derived
+// from it:
+//   * the Poisson model -- `multiRegionPoisson` when a `dielectric` is listed,
+//     `singleRegionPoisson` when none is. It is not a user choice: both solve
+//     the same equation and only the topology decides which applies.
+//   * each region's properties -- read from constant/<region>/, so adding a
+//     region means adding a DIRECTORY, and no global file is touched.
+//
+// A `dielectric` list MAY NAME AS MANY REGIONS AS YOU LIKE. Each one needs its
+// own constant/<name>/electricalProperties with an `epsilonR`; there is no
+// global file listing them.
+//
+// EXACTLY ONE `gas` REGION, though. That is not a limit on the geometry: a
+// stack such as electrode|dielectric|gas|dielectric|gas|dielectric|electrode is
+// ONE gas region whose cellZone is geometrically DISCONNECTED -- an OpenFOAM
+// mesh region may consist of disjoint parts -- plus three dielectric regions.
+// Every gap then shares one species set, one chemistry and one EEDF, which is
+// what you want when the gaps hold the same gas. Two gas regions with DIFFERENT
+// mixtures (air in one gap, CO2 in the other) is what is genuinely unsupported.
+//
+// THE NAMES MUST AGREE IN FIVE PLACES, or the split lands in directories nobody
+// reads:
+//   1. the gmsh `Physical Volume("gas")` / `Physical Volume("dielectric")`
+//   2. the resulting cellZone names        (gmshToFoam prints these)
+//   3. the parenthesised names here
+//   4. the `constant/<region>/electricalProperties` directory names
+//   5. the `etc/changeDictionary.<region>` filenames, and any loop over regions
+//
+// Without this file the solver falls back to a single default region and says
+// so -- which for a two-region case means the dielectric is silently absent.
+
+regions
+(
+    gas         (gas)
+    dielectric  (dielectric)
+);
+
+// ************************************************************************* //

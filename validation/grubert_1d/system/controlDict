@@ -1,0 +1,55 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2412                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+libs
+(
+    "libpetscFoam.so"
+    "libROUNDSchemes.so"
+    "libplasmaNewtonSolverPETSc.so"
+);
+
+application     soPlasmaFoam;
+
+startFrom       startTime;
+
+startTime       1.96110937e-06;
+
+stopAt          writeNow;
+
+endTime         $endTime;
+
+deltaT          $deltaT;
+
+writeControl    $writeControl;
+
+writeInterval   $writeInterval;
+
+purgeWrite      0;
+
+writeFormat     ascii;
+
+writePrecision  12;
+
+writeCompression off;
+
+timeFormat      general;
+
+timePrecision   9;
+
+runTimeModifiable true;
+
+// ************************************************************************* //

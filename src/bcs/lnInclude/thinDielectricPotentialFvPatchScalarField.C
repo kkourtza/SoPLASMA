@@ -1,0 +1,1 @@
+../electromagneticsBcs/thinDielectricPotential/thinDielectricPotentialFvPatchScalarField.C

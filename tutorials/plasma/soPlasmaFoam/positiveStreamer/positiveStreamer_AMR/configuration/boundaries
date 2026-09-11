@@ -1,0 +1,89 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+|  positiveStreamer_AMR -- the SEMANTIC boundary description.                 |
+|                                                                              |
+|  G2 / LAYER 1: this says WHAT each surface IS. `kind` is looked up in        |
+|  $SoPLASMA_ETC/boundaryRoles, and each module derives its own condition      |
+|  from it. Run plasmaSetupBoundaries with no arguments to list the kinds.     |
+|                                                                              |
+|  ADDED 2026-09-10, because WITHOUT IT THIS CASE DID NOT RUN AT ALL:          |
+|  plasmaCreateSpeciesFields refuses to start when layer 1 is missing. The     |
+|  case predates the boundary-role library and had never been swept onto it.   |
+|                                                                              |
+|  ------------------------------------------------------------------------   |
+|  READ THIS BEFORE CHANGING ANYTHING HERE -- THIS FILE IS NOT THE ONLY        |
+|  SOURCE OF BOUNDARY TRUTH IN THIS CASE.                                      |
+|                                                                              |
+|  Allrun-serial and Allrun-parallel both still run `etc/changeDictionary`     |
+|  AFTER the generators, and changeDictionary WINS on every field it names:    |
+|                                                                              |
+|      set by etc/changeDictionary : ePotential, surfCharge, n_e, n_pIon      |
+|      set from THIS file          : anything else the mechanism emits         |
+|                                                                              |
+|  This bed is the LFA two-species model (electrons + one lumped positive      |
+|  ion), so changeDictionary happens to name nearly the whole field set --     |
+|  the practical effect is that THIS file mostly serves to let the generators  |
+|  run at all. That is still worth having: it is the layer-1 description, and  |
+|  it is what the case would fall back to if the changeDictionary step were    |
+|  ever removed.                                                               |
+|                                                                              |
+|  The two paths DISAGREE on species-at-electrode physics (layer 1 gives an    |
+|  ABSORBING ion/electron wall flux, changeDictionary gives zeroGradient);     |
+|  see the sibling positiveStreamer_LMEA_fast/configuration/boundaries for     |
+|  the measured comparison. changeDictionary is kept authoritative so the      |
+|  bed's published results stay reproducible.                                  |
+|  ------------------------------------------------------------------------   |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// THE DRIVE. A STEP, NOT A RAMP -- and that is the deliberate difference
+// between this bed and its three siblings, which ramp over 93.75 ps. This one
+// applies the benchmark's own constant 18.75 kV from t = 0, so its early-time
+// behaviour IS directly comparable with the reference where the ramped beds'
+// is not. configuration/config states the same thing:
+//
+//     "NO voltageRampTime here, deliberately: this bed applies a STEP, not a
+//      ramp -- its electrode is `fixedValue value uniform $appliedVoltage`."
+//
+// `constant` is the Function1 form of that step. It reproduces the old
+// changeDictionary entry exactly: uniformFixedValue with a time-independent
+// uniformValue is the same Dirichlet condition as a plain fixedValue.
+//
+// The number is $appliedVoltage from configuration/config, written out
+// LITERALLY: a $var nested inside a compound value is not expanded by
+// OpenFOAM's dictionary reader.
+active_electrode
+{
+    kind        drivenElectrode;
+    waveform    constant 18.75e3;                    // 18.75 kV, stepped at t=0
+}
+
+grounded_electrode
+{
+    kind        groundedElectrode;
+}
+
+// The artificial outer boundary: the domain simply ends here. This is the
+// `zeroGradient` that the old changeDictionary applies through its ".*"
+// catch-all.
+far
+{
+    kind        openBoundary;
+}
+
+// NOT LISTED, BECAUSE THEY ARE DERIVED FROM THE MESH:
+//   axis             `empty`
+//   wedge_0, wedge_1 `wedge` (this bed's blockMeshDict declares them `empty`)
+// These are CONSTRAINT patches: they carry their own condition by
+// construction. A mechanical constraint is not a physical description, so
+// declaring it here would be a second source of truth for something the mesh
+// already states.
+
+// ************************************************************************* //

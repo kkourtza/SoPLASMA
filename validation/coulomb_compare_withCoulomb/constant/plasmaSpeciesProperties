@@ -1,0 +1,166 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- the plasma. Everything derivable is DERIVED, not restated.     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      plasmaSpeciesProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+// ONE SWITCH configures the whole electron energy treatment. Under LMEA the
+// solver derives the transport lookup key, the chemistry rate key and the
+// entire energyModelCoeffs block from the mechanism's own tables -- so none of
+// that is written here. Stating it by hand is how a case comes to disagree
+// with its own mechanism.
+electronEnergyModel LMEA;
+
+activeSpecies fromMechanism;
+
+mechanismSpecies
+{
+    mechanism           "constant/argon_plasma.foam";
+    include             chargedAndExcited;
+
+    // Neutrals do not move: their chemical lifetime is far shorter than any
+    // transport time here.
+    neutralTransport    immobile;
+
+    // IONS DO. With this one word every charged non-electron species gets a
+    // drift-diffusion model with `muN_<species>` and `DLN_<species>` from the
+    // mechanism, and its charge and mass from the mechanism too -- so a case
+    // cannot get them wrong. Previously this case restated all of it, 100+
+    // lines that could only ever agree or drift.
+    ionTransport        driftDiffusion;
+}
+
+backgroundGas
+{
+    name        "Ar";
+    pressure    $gasPressure;
+
+    energy
+    {
+        solve       false;    // Grubert's model is isothermal -- matching it
+        T           $gasTemperature;
+        kappa       0.0177;   // Ar at 300 K, W/(m K); inert while solve=false
+        pressure    $gasPressure;
+    }
+}
+
+speciesProperties
+{
+    // ONLY WHAT CANNOT BE DERIVED: the number-density floors.
+    //
+    // In a case with no seeded blob the floor IS the initial condition -- the
+    // discharge initiates from this background in the enhanced tip field.
+    //
+    // The positive-ion floors are the electron floor times the parent's MOLE
+    // FRACTION, which the mechanism already declares
+    // (composition { N2 0.79; O2 0.21; }), so the initial state is exactly
+    // quasineutral: 7.9e10 + 2.1e10 = 1e11. Negative ions start negligible --
+    // they are products, not background.
+    // FLOOR DEMOTED TO A POSITIVITY GUARD, 2026-09-08. THE ONE VARIABLE.
+    //
+    // MEASURED at the cathode of grubert2009_ps_ballast, t = 3.5 us. The
+    // gamma-SEE closure at a cathode surface is Gamma_e = gamma*Gamma_i with
+    // both fluxes pure drift in the same field, so
+    //
+    //     n_e/n_Arp = gamma * mu_Arp/mu_e
+    //
+    // which is FIELD- AND CURRENT-INDEPENDENT. With the solution's own
+    // mobilities (mu_e = 92.8, mu_Arp = 0.0695, ratio 1335):
+    //
+    //     predicted n_e/n_Arp = 4.50e-5
+    //     OBSERVED  n_e/n_Arp = 5.44e-3      <-- 121x too high
+    //
+    //     n_e that gamma-SEE alone sustains = 8.27e8 m^-3
+    //     n_e actually present              = 1.00e11 m^-3  == THE FLOOR
+    //
+    // So the electron density at the cathode is set by the CLAMP, not by the
+    // emission physics, and the Townsend loop is swamped 121-fold. Because
+    // the clamp is applied cell-by-cell over the whole domain, the gap acts
+    // as a weak DISTRIBUTED cathode: ionisation proceeds volumetrically
+    // everywhere instead of localising into a fall. That is why no cathode
+    // fall has localised in any run.
+    //
+    // RAISING THE CURRENT IS NOT ENOUGH. The floor only goes inert once
+    // n_Arp > 1e11/4.50e-5 = 2.2e15 m^-3, which needs ~2e-6 A -- ABOVE
+    // Grubert's operating point of 1.022e-6 A. At I_op itself gamma-SEE
+    // sustains ~5e10 m^-3, still BELOW a 1e11 floor. (An earlier estimate of
+    // mine put this at 60x above the floor; it used an electron drift
+    // velocity of 3e5 m/s, whereas mu_e*E here is ~1e7 m/s. The floor must
+    // come down.)
+    //
+    // 1e4 IS A POSITIVITY GUARD AND NOTHING ELSE: seven orders below the
+    // physical cathode density, so it can catch a negative excursion from the
+    // unlimited flux scheme without sourcing electrons anywhere.
+    //
+    // THE SEED IS NOW EXPLICIT. `0/n_e` and `0/n_Arp` carry
+    // `internalField uniform 1e11`, because this file previously stated "THE
+    // 1e11 FLOOR IS THE INITIAL CONDITION" -- the clamp WAS the background,
+    // so lowering it without seeding first would start the case from vacuum.
+    // The two roles are now separate, which is what lets the floor be chosen
+    // on positivity grounds alone.
+    e
+    {
+        transportModel  driftDiffusion;
+        minNumberDensity 1e4;
+
+        driftDiffusionCoeffs
+        {
+            fluxScheme  $driftDiffusionFluxScheme;
+
+            mobility    { type fromMechanism; quantity muN;  tableDir "constant/plasmaTables"; }
+            diffusivity { type fromMechanism; quantity DLN;  tableDir "constant/plasmaTables"; }
+        }
+
+        // A/B COMPARISON LEAF, 2026-09-08. The ONLY difference between this
+        // case and coulomb_compare_baseline: the Coulomb-heating source term
+        // (Eliseev, Bogdanov & Kudryavtsev, Phys. Plasmas 24, 093503 (2017),
+        // eq. 12/15) added to the electron energy equation. `elastic` and
+        // `inelastic` are left OMITTED here so LMEA auto-derives them from
+        // the mechanism's own tables exactly as the baseline does -- this
+        // leaf adds to that, it does not replace it.
+        energyModelCoeffs
+        {
+            powerLoss
+            {
+                coulombHeating
+                {
+                    type                     coulombHeating;
+                    firstExcitationThreshold 11.55;      // eV, Ar (3p6 -> 4s)
+                    backgroundAtomMass       6.6335e-26; // kg, Ar-40
+                }
+            }
+        }
+    }
+
+    // THE 1e11 FLOOR IS THE INITIAL CONDITION, AND IT MUST STAY WEAK.
+    //
+    // Measured 2026-09-06: seeding the domain QUASI-NEUTRAL at 1e15 instead --
+    // which was done to spare the LMEA arm a violent avalanche under the old
+    // 100 ns ramp -- makes the LFA arm run away. A 1e15 plasma shields the
+    // bulk and forces the whole applied drop into a sheath thinner than a
+    // cell, where E/N spikes; the LFA then keys its ionisation rate on that
+    // local field with no energy relaxation to damp it, and the loop closes:
+    // field -> ionisation -> charge -> sharper field. It reached Emag 8.22e7
+    // V/m (E/N = 3.4e6 Td, 60x past the top of the tables) on 11 V applied,
+    // n_e 1e15 -> 2.25e19, 3022 rejected steps, and stalled at t = 1.1e-7 s.
+    //
+    // With the weak 1e11 seed and the 5 us ramp the field stays essentially
+    // UNIFORM (Emag max 13183 V/m against a 12200 V/m mean), the avalanche is
+    // gradual, and the same arm reaches t = 1.22e-6 s in 477 steps with ZERO
+    // rejections, dt ~ 2.6e-9 s, limited by Co_conv -- a physical limiter.
+    //
+    // So there is no `internalField uniform 1e15` override anywhere in this
+    // case, deliberately. The clamp supplies the background; see
+    // clampNumberDensity(), which raises the field rather than capping it.
+    Arp  { minNumberDensity 1e4;  }   // == the electron guard; the SEED is in 0/n_Arp
+    Ar2p { minNumberDensity 1e5;  }   // minor species, token floor
+}
+
+// ************************************************************************* //

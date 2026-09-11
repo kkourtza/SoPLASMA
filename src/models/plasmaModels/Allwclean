@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#----------------------------------------------
+#  Allwclean script for SoPLASMA suite
+#  Cleans all models in src/models/plasmaModels
+#----------------------------------------------
+
+set -e
+
+# Move to the directory where this script is located
+cd "${0%/*}" || exit 1
+
+echo ">>> Cleaning plasmaModels in src/models/plasmaModels"
+echo "----------------------------------------------------"
+
+wclean genericPlasmaProperties
+wclean photoionization
+wclean plasmaSpecies
+wclean plasmaTransport
+
+echo "----------------------------------------------------"
+echo ">>> Done cleaning plasmaModels."

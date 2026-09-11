@@ -1,0 +1,81 @@
+{
+  "$comment": [
+    "SoPhy project settings. TRACKED IN GIT deliberately: the skills, agents and hooks are",
+    "part of the toolkit, reviewable in a diff, and there is exactly ONE copy — SoEEDF/.claude",
+    "is a symlink to this directory, so both roots resolve the same files (G1).",
+    "",
+    "Machine-specific grants belong in .claude/settings.local.json, which is gitignored.",
+    "",
+    "THE HOOKS. Each corresponds to a failure already paid for, and each names the CORRECT",
+    "action rather than only refusing. They are tiered: guard-generated-files.sh BLOCKS an edit",
+    "to a file that something demonstrably overwrites (it tests for the overwriting mechanism,",
+    "never for the path shape — verification/ beds keep hand-authored system/fvSolution and 0/",
+    "and must not be caught), and WARNS without blocking on the heuristic cases. guard-bash.sh",
+    "blocks `git add -A`/`.` per rule D4. session-start.sh only prints.",
+    "",
+    "Every event, blocked or warned, is appended to .claude/hook-events.log so the set can be",
+    "tuned from evidence — /save-state reports what fired. If a BLOCK was wrong, that entry gets",
+    "demoted rather than argued with.",
+    "",
+    "ESCAPE HATCHES: `touch .claude/hooks-off` disables every hook while the file exists",
+    "(`rm` re-enables); or say so and the action is taken another way. No JSON editing to get",
+    "unstuck — a guard you cannot turn off quickly is a guard that gets deleted permanently."
+  ],
+
+  "permissions": {
+    "allow": [
+      "Bash(./build-all.sh:*)",
+      "Bash(./check-no-running-solvers.sh:*)",
+      "Bash(./check-run.sh:*)",
+      "Bash(./run-guarded.sh:*)",
+      "Bash(./rerun.sh:*)",
+      "Bash(tools/*.py:*)",
+      "Bash(tools/*.sh:*)",
+      "Bash(~/ct-env/bin/python:*)",
+      "Bash(wmake:*)",
+      "Bash(wmakeLnInclude:*)",
+      "Bash(wclean:*)",
+      "Bash(nm:*)",
+      "Bash(pgrep:*)",
+      "Bash(stat:*)",
+      "Bash(du:*)",
+      "Bash(df:*)"
+    ],
+    "additionalDirectories": [
+      "/home/kkourtza/Projects/SoEEDF"
+    ]
+  },
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-generated-files.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

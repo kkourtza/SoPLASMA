@@ -1,0 +1,68 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- WHAT EVERY BOUNDARY IS. Layer 1: the semantic description.      |
+|                                                                              |
+| You say what each surface IS. Every module decides how to treat it, from     |
+| $SoPLASMA_ETC/boundaryRoles, and every dictionary entry is generated.        |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "configuration";
+    object      boundaries;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// ONE BLOCK PER PATCH, named exactly as the mesh names it. `kind` is looked up
+// in $SoPLASMA_ETC/boundaryRoles -- run the generator with no arguments to list
+// the kinds and what each one requires.
+//
+// NOT LISTED HERE, BECAUSE THEY ARE DERIVED:
+//   front, back            `empty` -- read from the MESH. A mechanical
+//                          constraint is not a physical description.
+//   gas_to_dielectric      the meshed gas/barrier interface, and its partner
+//   dielectric_to_gas      on the other side. splitMeshRegions created them
+//                          and the topology already says what they are;
+//                          restating it would be a second source of truth.
+//   procBoundary*          parallel decomposition, created by decomposePar.
+
+// THE DRIVE. The single most important value in the case: a discharge with no
+// drive does nothing. Any Function1 -- constant, table, sine, csv.
+active_electrode
+{
+    kind        drivenElectrode;
+    waveform    table ((0 0) (100e-9 8e3));      // ramp to 8 kV over 100 ns
+}
+
+// The ground sits BEHIND the barrier, on the dielectric mesh. That is fine and
+// it is a real DBD: the weighting field for the discharge current is solved
+// monolithically across every region, so a ground on a dielectric mesh is
+// reached correctly.
+ground
+{
+    kind        groundedElectrode;
+}
+
+// 178 faces left over after splitMeshRegions took the 160 that became the
+// interface. No dielectric mesh behind them, but physically INSULATING: charge
+// that arrives must stay there rather than leave the domain. That is a
+// free-standing thin dielectric.
+//
+// `zeroGradient` here would be the SAME equation with sigma forced to zero, so
+// the charge would be accumulated and then silently discarded.
+air_dielectric
+{
+    kind        thinDielectricSurface;
+    material    pmma;
+}
+
+// The outer boundary of the gas. Far enough from the needle that the normal
+// field is negligible; if it were not, the fix is a `farField` region, not
+// moving this boundary.
+out
+{
+    kind        openBoundary;
+}
+
+// ************************************************************************* //

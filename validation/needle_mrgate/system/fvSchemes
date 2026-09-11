@@ -1,0 +1,150 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- discretisation schemes                                         |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSchemes;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+// THIS FILE MUST EXIST BEFORE splitMeshRegions RUNS.
+//
+// That is not obvious and it is not documented in OpenFOAM's own tutorials.
+// splitMeshRegions builds an `fvMesh` (via createNamedMesh.H), and in v2412
+// `fvMesh` INHERITS fvSchemes and fvSolution as base classes:
+//
+//     class fvMesh : public polyMesh, public lduMesh, public fvSchemes,
+//                    public surfaceInterpolation, public fvSolution
+//
+// Both are MUST_READ, so a case with no system/fvSchemes cannot even be split.
+// The numerics therefore come BEFORE the region split, not after it.
+//
+// EVERY ENTRY BELOW IS NAMED PER SPECIES, and a missing one is a FATAL LOOKUP,
+// not a fall-through to `default`. That is the single most common way a case
+// copied from another bed dies -- several minutes in, one family at a time.
+
+ddtSchemes
+{
+    default                         backward;
+}
+
+gradSchemes
+{
+    default                         leastSquares;
+}
+
+divSchemes
+{
+    // The convective flux is `phi_<species>`, NOT `particleFlux_<species>`.
+    // The latter is the name of the registered diagnostic FIELD that the
+    // boundary conditions read. Guessing it costs a run:
+    //     Entry 'div(phi_N2p,n_N2p)' not found in divSchemes
+    div(phi_e,n_e)                  $electronDriftDivScheme;
+
+
+    // See interpolationSchemes for why this catch-all is required.
+    "div\(phi_.*,n_.*\)"            $electronDriftDivScheme;
+    // THE MOBILE IONS. This case needs them mobile: secondary electron
+    // emission emits nothing without an ion wall flux, and the SEE coefficient
+    // is what makes this a self-sustaining discharge rather than a single
+    // avalanche. The streamer benchmark has every ion `immobile`, so a case
+    // copied from it has none of these five families.
+    div(phi_N2p,n_N2p)              $electronDriftDivScheme;
+    div(phi_O2p,n_O2p)              $electronDriftDivScheme;
+    div(phi_Om,n_Om)                $electronDriftDivScheme;
+    div(phi_O2m,n_O2m)              $electronDriftDivScheme;
+}
+
+laplacianSchemes
+{
+    laplacian(D_e,n_e)              $electronDiffusionLaplacianScheme;
+
+    "laplacian\(D_.*,n_.*\)"        $electronDiffusionLaplacianScheme;
+    laplacian(D_N2p,n_N2p)          $electronDiffusionLaplacianScheme;
+    laplacian(D_O2p,n_O2p)          $electronDiffusionLaplacianScheme;
+    laplacian(D_Om,n_Om)            $electronDiffusionLaplacianScheme;
+    laplacian(D_O2m,n_O2m)          $electronDiffusionLaplacianScheme;
+
+    // BOTH ePotential forms are needed, and which one is used depends on
+    // `poissonScheme`: the first is the semiImplicit operator (the
+    // conductivity enters the diffusivity), the second the explicit one.
+    // Listing only one works until someone flips the scheme.
+    laplacian((epsilon+(deltaT*electricalConductivity)),ePotential)  $ePotentialLaplacianScheme;
+    laplacian(epsilon,ePotential)                                    $ePotentialLaplacianScheme;
+
+    // Gas-temperature conduction. Required only when backgroundGas/energy/solve
+    // is true, but harmless when it is not -- an UNUSED entry costs nothing,
+    // whereas a MISSING one is fatal. Keep it.
+    laplacian(kappa,T_gas)          Gauss linear corrected;
+}
+
+interpolationSchemes
+{
+    interpolate(n_e)                linear;
+
+    // `harmonic` on the transport COEFFICIENTS, not linear.
+    //
+    // mu and D span orders of magnitude across a discharge front, and linear
+    // interpolation of a steep coefficient can put the face value ABOVE both
+    // adjacent cell values. The harmonic mean cannot.
+    interpolate(mu_e)               $electronMobilityInterpolationScheme;
+    interpolate(D_e)                $electronDiffusivityInterpolationScheme;
+
+
+    // Catch-alls, matching positiveStreamer_fixedMesh. `outerSolver newton`
+    // assembles each species equation ITSELF, so it forms a flux and
+    // interpolates mu/D for EVERY transported species, not just the electron.
+    // Those names are not knowable here, and a missing entry is a FATAL
+    // lookup, not a fallback. Added 2026-09-11.
+    "interpolate\(n_.*\)"           linear;
+    "interpolate\(mu_.*\)"          $electronMobilityInterpolationScheme;
+    "interpolate\(D_.*\)"           $electronDiffusivityInterpolationScheme;
+    interpolate(mu_N2p)             $electronMobilityInterpolationScheme;
+    interpolate(mu_O2p)             $electronMobilityInterpolationScheme;
+    interpolate(mu_Om)              $electronMobilityInterpolationScheme;
+    interpolate(mu_O2m)             $electronMobilityInterpolationScheme;
+    interpolate(D_N2p)              $electronDiffusivityInterpolationScheme;
+    interpolate(D_O2p)              $electronDiffusivityInterpolationScheme;
+    interpolate(D_Om)               $electronDiffusivityInterpolationScheme;
+    interpolate(D_O2m)              $electronDiffusivityInterpolationScheme;
+    interpolate(n_N2p)              linear;
+    interpolate(n_O2p)              linear;
+    interpolate(n_Om)               linear;
+    interpolate(n_O2m)              linear;
+}
+
+snGradSchemes
+{
+    snGrad(n_e)                     corrected 0.33;
+    snGrad(ePotential)              corrected 0.33;
+
+    // CATCH-ALL for every other transported species. Newton assembles each
+    // species equation itself and refreshes particleFlux_ with an explicit
+    // fvc::snGrad(n_s), so a snGrad scheme is needed for EVERY species, not
+    // just the electron. A missing entry is a FATAL lookup, not a fallback:
+    // measured 2026-09-11, needleDBD died after 545 residual evaluations on
+    // "Entry 'snGrad(n_N2p)' not found".
+    //
+    // This is a FIFTH catch-all beyond the three the streamer beds needed
+    // (interpolate(mu_*), div(phi_*,n_*), laplacian(D_*,n_*)) -- it only
+    // shows up on a case whose species set is bigger than the electron.
+    "snGrad\(n_.*\)"              corrected 0.33;
+}
+
+fluxRequired
+{
+    default         no;
+    n_e             ;
+    n_N2p           ;
+    n_O2p           ;
+    n_Om            ;
+    n_O2m           ;
+    ePotential      ;
+}
+
+// ************************************************************************* //

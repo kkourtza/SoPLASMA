@@ -1,0 +1,127 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- SOLUTION CONTROL: timestep, outer loop, Poisson numerics       |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      plasmaSimulationControls;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+// WHY THIS FILE IS IN system/ AND NOT constant/.
+//
+// OpenFOAM's own split: constant/ holds PHYSICAL PROPERTIES, system/ holds HOW
+// THEY ARE SOLVED. A permittivity is physical and lives per region in
+// constant/<region>/electricalProperties; a timestep limiter, an outer-loop
+// tolerance and a discretisation scheme are not.
+//
+// TOP LEVEL, not per region. plasmaTimeControl and the Poisson numerics are
+// read with `runTime` as the database, i.e. from THIS file. `outerCoupling` is
+// tried in system/<region>/ FIRST and falls back here -- so it can legitimately
+// differ per region, and these cannot.
+
+plasmaTimeControl
+{
+    simulationType                  transient;
+    adjustTimeStep                  true;
+
+    // Species Courant. A RAIL rather than the control on this bed: the
+    // binding limiter here is the energy convective Courant, which shares
+    // this cap. Check which one actually bound with
+    //     grep "deltaT set by:" log.soPlasmaFoam | sort | uniq -c
+    limitSpeciesCo                  true;
+    printSpeciesCo                  true;
+    maxSpeciesConvectiveCo          $maxSpeciesCo;
+    maxSpeciesDiffusiveCo           $maxSpeciesCo;
+
+    // Chemistry Courant. NOT built from an effective ionisation coefficient:
+    // it uses the fractional rate of change of state over ALL species from the
+    // full mechanism's production and loss, because a NET rate cancels near
+    // the critical field and would report a long timescale exactly where the
+    // chemistry is fastest.
+    limitChemistryCo                true;
+    printChemistryCo                true;
+    maxChemistryCo                  0.9;
+
+    // Dielectric relaxation. Reported but not limiting here.
+    printDielectricRelaxationRatio  true;
+    maxDielectricRelaxationRatio    5;
+
+    // ONE key for the voltage rise: volts per step, 0 disables. Always active
+    // once `voltagePatchName` names a driven electrode, and on a
+    // constant-voltage case dV/step is ~0 so it never binds.
+    //
+    // There is NO separate on/off switch and NO separate print switch.
+    // `limitVoltageRiseRate` and `maxVoltageRiseRate` are REJECTED with an
+    // error carrying the exact translation for your dictionary;
+    // `printVoltageRiseRate` prints a notice saying it is no longer read.
+    // maxVoltageRisePerStep is NOT set: the code default is already 100 V/step,
+    // which is what this case wants. Stating it would restate a default and
+    // make it look like the knob to tune, while the reasoning for 100 lives at
+    // the reader. The limiter is still active -- `voltagePatchName` below is
+    // what switches it on -- and the run reports when it binds.
+    voltagePatchName                "active_electrode";
+}
+
+// Convergence of the OUTER (Poisson <-> species) loop.
+//
+// Within a timestep the field and the densities are lagged relative to each
+// other, and converging that loop is what makes the scheme second order: with
+// a single corrector it is FIRST order whatever ddtSchemes says, because no
+// amount of ddt accuracy repairs a lag. Measured on the shipped benchmark:
+// p = 0.87 at one corrector, p = 1.94 converged.
+//
+// So temporal order is not selected, it is ACHIEVED -- and the run reports
+// which it got rather than promising one.
+outerCoupling
+{
+    // converged -> chase the coupling residual, second order
+    // lagged    -> one corrector, deliberately first order, for scoping runs
+    target            converged;
+
+    // MUST be comfortably above the linear solvers' own tolerances (>= 10x);
+    // the solver refuses otherwise. An outer tolerance at the inner solver's
+    // convergence floor can never be met, so the loop silently runs to
+    // maxCorrectors every step -- a fixed iteration count wearing the name of
+    // a convergence test.
+    //
+    // 1e-6, not 1e-8, and this is a MEASURED choice for a monolithic
+    // multi-region case. With EXPLICIT coupling the interface lags and the
+    // outer ePotential residual plateaus around 1e-7 on this geometry; at 1e-8
+    // the loop hits its cap and retryStep discards EVERY step. `useImplicit
+    // true` removes that plateau, so 1e-6 is comfortable here rather than
+    // marginal.
+    tolerance         1e-6;
+    maxCorrectors     20;
+}
+
+// The GLOBAL Poisson numerics -- uniform over the gas and every dielectric,
+// because one model owns the whole coupled solve and reads them once. Forming
+// E by a different scheme on either side of an interface would make the
+// coupled flux inconsistent, so these cannot be per-region.
+//
+// They moved here from constant/electromagneticsProperties, which no longer
+// exists.
+poisson
+{
+    // A SCHEME, not a linear solver. `explicit` treats the space charge as a
+    // pure source; `semiImplicit` also brings the conductivity in implicitly,
+    // which stabilises the space-charge / Poisson coupling. The LINEAR solver
+    // for ePotential is the `ePotential` block in fvSolution.
+    //
+    // The old spelling was `PoissonScheme`, fed by a case variable called
+    // `poissonSolver`: two names for one setting, each suggesting the other's
+    // meaning.
+    scheme                      semiImplicit;
+
+    // How E is formed from the potential: grad | reconstruct.
+    // `reconstruct` builds E from the face fluxes, so E is consistent with the
+    // flux the Poisson solve actually conserved.
+    EScheme                     reconstruct;
+}
+
+// ************************************************************************* //

@@ -1,0 +1,86 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| needleDBD -- the plasma. Everything derivable is DERIVED, not restated.     |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      plasmaSpeciesProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+#include "../configuration/config"
+
+// ONE SWITCH configures the whole electron energy treatment. Under LMEA the
+// solver derives the transport lookup key, the chemistry rate key and the
+// entire energyModelCoeffs block from the mechanism's own tables -- so none of
+// that is written here. Stating it by hand is how a case comes to disagree
+// with its own mechanism.
+electronEnergyModel LMEA;
+
+activeSpecies fromMechanism;
+
+mechanismSpecies
+{
+    mechanism           "constant/air_plasma.foam";
+    include             chargedAndExcited;
+
+    // Neutrals do not move: their chemical lifetime is far shorter than any
+    // transport time here.
+    neutralTransport    immobile;
+
+    // IONS DO. With this one word every charged non-electron species gets a
+    // drift-diffusion model with `muN_<species>` and `DLN_<species>` from the
+    // mechanism, and its charge and mass from the mechanism too -- so a case
+    // cannot get them wrong. Previously this case restated all of it, 100+
+    // lines that could only ever agree or drift.
+    ionTransport        driftDiffusion;
+}
+
+backgroundGas
+{
+    name        "Air";
+    pressure    $gasPressure;
+
+    energy
+    {
+        solve       true;
+        T           $gasTemperature;
+        kappa       0.026;
+        pressure    $gasPressure;
+    }
+}
+
+speciesProperties
+{
+    // ONLY WHAT CANNOT BE DERIVED: the number-density floors.
+    //
+    // In a case with no seeded blob the floor IS the initial condition -- the
+    // discharge initiates from this background in the enhanced tip field.
+    //
+    // The positive-ion floors are the electron floor times the parent's MOLE
+    // FRACTION, which the mechanism already declares
+    // (composition { N2 0.79; O2 0.21; }), so the initial state is exactly
+    // quasineutral: 7.9e10 + 2.1e10 = 1e11. Negative ions start negligible --
+    // they are products, not background.
+    e
+    {
+        transportModel  driftDiffusion;
+        minNumberDensity 1e11;
+
+        driftDiffusionCoeffs
+        {
+            fluxScheme  $driftDiffusionFluxScheme;
+
+            mobility    { type fromMechanism; quantity muN;  tableDir "constant/plasmaTables"; }
+            diffusivity { type fromMechanism; quantity DLN;  tableDir "constant/plasmaTables"; }
+        }
+    }
+
+    N2p { minNumberDensity 7.9e10; }
+    O2p { minNumberDensity 2.1e10; }
+    Om  { minNumberDensity 1e5;    }
+    O2m { minNumberDensity 1e5;    }
+}
+
+// ************************************************************************* //

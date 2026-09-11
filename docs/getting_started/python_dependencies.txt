@@ -1,0 +1,6 @@
+fluidfoam==0.2.9
+gmsh==4.15.0
+matplotlib==3.10.7
+numpy==2.3.4
+pandas==2.3.3
+scipy==1.16.3
