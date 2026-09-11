@@ -60,8 +60,11 @@ to prevent.
 **SoPlasma is now PUSHED — resolved 2026-09-12.** All 208 commits are on `origin` at
 `37b6b6e`; the tree is 0 ahead / 0 behind. The Newton/JFNK solver is off this machine.
 
-**Still at risk: SoEEDF's branch `fix/mechc-audit-unitarity-bound` has NO UPSTREAM AT ALL**
-— it has never been pushed, so that work still exists only here.
+**SoEEDF is now pushed too — resolved 2026-09-12.** `fix/mechc-audit-unitarity-bound` had
+never been pushed at all; it now tracks `origin/fix/mechc-audit-unitarity-bound`, and
+`master` went up with it. No rewrite was needed there — its largest blob is a 46 MB
+Literature PDF, well under the limit. **Both trees are now 0 ahead / 0 behind with clean
+status.**
 
 ---
 
@@ -133,6 +136,13 @@ valid track, not a lower-priority one.)
       `ce3db1a6…` before and after.
       152 commits got new SHAs; the 102 hash citations across 42 docs and memories were
       rewritten from filter-repo's commit map in the same change (D1/D2), leaving 0 stale.
+- [x] 2026-09-12 — SoEEDF pushed: the feature branch (53 commits, never pushed) and `master`
+      (3 ahead). Four uncommitted items committed first, and **one deliberately NOT committed**:
+      `Cross section_IST_Lisbon_He.txt`. `data/lxcat/cross-sections/` is gitignored because
+      **LXCat does not authorise redistribution** (`data/README.md`), and their policy names
+      "commercial interests, in particular" — which is exactly what SoPhy is headed for. The
+      two sets already tracked are grandfathered exceptions; do not add more. The file was
+      moved into `cross-sections/` so it is correctly ignored instead of showing as noise.
 - [~] **The regression gate is HALF done.** `/regression-gate` now carries the procedure and the
       classification B5 requires (REGRESSION vs INTENDED IMPROVEMENT vs STALE BASELINE), but it is
       a skill I execute — **there is still no script and no CI hook**, so nothing compares
