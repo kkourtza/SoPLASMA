@@ -305,6 +305,68 @@ Newton-vs-Picard comparison: it is blocked behind a stationary solver, which is
 separate work. The streamer IS viable and is the published benchmark -- see
 section 6.
 
+## 4c. RUNS ALREADY DONE, AND WHAT THEY ANSWERED -- DO NOT RE-RUN THESE
+
+The point of this section is that a case which has already answered its
+question must never be run again to answer it a second time. Check here first.
+
+### Newton vs mesh size, on the streamer bed (2026-09-11)
+
+Same case family, only resolution changing. Beds built with
+`make-smoke-case.sh` (`NCELL=130`, `NREFINE=n`).
+
+| cells | bed | dt 1e-12 | dt 1e-11 | cost |
+|---|---|---|---|---|
+| ~40k | `positiveStreamer_LMEA_fast` | converges | -- | ~2 s/step, THE debugging bed |
+| 211k | `scale_r3` | converges | converges | -- |
+| 449k | `scale_r4` | converges | converges | Newton **142 s/step** vs Picard **14.6 s/step** (~10x) |
+| **1.15M** | `positiveStreamer_fixedMesh` | **STUCK** | **STUCK** | burns the full 50 SNES x 200 KSP budget |
+
+**THE 1.15M WALL IS MESH SIZE, NOT dt AND NOT THE INITIAL STATE.** Proven by
+running it BOTH ways: warm-started from an established streamer (10 h CPU/rank,
+still on step 1) and COLD (3 h CPU/rank, handover at t=3e-12, then stuck on the
+next step). Both at 99.9% CPU -- computing, not deadlocked. 211k and 449k
+converge under the identical configuration. Do not re-run 1.15M under Newton
+expecting a different answer; the open question is the PRECONDITIONER, not the
+case.
+
+**The cost model matches exactly**, so this is arithmetic rather than mystery:
+each JFNK Krylov iteration costs ONE full nonlinear residual assembly, as
+expensive as a whole Picard step. 50 x 200 = 10,000 residual evaluations x
+4.16 s = 11.6 h per timestep, against 10.06 h observed.
+
+### The Picard dt ladder (warm-started from t=1e-9 on the 1.15M bed)
+
+| dt | result |
+|---|---|
+| 1e-11 | 100 steps to t=2e-9, exit 0 |
+| 2e-11 | 50 steps to t=2e-9, exit 0 |
+| 5e-11 | 20 steps to t=2e-9, exit 0 |
+| 1e-10 (COLD) | SIGFPE on step 1, in `GaussSeidelSmoother::smooth` |
+
+So warm-started Picard survives to at least 5e-11. **Newton must therefore
+permit >10x larger dt merely to BREAK EVEN at 449k** -- i.e. ~5e-10. That
+number is the benchmark's whole question; nothing measured so far shows Newton
+taking a larger step at all.
+
+### Newton's handover, measured
+
+Cold-started arms cannot test Newton above PICARD's own limit: handover needs
+one completed Picard step, so at any dt where Picard's first step dies, the
+Newton arm dies in it and Newton never runs (measured at dt=1e-10: both arms,
+same SIGFPE, 1 step, handover count 0). **Warm-start from an established state**
+and handover fires on step 1.
+
+### Surface charge under Newton -- ANSWERED
+
+Works. `thinDielectricOnElectrode` (pmma, 100 um, Vb=0) on the coarse streamer
+bed ran clean under `outerSolver newton`: surfCharge field, `chargingSurface`
+wall flux and the Robin potential condition all exercised, no solver work
+needed. **The only blocker for DBD cases is `multiRegionPoisson`**, which Newton
+refuses outright ("supports only singleRegionPoisson so far"). needleDBD hits it
+because its `regionProperties` declares a `dielectric` MESH REGION; the thin
+roles themselves are single-region.
+
 ## 5. Diagnosed, with the action already chosen
 
 * **Grubert lateral asymmetry** (`docs/design/grubert-lateral-asymmetry.md`). Mesh not
