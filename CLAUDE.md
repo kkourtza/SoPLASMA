@@ -248,10 +248,30 @@ INSTRUCTION a later session will follow. Every comparison case carries a `COMPAR
 directory, written WHEN THE CASE IS CREATED: the question, the baseline's ABSOLUTE path, the reference
 numbers, the extraction command. → `/doc-sweep`, `docs-sweeper`
 
-**D2) EVERY MEASUREMENT CARRIES ITS DATE; SUPERSEDED TEXT IS MARKED, NEVER DELETED.** *(18, 19)* A
-measurement without a date will be read as a live conclusion. Mark a superseded result `SUPERSEDED BY
-<what>` in place, stating what changed and what still holds — a finding that quietly disappears leaves
-no way to recognise its stale copies elsewhere.
+**D2) EVERY MEASUREMENT CARRIES ITS DATE. A NOTE STATES WHAT IS TRUE NOW; WHAT IT REPLACED GOES TO
+THE LEDGER.** *(18, 19; revised by the user 2026-09-12)* A measurement without a date will be read as
+a live conclusion — **that half is unchanged and does real work.**
+
+**What changed, and why.** The old rule said "mark a superseded result `SUPERSEDED BY <what>` IN
+PLACE, never delete". That conflates two things with different readers: *what is true now* (one
+reader, wants ONE answer) and *what we tried and refuted* (the anti-repetition ledger). Marking in
+place serves the second at the cost of the first, and the cost compounds — one literature note reached
+**2,045 lines with 19 supersession markers and three appended Parts**, so learning one fact meant
+reading three layers. The user: *"they confuse the reader (and me) in the end."*
+
+* **A note states CURRENT TRUTH.** Rewrite the claim; do not strike it through and leave both.
+* **The superseded claim MOVES, one dated line, to the LEDGER THAT ALREADY EXISTS** —
+  `PROGRESS.md` §5 FAILED APPROACHES for an approach not to retry, `docs/CAPABILITIES.md` §4 for a
+  refuted capability claim. That is what those sections are for, and they are what gets read before
+  proposing something (B4).
+* **A revised note gets ONE line at the top** — `Revised <date>; what this replaced is in
+  PROGRESS.md §5` — not markers scattered through the prose.
+* **Never append Part A / Part B / Part C.** A note that grows by appending has become a transcript.
+  New findings REPLACE the conclusions they overturn, in place, and the old ones go to the ledger.
+
+**The original fear still holds and is still met:** a finding that quietly disappears leaves no way to
+recognise its stale copies elsewhere. The answer is that it is recorded ONCE, in the one place read
+for exactly that purpose — not marked in every document that ever touched it.
 
 **D3) EVERY CASE WRITES A MACHINE-READABLE TIME SERIES, AT PROBES.** *(6, 26)* One to three probes,
 each versus time: every species density, `chargeDensity`, `Emag`, the reduced field, electron energy,
