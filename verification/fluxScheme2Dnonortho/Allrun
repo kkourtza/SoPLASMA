@@ -20,8 +20,17 @@ for SH in ${SHEARS:-0.0 0.20}; do
           system/blockMeshDict.in > system/blockMeshDict
       cp 0/n.in 0/n
       blockMesh > logs/log.blockMesh 2>&1 || { echo "blockMesh FAILED"; exit 1; }
-      sed "s|div(phi,n) .*;|div(phi,n) Gauss upwind;|" system/fvSchemes.in > system/fvSchemes
-      for SCH in ScharfetterGummel CompleteFlux; do
+      for SCH in ${SCHEMES:-standard ScharfetterGummel CompleteFlux}; do
+        # `standard` IS THE CONTROL and it is the only one of the three that
+        # reads fvSchemes: SG and CFS bypass divSchemes/laplacianSchemes
+        # entirely and silently, so this line never reaches them. It was
+        # hardcoded to `Gauss upwind` with `standard` absent from the loop,
+        # which left the bed unable to reproduce the control row its own
+        # README quoted (found 2026-09-12). laplacian(D,n) is already
+        # `Gauss linear corrected` in fvSchemes.in, so linear div gives the
+        # linear+corrected pair the headline compares against.
+        DIV="Gauss upwind"; [ "$SCH" != standard ] || DIV="Gauss linear"
+        sed "s|div(phi,n) .*;|div(phi,n) $DIV;|" system/fvSchemes.in > system/fvSchemes
         testFluxScheme -v $PE -D 1 -S 1 -mms2d 0.5 -a 1 -b 2 -scheme $SCH \
           > logs/log.$SCH.$SH.$PE.$N 2>&1
         grep -h "^RESULT" logs/log.$SCH.$SH.$PE.$N \

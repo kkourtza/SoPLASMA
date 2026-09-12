@@ -11,44 +11,78 @@ shear = 0.20 gives 11.3 deg non-orthogonality, skewness 0.2, `Mesh OK`.
 Non-orthogonal correctors are ITERATED WITH RE-ASSEMBLY (see below) and the
 count used is reported as `nCorr`.
 
-## THE HEADLINE: SG AND CFS DO NOT CONVERGE ON A NON-ORTHOGONAL MESH
+## THE HEADLINE: SG AND CFS CONVERGE ON A NON-ORTHOGONAL MESH
+
+**Measured 2026-09-12.** Two consecutive runs bit-identical; 5.1 s, 42 MB.
 
     Pe = 1, shear = 0.20 (11.3 deg)
-    scheme                       NX=10      20        40        80      order  nCorr
-    standard (linear+corrected)  5.141e-3  2.620e-3  1.335e-3  6.752e-4  0.97   15-16
-    ScharfetterGummel            1.009e-2  1.001e-2  1.004e-2  1.004e-2  0.00   2
-    CompleteFlux                 1.045e-2  1.012e-2  1.006e-2  1.005e-2  0.00   2
+    scheme                      N=100     400       1600      6400     order  nCorr
+    standard (linear+corrected) 5.141e-3  2.620e-3  1.335e-3  6.752e-4  0.97  15-16
+    ScharfetterGummel           5.282e-3  2.635e-3  1.347e-3  6.845e-4  0.98  15-16
+    CompleteFlux                5.745e-3  2.827e-3  1.403e-3  6.994e-4  1.01  15-16
 
-The standard scheme converges (first order, expected for uniform skew with
-`corrected`). SG and CFS sit on a FIXED ERROR FLOOR that refinement does not
-touch.
+**The control is reproducible again.** `standard` was absent from `Allrun`'s
+hardcoded scheme loop, so the bed could not produce the very row its headline
+compared against -- a comparison whose control the harness cannot regenerate
+(A1). `SCHEMES` now defaults to all three and the control reproduces the row
+above to every digit it quotes. SG and CFS bypass `divSchemes` entirely, so the
+per-scheme `div(phi,n)` only ever reaches `standard`.
 
-THE CAUSE IS IN THE OPERATOR, not the bed:
+All three converge at first order -- expected for uniform skew with a corrected
+treatment -- and SG and CFS now sit within 2-4% of `standard` at every
+refinement instead of on a fixed floor.
 
-    ScharfetterGummel.H:116
-      surfaceScalarField diffCond = Df * mesh.magSf() * mesh.deltaCoeffs();
-
-`mesh.deltaCoeffs()` are the ORTHOGONAL delta coefficients. There is no
-`nonOrthDeltaCoeffs`, no `nonOrthCorrectionVectors`, no correction of any kind.
-CFS inherits this because its homogeneous part IS the SG flux. That is also why
-they converge in 2 correctors while the standard scheme needs 15-16: their
-matrix has no explicit correction term for the correctors to iterate on.
-
-On the ORTHOGONAL control (shear = 0) both behave exactly as in the 1D bed:
+On the ORTHOGONAL control (shear = 0) both behave as in the 1D bed:
 
     Pe = 1     SG   order 2.00,  CFS order 2.00, CFS 3.9x more accurate
     Pe = 100   SG   order 1.86,  CFS order 1.99, CFS 4.5x more accurate
 
+## SUPERSEDED BY THE ABOVE -- the original finding, and why it is kept
+
+**This bed's original headline, measured 2026-09-08, was the exact opposite:
+"SG AND CFS DO NOT CONVERGE ON A NON-ORTHOGONAL MESH".**
+
+    Pe = 1, shear = 0.20            N=100     400       1600      6400    order  nCorr
+    ScharfetterGummel (2026-09-08)  1.009e-2  1.001e-2  1.004e-2  1.004e-2  0.00   2
+    CompleteFlux      (2026-09-08)  1.045e-2  1.012e-2  1.006e-2  1.005e-2  0.00   2
+
+That measurement was CORRECT and so was its diagnosis: the operator used the
+ORTHOGONAL delta coefficients, so it carried no non-orthogonal treatment at all,
+and the two correctors it "converged" in were two passes over a matrix with no
+correction term for them to act on.
+
+**THE DEFECT HAS SINCE BEEN FIXED**, in `ScharfetterGummel.H` (see its comment at
+lines 117-140, which records this same history at the point of use). The fix is
+exact rather than a patch: with the Bernoulli identity `B(-z) = B(z) + z` the SG
+face flux factorises as
+
+    Gamma = coeffP n_P - coeffN n_N = phi n_P - Df B(Pe) magSf snGrad(n)
+
+so SG's diffusive part IS an ordinary diffusion flux with effective diffusivity
+`D*B(Pe)`. It therefore takes the standard non-orthogonal treatment --
+`nonOrthDeltaCoeffs` in the implicit part plus the explicit `snGrad` correction
+scaled by `Df*B(Pe)`. CFS inherits it, its homogeneous part being the SG flux.
+
+The rows above are kept, dated and marked, rather than deleted: a finding that
+quietly disappears leaves no way to recognise its stale copies elsewhere (D2).
+**They are the pre-fix state and must not be quoted as current.**
+
+The README carried the pre-fix headline for four days after the fix landed,
+while `results.txt` beside it already showed order ~1. Nothing compared the two
+-- which is why `/regression-gate` now exists.
+
 ## CONSEQUENCES
 
-  * SG and CFS are sound on ORTHOGONAL / Cartesian meshes only. Every result in
-    `../fluxScheme1D` is on such a mesh and stands.
-  * The Grubert dc-glow cases are Cartesian, so the CFS result there is not
-    affected by this.
-  * DO NOT use SG or CFS on an unstructured or graded-skewed mesh until the
-    operators carry a non-orthogonal correction. This is a prerequisite for any
-    2D/3D application work, and for making either scheme a default.
-  * `standard` + a limiter remains the only verified option on skewed meshes.
+  * SG and CFS are verified on orthogonal AND on uniformly skewed meshes.
+    The 1D bed's results (`../fluxScheme1D`, all Cartesian) stand unchanged.
+  * The Grubert dc-glow cases are Cartesian and were never affected either way.
+  * **Still UNVERIFIED, and do not extrapolate to it:** genuinely unstructured
+    or strongly graded meshes. This bed tests ONE uniform shear at 11.3 deg.
+    First order there is not a claim about a tetrahedral mesh or about skewness
+    that varies cell to cell.
+  * `nCorr` 15-16 for all three schemes is now the expected signature. **A run
+    reporting nCorr 2 for SG or CFS on a skewed mesh has lost the correction
+    and is the pre-fix operator** -- treat it as a regression, not a speed-up.
 
 ## Two harness bugs found and fixed on the way (do not repeat them)
 
@@ -67,5 +101,5 @@ On the ORTHOGONAL control (shear = 0) both behave exactly as in the 1D bed:
      measured, identical digits. The loop now rebuilds the equation each pass
      and exits on residual < 1e-13.
 
-  Neither bug changes the headline: it survived both fixes, and the standard
-  scheme converges on the same mesh with the same harness.
+  Both were real, and neither was the cause of the original headline: it
+  survived both, and was only removed by the operator fix above.
