@@ -334,6 +334,16 @@ FIRST line written early, and an advance note before anything long. *"Nothing co
 good line; silence is not. Then `tail` that file to answer "where does it stand?" instead of guessing
 from side effects.
 
+**IT MUST BE IN THE ORIGINAL BRIEF.** Sent mid-flight it produces only a RETROSPECTIVE summary — the
+message does not reach the agent until its next tool round, and by then it is deep in the work and
+batch-writes the history it already has. Measured the same day: the retro log was excellent and
+arrived 25 minutes too late to answer the question that prompted it.
+
+**And absence of side effects is NOT absence of progress.** That agent spent its silent 25 minutes
+READING EXISTING LOGS rather than running anything, which was the right call — the instrument was
+already on disk and the answer was in runs we had already produced. Do not read "no new cases, no
+solvers" as stalled.
+
 **E5) DELEGATE TO THE SPECIALIST AGENTS.** They carry the traps for their area, so delegating is also
 how those traps get applied rather than remembered — and they run at the effort their work needs.
 `numerical-analyst` (discretisation, preconditioner, integrator, order study) · `physics-validator` (a
