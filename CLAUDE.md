@@ -310,6 +310,22 @@ physical claim, units, "is this result physical") · `diagnostician` (a crash, N
 source) · `performance-analyst` (any speed claim) · `docs-sweeper` (a rename needs the D1 surface swept)
 · `inventory-scout` (**always**, before proposing: does the solver already do X?).
 
+**E6) A QUESTION YOU ASK AND THEN BURY IS WORSE THAN NOT ASKING.** *(user, 2026-09-12)* Fires the
+moment you want a decision. **First test: do you actually need one?** If the change is small,
+reversible, and plainly what the user just asked for, MAKE IT AND REPORT IT — asking turns a
+two-minute task into a lost thread. Measured twice in one session: a question was asked, the original
+work continued in the same message, and the user found the question only by scrolling back —
+*"your question is LOST in the chat"*.
+
+If you genuinely need the decision, then:
+* **Ask and STOP.** Never ask and keep working in the same message — the run status buries it.
+* **The question is the LAST thing in the message**, on its own line, so it cannot be scrolled past.
+* **Carry it forward.** Repeat it as a one-line `STILL OPEN:` in EVERY later message until it is
+  answered. A question asked once has been asked zero times.
+* **If it outlives the turn, it is a BLOCKER** — put it in `PROGRESS.md` §3 BLOCKED with what it is
+  waiting on. That is what §3 is for, and `/orient` then resurfaces it at the next session start, so
+  the question survives a compaction, a crash and a reboot rather than only the scrollback.
+
 ### Old-number lookup — all 44 resolve
 
 1→D1 · 2→A1 · 3→E2 · 4→C2 · 5→E2 · 6→D3 · 7→C2 · 8→*dropped* · 9→B3 · 10→B3 · 11→A3 · 12→D1 · 13→A1 ·
