@@ -49,19 +49,26 @@ Coarse bed (81,640 cells, `$HOME/streamer-warm`), warm start t=1e-09 from a deve
 streamer (peak n_e 1.19e19, tau = eps0/(e mu_e n_e) = 1.16e-10 s), limiters OFF,
 common endpoint t=2e-09:
 
-| dt | dt/tau | Picard |
-|---|---|---|
-| 1e-11 | 0.09 | reached 2e-09 |
-| 5e-11 | 0.43 | reached 2e-09 |
-| 1e-10 | 0.86 | reached 2e-09 |
-| 2e-10 | 1.7 | **SIGFPE step 1** |
-| 5e-10 | 4.3 | **SIGFPE step 1** |
+| dt | Picard |
+|---|---|
+| 1e-11 | reached 2e-09, 100/100 converged in 2 correctors |
+| 5e-11 | reached 2e-09 |
+| 1e-10 | reached 2e-09, 10/10 converged in **2 correctors** |
+| 2e-10 | **SIGFPE step 1** |
+| 5e-10 | **SIGFPE step 1** |
 
-**Picard's ceiling is dt ~ tau** — the dielectric relaxation constraint, on one mesh,
-with a named control (dt=1e-11 reaching the endpoint proves the restart is sound).
-At 449k it fails at 5e-11 instead: that bed is 2.35x finer, so the drift Courant
-number is 2.35x higher at the same dt. **Absolute dt ceilings do NOT transfer between
-beds; only the ratio does.** The final benchmark number must come from 449k.
+**The wall is between dt=1e-10 and 2e-10 for BOTH solvers, and we do NOT know what it
+is.** Read from the solver's own instrument at a later step of the SURVIVING arm
+(dt=1e-10): `Diel. relax. ratio` **4.79**, `Co_conv (e)` **2.13**, `Co_chem` **5.10**,
+temporal error **0.528** against a target of 1, and the accuracy controller asking for
+a **24% LARGER** step. So Picard runs with all three Picard-era limiters exceeded at
+once, converging in two correctors — **those limiters are conservative by ~2-5x**,
+which is itself the benchmark's central experiment answered. It is NOT the dielectric
+time, NOT accuracy, and not any single Courant number. Do not fill the gap with a
+story; two explanations have already failed.
+
+At 449k Picard fails at 5e-11 instead — that bed is 2.35x finer. **Absolute dt ceilings
+do NOT transfer between beds.** The final benchmark number must come from 449k.
 
 ## 2. IN FLIGHT
 
@@ -232,6 +239,33 @@ Task 1.
 ---
 
 ## 5. FAILED APPROACHES — DO NOT RETRY
+
+### RETRACTED 2026-09-12: "the wall sits at the dielectric relaxation time"
+
+Claimed repeatedly on 2026-09-12, in `PROGRESS.md`, both design notes, a memory, and
+in the brief sent to the literature review as a possible NOVEL result. **It is wrong.**
+
+`tau` was computed from an ASSUMED electron mobility (0.04 m^2/Vs) rather than the
+solver's own `maxSigma`, which `plasmaTimeControl.C:1818` prints every step as
+`Diel. relax. ratio = deltaT*maxSigma/eps0`. The error was **~20x**. Quoted dt/tau
+values of 0.86 / 1.7 / 4.3 were really **17.3 / 34.6 / 86**.
+
+**Picard converges in TWO correctors at a dielectric ratio of 4.8-17** — i.e. it steps
+5-17x past the dielectric relaxation time with EXPLICIT Poisson coupling — so that
+limit is simply not the binding constraint for an outer loop that ITERATES the
+coupling to convergence. A second explanation (quasi-neutrality suppressing the net
+charge where sigma is largest) is ALSO unsupported: peak |chargeDensity| is 44% of
+q*n_e, not a quasi-neutral channel.
+
+**What survives:** the Eisenstat-Walker finding and the 3.7x pseudo-transient speedup,
+which rest on SNES/KSP counts and not on tau. And the literature verdicts, which stand
+on their own texts.
+
+**The lesson, and it is the expensive one:** the solver was PRINTING the correct
+quantity every step while I quoted a derived one I never checked against it. That is
+A1's "the control is NAMED... report every magnitude against the physical scale it
+should be judged by", failed on a number I then built four turns of argument on.
+
 
 ### Newton's linear convergence — four one-variable refutations (2026-09-12)
 

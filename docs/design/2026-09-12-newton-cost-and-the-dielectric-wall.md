@@ -1,6 +1,8 @@
 # Newton's cost, and the wall at the dielectric relaxation time
 
-**Status: MEASURED. Two fixes ready to ship; one benchmark premise in doubt.**
+**Status: MEASURED. Two fixes ready to ship. THE dt/tau FRAMING IN THIS NOTE'S TITLE AND
+SECTION 3 WAS WRONG AND HAS BEEN CORRECTED IN PLACE (2026-09-12); the retraction is in
+`PROGRESS.md` section 5.**
 Dated 2026-09-12. Supersedes nothing; it is the measurement record behind
 `newton-outer-solver-design.md`, which remains the design record.
 
@@ -80,59 +82,78 @@ a dt cut, which is a **PREDICTION, not a measurement** (the bed was fixed-dt).
 
 ---
 
-## 3. The wall at dt = tau, and what it is not
+## 3. The wall, and what it is NOT
 
 Bed: coarse streamer, 81,640 cells, warm-started at t=1e-09 from a DEVELOPED
-streamer (peak n_e 1.19e19), all segregated-era limiters OFF, common endpoint
-t=2e-09. `tau = eps0/(q mu_e n_e) = 1.16e-10 s`.
+streamer, all segregated-era limiters OFF, common endpoint t=2e-09.
 
-| dt | dt/tau | Picard | Newton |
-|---|---|---|---|
-| 1e-11 | 0.09 | reached 2e-09 | — |
-| 5e-11 | 0.43 | reached 2e-09 | — |
-| 1e-10 | 0.86 | reached 2e-09 | converges, \|\|F\|\| 700 -> 1.2e-4 in 32 its |
-| 2e-10 | 1.7 | **SIGFPE step 1** | **no linear solve converges** |
-| 5e-10 | 4.3 | **SIGFPE step 1** | **no linear solve converges** |
+| dt | Picard | Newton |
+|---|---|---|
+| 1e-11 | reached 2e-09, 100/100 converged in 2 correctors | — |
+| 5e-11 | reached 2e-09 | — |
+| 1e-10 | reached 2e-09, 10/10 converged in **2 correctors** | converges, \|\|F\|\| 700 -> 1.2e-4 in 32 its |
+| 2e-10 | **SIGFPE step 1** | **no linear solve converges** |
+| 5e-10 | **SIGFPE step 1** | **no linear solve converges** |
 
-**Picard's ceiling is dt ~ tau**, with a named control (dt=1e-11 reaching the
-endpoint proves the restart is sound).
+**THE WALL IS BETWEEN dt = 1e-10 AND 2e-10 FOR BOTH SOLVERS, AND WE DO NOT KNOW
+WHAT IT IS.** It is NOT the dielectric relaxation time, NOT accuracy, and not any
+single Courant number — see below. Do not fill this gap with a story; two
+successive explanations have already failed.
 
-**ABOVE tau NEITHER SOLVER IS USABLE.** Newton does not crash, but at
-`kspMaxIt` 200 AND 1000 every SNES solve ends `DIVERGED_LINEAR_SOLVE` with the
-residual **frozen at its initial value**. With `adjustTimeStep false` there is no
-retry, so the clock advances over unconverged states — an arm that "reaches
-2e-09" here has converged nothing. **Do not read `t_reached` as success.**
+### It is NOT the dielectric relaxation time
+
+An earlier version of this note claimed the wall sat at dt = tau "because tau is
+where dt*sigma overtakes eps0". **That was wrong**, and wrong for a mundane
+reason: tau was computed from an ASSUMED electron mobility (0.04 m^2/Vs) instead
+of the solver's own `maxSigma`, which it prints every step. The error was ~20x.
+
+Read from the instrument instead (`Diel. relax. ratio` = `deltaT*maxSigma/eps0`,
+`plasmaTimeControl.C:1818`), on the arm that SURVIVES:
+
+    dt = 1e-10, a later step:
+      Diel. relax. ratio : 4.79     <- ~5x PAST the dielectric limit
+      Co_conv (e)        : 2.13     <- past the drift CFL
+      Co_chem            : 5.10     <- past the chemistry limit
+      temporal err       : 0.528  [target 1]
+      "dt would be: 1.237e-10"      <- the accuracy controller would allow 24% MORE
+
+**Picard runs with all three Picard-era limiters exceeded simultaneously —
+dielectric x4.8, drift CFL x2.1, chemistry x5.1 — converging in TWO correctors,
+with temporal error at half its target.** That is itself the benchmark's central
+experiment ("remove the Picard-era limiters and see how far each solver can
+actually step") and its answer: **those limiters are conservative by roughly
+2-5x, and the segregated solver is fine without them.**
+
+sigma is also not constant: the ratio reads 17.3 at the first step of that arm and
+falls to 4.8 as the streamer evolves, so any single dt/tau number is a snapshot,
+not a property of the bed.
 
 ### Three preconditioners, same wall
 
-| preconditioner | result at dt/tau = 1.7 |
+| preconditioner | result at dt = 2e-10 |
 |---|---|
 | fieldsplit + default `a11` Schur | `DIVERGED_ITS` @ 1000 |
 | physics-based PCSHELL (`assembledPmat false`) | `DIVERGED_ITS` @ 1000, residual frozen |
-| `schurOnPhi true` (the semi-implicit operator as S_f) | no solve completed in ~1 h |
+| `schurOnPhi true` | 66 min, 566 evals, ZERO completed solves, residual unmoved |
 
-Two STRUCTURALLY UNRELATED preconditioners failing at the same iteration count
-with the residual not moving says the difficulty is in the OPERATOR, not in
-either approximation. And there is a clean structural reason for the PCSHELL:
-**it IS a Picard sweep, and Picard itself SIGFPEs at this dt**, so it inherits
-the divergence it was meant to cure.
+**Supplying the Schur operator did not rescue it either.** But see the caveat
+below before reading that as evidence about the operator.
 
-### Why the wall is at tau specifically
+### Two caveats on the Schur story, both from the literature
 
-The exact Schur complement on the phi block is `S_f = div((eps + dt*sigma)
-grad .)` — the semi-implicit Poisson operator — because `A_ft A_tt^-1 A_tf ~
--dt*div(sigma grad .)`. Since `dt/tau = dt*sigma/eps0`:
-
-* below tau, `dt*sigma << eps0`, so `S_f ~ div(eps grad .)` and PETSc's default
-  `a11` approximation is nearly exact — **KSP converges in 1-7 iterations**;
-* above tau, `dt*sigma >> eps0`, so S_f is DOMINATED by the term the default
-  omits, and the approximation is wrong by the factor `dt/tau`.
-
-**The operator is NOT ours** — Hagelaar HDR Ch.8 gives it with `chi_e = dt/tau_d`,
-attributed to Ventzek et al. APL 63 (1993); Knoll & Keyes §3.4.1 and Chacon 2025
-make the semi-implicit/Schur identification generally. See the companion note.
-
----
+* `div((eps + dt*sigma) grad .)` is the Schur complement **only under
+  `A_tt^-1 ~ dt I`**, which Chacon & Knoll 2003 p.581 condition on
+  `dt <~ dt_A`, the ADVECTIVE CFL limit. Calling it "the exact Schur complement"
+  or "the CORRECT S_f" — as earlier versions of this note did — overstates it.
+* **The prescribed mitigation was never applied to the transport split.** Our own
+  `schur-semiimplicit-poisson-preconditioner.md` lines 142-156 pre-registered this
+  failure — "an inner solve taking a varying number of iterations makes the Schur
+  operator NOT a fixed linear operator" — and prescribed `richardson` / `max_it 5`
+  / `convergence_test skip`. The shipped code applies that to the PHI split and
+  leaves transport on `fgmres`/`rtol 1e-2`/`max_it 200`. Under `schurOnPhi` it is
+  the TRANSPORT block being inverted inside the Schur operator, so the arm may
+  have failed for a pre-registered implementation reason rather than a physical
+  one. **Re-test with the mitigation before concluding anything about S_f.**
 
 ## 4. The premise in doubt
 
