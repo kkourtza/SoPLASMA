@@ -48,9 +48,35 @@ solvers
 
     n_pIon
     {
-        solver          smoothSolver;
-        smoother        GaussSeidel;
-	    preconditioner  DIC;
+          // PBiCGStab/DILU, NOT smoothSolver/GaussSeidel and NOT DIC.
+          //
+          // These are drift-dominated advection-diffusion matrices: strongly
+          // ASYMMETRIC and not diagonally dominant where the drift is strong,
+          // and Gauss-Seidel DIVERGES on them. This bed's `n_eFinal` inherits
+          // via `$n_e` so the electron was never exposed; the ION solver was.
+          // That is exactly the 2026-08-30 needleDBD measurement -- 73 species
+          // solves hitting the 2000-iteration cap WITHOUT converging in the
+          // first 5 steps, e.g. n_O2m 1.43e-4 -> 9.52e-5 (factor 1.5) -- while
+          // n_e, which had its own PBiCGStab entry, converged in 9.
+          //
+          // MEASURED 2026-09-12 on the warm streamer bed: the Gauss-Seidel
+          // spectral radius rho = (final/initial)^(1/its) crosses 1 at
+          // dt = 1.53e-10 -- 0.419 / 0.609 / 0.848 / 1.085 / 1.379 at
+          // dt = 1.0 / 1.2 / 1.4 / 1.6 / 1.8e-10 -- while the Krylov solver on
+          // the SAME step stays flat at 4-9 iterations. Changing ONLY this entry
+          // takes the identical matrix and RHS (initial residual matching to 12
+          // digits) from 2000 divergent sweeps to 5 Krylov iterations, and the
+          // arm from SIGFPE at step 2 to reaching the endpoint.
+          //
+          // DIC is inert under smoothSolver and wrong for an asymmetric matrix
+          // anyway; it is dropped rather than carried forward.
+          //
+          // SAME defect fixed in needleDBD 2026-08-30 and never propagated here
+          // (B4: a bug is a property of the MECHANISM, not of the call site that
+          // exposed it). An entire dt ladder was measuring this smoother rather
+          // than the physics.
+          solver          PBiCGStab;
+          preconditioner  DILU;
         tolerance       $npIonTolerance;
         relTol          0;
         maxIter         2000;
