@@ -120,7 +120,7 @@ failure that was visible in the first second.
 
 | what the arm can tell you | when it can tell you | so the first check is |
 |---|---|---|
-| a restart, a new dict key, a config or mesh change, a rebuilt library — **anything that can die on STEP 1** | seconds after the solver starts | **immediately** (~60–90 s, enough for start-up) |
+| a restart, a new dict key, a config or mesh change, a rebuilt library — **anything that can die on STEP 1** | seconds after the solver starts | **immediately — start-up + 1-2 steps, MEASURED FOR THAT BED** (coarse 81k: ~20-30 s; 449k: ~60-90 s). Do not use one constant: a 100 s wait on a bed whose step is sub-second spends 80% of itself idle. |
 | a failure RATE, a corrector count, an iteration histogram | once there are enough steps to BE a rate | ~10% of the planned steps |
 | a trajectory, an accuracy verdict, "did it reach the common endpoint" | only at the endpoint (A2) | arm the waiter and do NOT poll |
 
