@@ -322,6 +322,18 @@ publishing is an equally important track. Never treat "this needs genuine resear
 to defer. Assess an idea on whether the physics is sound, whether a gap genuinely exists (checked, not
 assumed), and whether it is tractable.
 
+**E5a) A DELEGATED AGENT MUST REPORT PROGRESS, NOT ONLY RESULTS.** *(user, 2026-09-12)* A subagent
+reports ONCE, at completion, and its transcript is too large to read — so a long-running agent with no
+side effects is indistinguishable from a stalled one, from BOTH sides. Measured that day: a
+diagnostician ran 25 minutes with no cases, no files and no solvers, the user asked where it stood,
+and the honest answer was "I cannot tell."
+
+**Every delegated agent's brief must require a one-line progress note** appended to a named file in
+the scratchpad after each meaningful step — `HH:MM <what you did> -> <what it showed>` — with the
+FIRST line written early, and an advance note before anything long. *"Nothing conclusive yet"* is a
+good line; silence is not. Then `tail` that file to answer "where does it stand?" instead of guessing
+from side effects.
+
 **E5) DELEGATE TO THE SPECIALIST AGENTS.** They carry the traps for their area, so delegating is also
 how those traps get applied rather than remembered — and they run at the effort their work needs.
 `numerical-analyst` (discretisation, preconditioner, integrator, order study) · `physics-validator` (a
