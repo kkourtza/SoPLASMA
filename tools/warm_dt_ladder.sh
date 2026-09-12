@@ -35,6 +35,9 @@ export SoPLASMA_SRC=$SoPLASMA/src
 source $SoPLASMA/etc/bashrc >/dev/null 2>&1 || true
 V=$HOME/soplasma-scratch/validation
 s=$1; dt=$2; KMI=${3:-1000}
+# EWOPTS: extra PETSc options, e.g. the measured EW-v3 + minlambda fix.
+EWOPTS=${EWOPTS:-}
+suffix=${SUFFIX:-}
 # BED selects the warm bed. Default is the 449k physics bed; the COARSE bed
 # (81,640 cells, $HOME/streamer-warm) reproduces the SAME stiff regime -- peak
 # n_e 1.19e19 vs 1.14e19, tau 1.16e-10 vs 1.2e-10 -- at 5.5x less cost per step
@@ -42,7 +45,7 @@ s=$1; dt=$2; KMI=${3:-1000}
 # resolve the streamer and must never be quoted for physics.
 W=${BED:-$V/warm449}
 tag=$(basename $W)
-name=wlad_${tag}_${s}_dt${dt}
+name=wlad_${tag}_${s}_dt${dt}${suffix}
 [ -d "$W/1e-09" ] || { echo "FAILED: no warm state at $W/1e-09"; exit 1; }
 
 # REFUSE to clobber a live arm. `rm -rf` on a case directory whose solver is
@@ -88,12 +91,15 @@ else printf '\nouterSolver                         %s;\n' "$s" >> configuration/
 grep -q "^outerSolver  *$s;" configuration/config || { echo "FAILED: outerSolver"; exit 1; }
 
 if [ "$s" = newton ]; then
-  ~/ct-env/bin/python - "$KMI" <<'PYEOF'
-import re, sys
-kmi = sys.argv[1]
+  ~/ct-env/bin/python - "$KMI" "$EWOPTS" <<'PYEOF'
+import re, sys, os
+kmi, ewopts = sys.argv[1], sys.argv[2]
 p='system/plasmaSimulationControls'; s=open(p).read()
-blk = ('    newtonSolver      { type SNES; rtol 1e-8; maxIt 50; bounded false; '
-       'kspMaxIt %s; assembledPmat true; petscOptions "-ksp_converged_reason -snes_converged_reason -snes_linesearch_monitor"; }' % kmi)
+pmat = os.environ.get('PMAT', 'true')
+blk = ('    newtonSolver      {{ type SNES; rtol 1e-8; maxIt 50; bounded false; '
+       'kspMaxIt {kmi}; assembledPmat {pmat}; schurOnPhi {schur}; petscOptions '
+       '"-ksp_converged_reason -snes_converged_reason -snes_linesearch_monitor {ew}"; }}'
+       ).format(kmi=kmi, pmat=pmat, ew=ewopts, schur=os.environ.get('SCHUR','false'))
 if 'newtonSolver' in s:
     s = re.sub(r'^ *newtonSolver .*$', blk, s, count=1, flags=re.M)
 else:

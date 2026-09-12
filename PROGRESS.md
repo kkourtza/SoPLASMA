@@ -43,32 +43,30 @@ half is DONE (below). Newton's half needs arms that actually produce a result �
 `kspMaxIt 200` arms gave `DIVERGED_ITS` at 200 with 0 usable steps. A one-variable
 pair (shipped vs EW-v3+minlambda) is running at dt=2e-10 with `kspMaxIt 1000`.
 
-### The warm-started ladder, Picard half — MEASURED 2026-09-12
+### The warm-started ladder, Picard half — RE-MEASURED 2026-09-12 after a solver defect
 
-Coarse bed (81,640 cells, `$HOME/streamer-warm`), warm start t=1e-09 from a developed
-streamer (peak n_e 1.19e19, tau = eps0/(e mu_e n_e) = 1.16e-10 s), limiters OFF,
-common endpoint t=2e-09:
+**The first version of this table was measuring a DIVERGING GAUSS-SEIDEL SMOOTHER, not
+the physics.** See §5. Re-run with the defect removed (`73821e4`), coarse bed (81,640
+cells), warm start t=1e-09 from a developed streamer, limiters OFF, endpoint t=2e-09:
 
-| dt | Picard |
-|---|---|
-| 1e-11 | reached 2e-09, 100/100 converged in 2 correctors |
-| 5e-11 | reached 2e-09 |
-| 1e-10 | reached 2e-09, 10/10 converged in **2 correctors** |
-| 2e-10 | **SIGFPE step 1** |
-| 5e-10 | **SIGFPE step 1** |
+| dt | before the fix | after |
+|---|---|---|
+| 1e-10 | reached 2e-09 | reached 2e-09, 2 correctors/step |
+| 1.6e-10 | **SIGFPE step 2** | **reaches 1.96e-09, alive** |
+| 2e-10 | **SIGFPE step 1** | **reaches 2e-09** (5 steps), then crashes |
+| 5e-10 | **SIGFPE step 1** | **reaches 2e-09** (2 steps), then crashes |
 
-**The wall is between dt=1e-10 and 2e-10 for BOTH solvers, and we do NOT know what it
-is.** Read from the solver's own instrument at a later step of the SURVIVING arm
-(dt=1e-10): `Diel. relax. ratio` **4.79**, `Co_conv (e)` **2.13**, `Co_chem` **5.10**,
-temporal error **0.528** against a target of 1, and the accuracy controller asking for
-a **24% LARGER** step. So Picard runs with all three Picard-era limiters exceeded at
-once, converging in two correctors — **those limiters are conservative by ~2-5x**,
-which is itself the benchmark's central experiment answered. It is NOT the dielectric
-time, NOT accuracy, and not any single Courant number. Do not fill the gap with a
-story; two explanations have already failed.
+**Picard now completes the window where it previously died on step one**, and the crash
+has moved to the END of the run rather than the start.
 
-At 449k Picard fails at 5e-11 instead — that bed is 2.35x finer. **Absolute dt ceilings
-do NOT transfer between beds.** The final benchmark number must come from 449k.
+**What remains is a POSITIVITY failure at Co_conv(e) ~ 3.0-3.3** — the linear solve
+converges to 1.9e-11 and still returns a NEGATIVE density, in four cells on the
+channel's steep depleting back-gradient ~0.8e-4 m behind the density peak, where n_e
+halves per step. `ddtSchemes Euler` fails too, so BDF2 is exonerated; switching
+`electronDriftDivScheme` from `Gauss ROUNDF` to `Gauss upwind` removes every negative
+clip. **Upwind is the INSTRUMENT, not a fix** — it survives but runs away to n_e ~1e33
+and Emag ~5e11 V/m. The threshold is a COURANT number, so unlike a dt it transfers
+between beds: it predicts ~6.8e-11 at 449k against the 5e-11 observed.
 
 ## 2. IN FLIGHT
 
@@ -239,6 +237,34 @@ Task 1.
 ---
 
 ## 5. FAILED APPROACHES — DO NOT RETRY
+
+### RETRACTED 2026-09-12: "Picard SIGFPEs at step 1 above dt=1.5e-10"
+
+**A diverging Gauss-Seidel smoother, not the solver and not the physics.** The literal
+`n_e` entry in `fvSolution` is PBiCGStab/DILU, but the FINAL corrector resolves to the
+`"n_.*(Final)?"` catch-all, which was `smoothSolver`/GaussSeidel/DIC — so one step ran
+two different solvers on the same field:
+
+    corrector 1  DILUPBiCGStab  n_e  1.31e-03 -> 1.88e-11,    7 its
+    corrector 2  smoothSolver   n_e  5.26e-04 -> 1.86e+67, 2000 its
+
+The Gauss-Seidel spectral radius `(final/initial)^(1/its)` is 0.419 / 0.609 / 0.848 /
+1.085 / 1.379 at dt = 1.0 / 1.2 / 1.4 / 1.6 / 1.8e-10 — **it crosses 1 at dt=1.53e-10**,
+exactly the bisected "wall". The Krylov solver on the SAME step stays flat at 4-9
+iterations throughout. Fixed in all four streamer beds plus both warm beds.
+
+**SAME defect fixed in needleDBD 2026-08-30 and never propagated** (B4). The memory
+`fvsolution-regenerated-and-ion-solver` even recorded the trap — *"the stall is on the
+LATER outer iterations where the initial residual is ~1e-4"* — which is the 5.26e-04.
+
+**Also refuted, my own hypothesis:** that species matrices lose diagonal dominance
+because `fvm::ddt` gives a diagonal ~V/dt that shrinks as dt grows. At IDENTICAL dt,
+changing only the div scheme takes Gauss-Seidel from 2000-sweep divergence to 13 sweeps,
+and upwind converges at a 20% SMALLER diagonal. It is ROUNDF's off-diagonal weights.
+
+**A false message to fix:** `plasmaSpecies.C:1338` prints "The flux scheme in use carries
+no limiter" UNCONDITIONALLY without inspecting the scheme. ROUNDF *is* a limiter.
+
 
 ### RETRACTED 2026-09-12: "the wall sits at the dielectric relaxation time"
 

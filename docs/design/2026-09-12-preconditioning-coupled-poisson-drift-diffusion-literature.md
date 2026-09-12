@@ -72,15 +72,24 @@ them, and I report only that they exist**:
    decoupling algorithm for semiconductor simulation" in *SIAM J. Numer. Anal.* (DOI 10.1137/0725073).
    These are the published convergence theory of the Gummel map. **Q4 cannot be answered properly
    without at least one of them.**
+   **PARTLY SUPERSEDED BY §C.5 (Part C, 2026-09-12): still not obtained, but the CITATIONS are now
+   fixed from Kerkhoven's own reference list (he co-authors Jerome & Kerkhoven, refs [15][16][17]).
+   The 1986 paper's title is "...for realistic BOUNDARY CONDITIONS", not "realistic device
+   geometries"; the "spectral analysis" paper is a SEPARATE item, *SIAM J. Numer. Anal.* **25**
+   (1988) 1299-1312. See §C.5.4.**
 4. **Chacón & Knoll, "A 2D high-β Hall MHD implicit nonlinear solver", *JCP* **188** (2003) 573-592**,
    DOI 10.1016/S0021-9991(03)00193-1, and **Chacón, *Phys. Plasmas* **15** (2008) 056103**. These are
    the two papers Chacón's 2025 review cites for the parabolization↔Schur connection.
+   **SUPERSEDED BY §C.4 (Part C, 2026-09-12): Chacón & Knoll 2003 obtained and read IN FULL; the
+   primary statement is now cited exactly. Chacón 2008 still not obtained and no longer needed.**
 5. **Lin & Shadid, "Performance of a parallel algebraic multilevel preconditioner for stabilized
    finite element semiconductor device modeling", *JCP* **228** (2009) 6250-6267**, DOI
    10.1016/j.jcp.2009.05.024; **Lin, Shadid et al., *IJNME* (2012), DOI 10.1002/nme.4315**; and
    **Lin, Shadid & Hoekstra (2008), "Performance of various algebraic multigrid based preconditioners
    for the drift-diffusion equations for semiconductor devices"**. These are the fully-coupled
    Newton-Krylov-AMG drift-diffusion papers and are the direct answer to Q3.
+   **SUPERSEDED BY §B.4 and §C.2/§C.3 (Part C, 2026-09-12): ALL THREE now read in full. Note the
+   2012 *IJNME* paper is SINGLE-AUTHOR (Paul T. Lin), not "Lin, Shadid et al." — see §C.2.1.**
 6. **Meza & Tuminaro, "A multigrid preconditioner for the semiconductor equations",
    *SIAM J. Sci. Comput.* **17** (1996) 118-132.**
 7. **Ventzek, Sommerer, Hoekstra & Kushner, *Appl. Phys. Lett.* **63** (1993) 605-607**, and
@@ -1271,14 +1280,24 @@ no stiff-source, no elliptic-constraint, and no relaxation-stiff problem at all.
    1121-1137 / DOI 10.1137/0725073 — **Bank's reference list gives volume 25, pp. 1299-1312, 1988**,
    and the 1986 item is a separate paper on realistic device geometries. Both citations should be
    checked before use). If neither contains a `dt`-parameterised criterion, §B.5.4 stands.
+   **CITATIONS RESOLVED IN §C.5.4 (Part C, 2026-09-12)** from Kerkhoven's OWN reference list in
+   Jerome & Kerkhoven: they are indeed two separate papers, *SJNA* **23** (1986) 1121-1137 (title:
+   "...realistic BOUNDARY CONDITIONS") and *SJNA* **25** (1988) 1299-1312. Neither is obtained;
+   §B.5.4 still stands, and §C.5 adds a fourth, better-targeted candidate (Jerome 1985).
 2. **Whether Sandia later built the physics-based/block-factorization preconditioner they said they
    were pursuing.** The follow-on is **Lin, Shadid et al., *Int. J. Numer. Meth. Engng* (2012), DOI
    10.1002/nme.4315**, plus their companion discretisation paper, their reference [28]
    (variational-multiscale FE vs Scharfetter-Gummel FV for drift-diffusion). **These are now the
    single largest remaining novelty risk for Q1** and I am asking for them.
+   **SUPERSEDED BY §C.2 (Part C, 2026-09-12). The IJNME 2012 paper is read in full and the answer is
+   NO: it contains no Schur complement, no block factorization and no physics-based preconditioner
+   of any kind — it is an AGGREGATION-SCHEME and parallel-scaling paper. The novelty risk it carried
+   is DISCHARGED. Reference [28] is still not obtained, and §C.7 names the new leads it exposed.**
 3. **The primary source for "semi-implicit method ≡ Schur complement of the Jacobian".** Still
    **Chacón & Knoll, *JCP* **188** (2003) 573-592**. Knoll & Keyes attribute it there and I have only
    Chacón's 2025 restatement.
+   **SUPERSEDED BY §C.4 (Part C, 2026-09-12): obtained, read in full, and the exact sentence, the
+   exact factorization and its page are now recorded. Cite the primary source, not the 2025 paper.**
 4. **Lin et al.'s `dt/τ_dielectric`.** Not reportable from *JCP* 228 — `D₀` and the mobilities are not
    in the paper. Ask the authors, or get [28].
 5. **Meza & Tuminaro, *SIAM J. Sci. Comput.* **17** (1996) 118-132**, still not obtained.
@@ -1296,7 +1315,731 @@ no stiff-source, no elliptic-constraint, and no relaxation-stiff problem at all.
   near-equilibrium device physics; non-optimal scaling (36 → 295 iterations over a 1000× size range);
   and **no reported advection-dominance measure anywhere**, so it transfers to our species block only
   as a hypothesis.
+  **EXTENDED, NOT OVERTURNED, BY §C.3 (Part C, 2026-09-12): the 2012 unstructured-mesh follow-on
+  still reports no advection-dominance measure, still uses SUPG-FE on quadrilateral meshes and an
+  ILU smoother, and still runs the same 0.3 V BJT and near-equilibrium diode. It DOES add a
+  seven-decade `dt` sweep, which §C.3.3 reports.**
 * **Q3 — the crossover.** Two published *steady, spatial* criteria (Bank eq. 50; Kerkhoven & Saad
   Thm A.2), **no published transient criterion, and `dt/τ` appears nowhere.** On this pass's evidence
   the `dt/τ ≈ 1` crossover, derived from the Schur complement, is the stronger of our two candidate
   contributions.
+
+---
+
+# PART C — THIRD PASS, 2026-09-12. The three papers Part B named as the remaining gaps.
+
+**Status: LITERATURE NOTE (appended), 2026-09-12.** No code, no numbers handed to the solver, no
+case edited, nothing staged. The user obtained three PDFs specifically to close Part B §B.7 items
+1, 2 and 3. All three are read **in full**. Every equation, table entry, author line and citation
+quoted below was checked on the **RENDERED PAGE**, not on `pdftotext` output — Lin 2012's text
+layer flattens eqs. (1)-(3) into `R D 2 r  .r r /  .p  n C C / D 0`, and Chacón & Knoll's
+drops every minus sign (it renders `P_SC = I − Δt²∂²ₓ` as `PSC ¼ I Dt2 o2x`). Nothing from either
+text layer is quoted here as a formula.
+
+**Supersession notices, per D2 (originals left in place, marked where they sit):**
+
+* Part A §0.3 item 3 (Kerkhoven) — **CITATIONS CORRECTED IN §C.5.4.** Papers still not obtained.
+* Part A §0.3 item 4 (Chacón & Knoll 2003) — **SUPERSEDED BY §C.4.** Read in full.
+* Part A §0.3 item 5 (Lin et al.) — **SUPERSEDED BY §C.2/§C.3.** All three read; author line corrected.
+* Part B §B.7.1 (the Kerkhoven citation discrepancy) — **RESOLVED IN §C.5.4.**
+* Part B §B.7.2 ("the single largest remaining novelty risk for Q1") — **SUPERSEDED BY §C.2.5. Discharged.**
+* Part B §B.7.3 (primary source for semi-implicit ≡ Schur) — **SUPERSEDED BY §C.4.**
+* Part B §B.8, Q2 bullet — **EXTENDED, NOT OVERTURNED, BY §C.3.**
+* Part B §B.5.4 and §B.8 Q3 — **UNCHANGED. §C.5 confirms them from a fourth independent text.**
+
+---
+
+## C.1 Evidence inventory for this pass
+
+| source | pages | what I read | rendered-page checks |
+|---|---|---|---|
+| Lin, *Int. J. Numer. Meth. Engng* **91** (2012) 971-989 | 19 | **all of it**, §1-§4 + refs | journal pp. 971, 972, 973, 984, 985 |
+| Chacón & Knoll, *J. Comput. Phys.* **188** (2003) 573-592 | 20 | **all of §3-§6**, plus §1-§2 and App. A | journal pp. 579, 580, 581, 588 |
+| Jerome & Kerkhoven, *A Finite Element Approximation Theory for the Drift Diffusion Semiconductor Model* | 24 | **all of it**, §1-§4 + App. A-D + refs | pp. 1, 2 |
+
+Local paths, all in `/home/kkourtza/Projects/SoEEDF/Literature/preconditioning-and-coupled-solvers/`:
+`Lin_Shadid_2012_multigrid-unstructured-drift-diffusion_IJNME-nme4315.pdf`,
+`Chacon_Knoll_2003_2D-HallMHD-implicit-nonlinear-solver_JCP188-573.pdf`,
+`Jerome_Kerkhoven_FE-approximation-theory-drift-diffusion.pdf`.
+
+---
+
+## C.2 Q1-residual — LIN 2012. VERDICT: **it does NOT contain our composition, nor a special case of it, nor any Schur complement at all.**
+
+### C.2.1 First, a citation correction that must propagate
+
+**ESTABLISHED**, title page (rendered, journal p. 971). The paper is **SINGLE-AUTHOR**:
+
+> Improving multigrid performance for unstructured mesh drift–diffusion simulations on 147,000 cores
+> **Paul T. Lin**, Sandia National Laboratories
+> *Int. J. Numer. Meth. Engng* 2012; **91**:971-989. DOI 10.1002/nme.4315.
+> Received 25 August 2011; Revised 5 December 2011; Accepted 22 February 2012.
+
+John Shadid appears only in the Acknowledgements ("grateful to John Shadid for offering helpful
+feedback on the first draft"). **Part A §0.3 item 5, Part B §B.7.2 and the local filename all say
+"Lin & Shadid 2012" or "Lin, Shadid et al." — that is wrong and any paper we write must cite
+`P. T. Lin` alone.** The filename is not worth changing (it would break the paths recorded above),
+but the citation is.
+
+### C.2.2 What the paper actually is
+
+**ESTABLISHED**, Summary + §1 + §4. It is a **parallel-scaling and AGGREGATION-SCHEME study**, not a
+preconditioner-design study. Its entire contribution, in its own Conclusions, is the comparison of
+**three aggregation schemes** for generating the coarse levels of an already-existing multigrid
+preconditioner:
+
+1. `aggress-norepart` — baseline aggressive coarsening, METIS per level, ParMETIS on the final level;
+2. `aggress-repart` — the same, plus repartitioning/redistribution of the coarse matrices onto a
+   subset of MPI ranks;
+3. `uncoup-repart` — "uncoupled aggregation", aggregates of `3^d` nodes (a node and its 8 neighbours
+   in 2D), plus coarse-matrix repartitioning. **This one wins.**
+
+The preconditioner itself is inherited unchanged from his reference [3]: a **Petrov–Galerkin smoothed
+aggregation (PGSA)** algebraic multigrid, applied to the fully-coupled 3-dof-per-node Jacobian, as a
+right/left preconditioner for GMRES inside a fully coupled Newton–Krylov solve. §4 also records the
+paper's second contribution, which is a systems-software finding: an `O(P²)` **bubble sort inside
+`MPI_Comm_split`** was destroying the scaling, and replacing it with a quicksort (fixed by the MPICH
+developers, November 2010) recovered a factor of 3 in linear-solve time at 64k cores.
+
+### C.2.3 What is NOT in it
+
+**ESTABLISHED**, by full reading and confirmed by `grep -i` over the complete extracted text
+(19 pages including references):
+
+* **"Schur" — zero occurrences.**
+* **"physics-based" / "physics based" — zero occurrences.**
+* **"block factorization" / "approximate block factorization" — zero occurrences.** The only hits for
+  "factoriz" are (a) "incomplete lower/upper triangular factorization (ILU) techniques are employed
+  to avoid the high cost of direct factorization" and (b) "the coarsest level matrix is moved onto a
+  single processor core for the serial direct factorization".
+* **"Gummel" — zero occurrences.** (Contrast the 2008 WCCM8 abstract, Part B §B.1, which named
+  Gummel-as-preconditioner as under consideration.)
+* **"semi-implicit", "operator splitting", "elimination", "substitution", "decoupled" — zero
+  occurrences** in any preconditioner sense.
+
+**There is no eliminated block, no approximation to an eliminated block, and therefore no `dt`-weighted
+transport term anywhere in the preconditioner.** The only place a `dt`-weighted operator could have
+appeared is the Jacobian itself, and the Jacobian is handed to AMG whole.
+
+### C.2.4 Where Sandia's "physics-based preconditioning methods we are pursuing" went
+
+**ESTABLISHED.** We now have **three dated statements** from this group, and they line up:
+
+| date | source | statement |
+|---|---|---|
+| mid-2008 | WCCM8 abstract (Part B §B.1) | block Jacobi/GS/SOR built; "**Gummel iteration as a preconditioner** as well as **operator-splitting** techniques are presently **under consideration**" |
+| 2009 | *JCP* **228** 6250, §5.2 (Part B §B.4.2) | "**We are pursuing physics-based preconditioning methods** which will allow us to use less expensive smoothers than ILU" |
+| 2012 | *IJNME* **91** 971, this paper | **no mention of any of it.** ILU(2)/overlap-1, and later ILU(0)/overlap-0, remain the smoother throughout; the paper's forward look is aggregation quality, preconditioner-setup cost, and "we plan to apply the methods to large-scale MHD simulations" |
+
+**MY INFERENCE, labelled:** between 2008 and 2012 the group's effort went into AMG aggregation and
+extreme-scale parallelism, and the physics-based/block-factorization line was not pursued in this
+paper series. **I cannot say it was never pursued elsewhere** — that would be concluding from silence
+across a literature I have not read. What I can say is that the specific follow-on Part B named as
+the risk does not contain it.
+
+### C.2.5 VERDICT ON Q1-residual
+
+**Lin 2012 does not contain our composition, and it is not a special case of it.** Four independent
+reasons, each sufficient:
+
+1. **No Schur complement is formed anywhere in the paper.** Nothing is eliminated.
+2. **No physics-based or block-factorization preconditioner exists in it.** The preconditioner is
+   purely algebraic (PGSA aggregation + ILU smoothing + coarse direct solve).
+3. **No `dt`-weighted transport term appears in any preconditioning operator.** `Δt` enters only
+   through the mass-matrix diagonal of the assembled Jacobian, which AMG then coarsens blindly.
+4. **The one elimination in the Lin/Shadid line runs in the opposite direction and is in the 2009
+   paper, not this one** — substituting Poisson INTO the linearised electron equation to get a
+   convection–diffusion-REACTION form, used only as a qualitative conditioning argument
+   (Part B §B.4.6, already recorded as a citation obligation). It is not repeated in 2012.
+
+**So the novelty risk Part B §B.7.2 flagged is DISCHARGED.** Combined with §B.2.5 (Bank et al.) and
+§B.3 (Kerkhoven & Saad), the transient Schur-on-`φ` composition now survives every drift-diffusion
+preconditioning paper we have been able to read in full. **That is still not a licence to write
+"novel"** — see §C.7 for what remains unread, and note that the claim must be phrased as §B.2.5
+requires, citing Bank et al. 1989 as the steady ancestor and Lin et al. 2009 §6.3 as the reverse
+substitution.
+
+---
+
+## C.3 Q2-residual — does Lin 2012 take coupled multigrid into the ADVECTION-DOMINATED regime? **NO, and it still never reports a measure of it.**
+
+### C.3.1 The discretisation and the mesh — "unstructured" is in the title, not in the runs
+
+**ESTABLISHED**, §2.1 and §3 opening.
+
+* Equations (1)-(3), journal p. 972 (**rendered**; the text layer is unusable here):
+  > (1) `R_ψ = -λ²∇·(ε_r ∇ψ) - (p - n + C) = 0`
+  > (2) `R_n = ∂n/∂t + ∇·(μ_n n ∇ψ) - ∇·(D_n ∇n) + G = 0`
+  > (3) `R_p = ∂p/∂t - ∇·(μ_p p ∇ψ) - ∇·(D_p ∇p) + G = 0`
+* **Stabilised finite element**, explicitly: "our approach is based on a variation of the **streamline
+  upwind Petrov–Galerkin** type FE formulation for convection–diffusion systems [10, 11]" (p. 973).
+* **Scharfetter-Gummel finite volume is NOT used, and is not even mentioned in this paper.** (The 2009
+  paper at least said an FV-SG technique was "currently under development"; the 2012 paper drops the
+  remark.)
+* **The meshes are quadrilateral, not unstructured**, journal p. 976, first sentence of §3, quoted in
+  full because the title invites the opposite reading:
+  > "Although the semiconductor device simulator uses unstructured meshes, **the results presented used
+  > quadrilateral meshes with elements that are squares or close to squares** to facilitate the
+  > generation of meshes for the scaling studies. The algorithms do not take special advantage of the
+  > regular mesh."
+
+**So the one respect in which the parent agent hoped the 2012 paper might differ from the 2009 paper —
+unstructured meshes — is not exercised by its test cases.**
+
+### C.3.2 Smoother, coarsening, cycle
+
+**ESTABLISHED**, §2.2, §3.1, §3.5, §3.6.
+
+* **Smoother: ILU subdomain (additive-Schwarz) smoothing.** "An ILU subdomain smoother (**ILU(2) with
+  one-level overlap**) is used for each level of the multigrid cycle except for the coarsest where a
+  **serial direct solve** is performed" (p. 977). The 147,456-core and the `minpp` studies use
+  **ILU(0) with no overlap** instead (pp. 982, 981). **Not Gauss–Seidel, not Chebyshev, not Vanka.**
+  The justification is inherited from his ref. [3]: "ILU with a fill of 1 or 2 and a level of overlap
+  of 1 or 2" was the parameter-study compromise.
+* **Coarsening: nonsymmetric-aware aggregation.** PGSA — "designed for nonsymmetric linear systems and
+  has two differences from standard smoothed aggregation: **the restriction is no longer the transpose
+  of prolongation**, and the damping parameters are calculated locally" (p. 974). This closes the gap
+  Lin et al. 2009 §5.2 conceded (Part B §B.4.5 quoted them saying `R = P^T` "for nonsymmetric systems
+  alternatives may be warranted"). **They did do something about it — PGSA is the answer, via
+  Sala & Tuminaro, *SIAM J. Sci. Comput.* **31** (2008) 143-166.**
+* **Coupled coarsening on the nodal block, as in 2009:** "For PDE systems, one vertex of the graph
+  corresponds to each **nodal block of unknowns, for example, electric potential and electron and hole
+  concentrations at a particular grid point**" (p. 974). So this remains genuine systems/nodal AMG on
+  the fully-coupled `(ψ, n, p)` Jacobian.
+* Cycles: V and W, one pre- and one post-smoothing sweep; 4-7 levels; coarsest level below ~2000 rows,
+  serial direct solve. Krylov: **unrestarted GMRES**, linear tolerance `1e-6`; TFQMR used where a
+  per-iteration cost was needed. Software: Trilinos / ML / AZTEC / METIS / ParMETIS / Zoltan.
+
+### C.3.3 The bias/injection regime, transient or not, and `dt` — including a SEVEN-DECADE `dt` sweep
+
+**ESTABLISHED**, §3.1 and §3.6. Two cases, both inherited from refs [3, 9]:
+
+1. **Steady-state 2D BJT**, 2 × 1.5 μm, **bias 0.3 V**, max donor doping `1e19`, max acceptor `1e16`;
+   3 unknowns/node; 7-8 Newton steps per solve; weak scaling 32 → 8192 cores at ~31,000 DOF/core
+   (252M DOF), and 64 → 147,456 cores at 10,000 DOF/core. **Same device and same 0.3 V bias as the
+   2009 paper.**
+2. **Transient 2D diode**, 1 × 0.5 μm, contacts at the two top corners, **sinusoidal potential of
+   amplitude 0.5 and period 1.0 on contact A**, **first-order backward Euler**, **fixed `Δt`**,
+   21M / 83M / 334M / 1.33 billion unknowns on 1024 / 4096 / 16,384 / 65,536 cores at 20,000 DOF/core.
+
+**The new thing relative to 2009 is the `Δt` range**, journal p. 985 (rendered): "the size of the time
+step is varied over **seven orders of magnitude from 10⁻¹ to 10⁻⁸ s** (table presents from 10⁻¹ to
+10⁻⁵ s)". The 2009 paper covered only a 10× range (Part B §B.4.3). Table III, journal p. 984
+(rendered), 65,536 cores / 1.33e9 DOF, `N/Δt` = Newton steps per time step, `it/N` = GMRES per Newton:
+
+| `Δt` | aggress-norepart W `N/Δt` | `it/N` | uncoup-repart W `N/Δt` | `it/N` | uncoup-repart V `N/Δt` | `it/N` |
+|---|---|---|---|---|---|---|
+| 1e-5 | 1.0 | 69 | 1.0 | 12 | 1.0 | 32 |
+| 1e-4 | 1.2 | 78 | 1.2 | 13 | 1.2 | 35 |
+| 1e-3 | 3.0 | 106 | 1.6 | 15 | 3.0 | 43 |
+| 1e-2 | 3.0 | 108 | 3.0 | 16 | 3.0 | 48 |
+| 1e-1 | 4.8 | 105 | 4.8 | 19 | 4.8 | 48 |
+
+**This is a real, quantitative, published `dt`-degradation curve for coupled-AMG-preconditioned
+Newton–Krylov on drift-diffusion, and it is mild: over four decades of `Δt` the linear iteration
+count rises by a factor 1.6 (best preconditioner) and the Newton count by 4.8. Nothing diverges.**
+Their own mechanism, journal p. 985, is the one sentence in this paper that bears on our crossover:
+
+> "This is particularly evident for transient simulations with **small time steps which require
+> significantly fewer iterations than for large time steps due to the influence of the mass matrix
+> term**."
+
+**That is the `1/Δt` diagonal-dominance mechanism, named by an author who measured it** — the same
+mechanism Arslanbekov & Kolobov state in words (Part A §4.1) and Bank et al. quantify in the steady
+limit (Part B §B.5.2). It is the third independent source for the mechanism, and **still not a
+criterion**: no threshold, no `τ`, no `dt/τ`.
+
+### C.3.4 Is ANY advection-dominance measure reported? **NO. Plainly, and this is the answer.**
+
+**ESTABLISHED**, by full reading and `grep -i` over the complete extracted text:
+
+* **"Courant" — zero. "CFL" — zero. "Reynolds" — zero. "Péclet" / "Peclet" — zero. "grid Reynolds" —
+  zero. "advection-dominated" / "drift-dominated" — zero. "dielectric" — zero. "relaxation time" —
+  zero.**
+* **"Debye" occurs exactly once**, journal p. 973: `λ`, "the minimal Debye length of the device", as
+  the scaling parameter in eq. (1). Identical to the 2009 paper.
+* **No mobility, no diffusivity, no `D₀` and no time-scale normalisation constant is given anywhere in
+  the paper.** p. 973 lists `μ_n, μ_p, D_n, D_p` as scaled parameters and states only that `n` and `p`
+  "vary by roughly nine and seven orders of magnitude" and that `μ` and `D` are related by the Einstein
+  relationship.
+
+**So `dt/τ_dielectric` is NOT reportable from the 2012 paper either, for exactly the reason Part B
+§B.4.3 gave for the 2009 paper.** Part B's item B.7.4 stands unchanged.
+
+**One ambiguity I am NOT going to resolve by inference (rule A4 / refusal 2).** The 2012 paper writes
+the diode's drive as "period of **1.0 s**" and its time steps as "10⁻¹ to 10⁻⁸ **s**", literally with
+a seconds symbol (verified on rendered pp. 984-985, and Figure 11's axis is labelled only "Time
+Step"). The **same case** in Lin et al. 2009 is in SCALED time, `t₀ = x₀²/D₀`, with the same amplitude
+0.5 and period 1.0 (Part B §B.4.3). For a 1 μm silicon device a literal 0.1 s time step is not a
+physical reading, so the "s" is very probably the scaled unit carried over — **but the paper says "s",
+I did not measure it, and guessing which it is would be exactly the Eliseev `×10⁻⁶` failure.** It
+does not change any conclusion here (no mobility is given, so `dt/τ` is unobtainable either way).
+**If we ever want their `dt/τ`, ask the author** (`ptlin@sandia.gov`, given on the title page) — the
+question is one line: *are the `Δt` values in Table III seconds or units of `t₀ = x₀²/D₀`, and what
+are `D₀` and the mobilities for the diode case?*
+
+### C.3.5 VERDICT ON Q2-residual
+
+**Coupled `(ψ, n, p)` AMG is demonstrated at 2.5 × 10⁸ DOF on 147,456 cores, on quadrilateral meshes,
+with a SUPG-stabilised FE discretisation, an ILU(0)/ILU(2)-Schwarz smoother, a 0.3 V steady BJT and a
+near-equilibrium sinusoidally-driven diode — and NO advection-dominance measure of any kind is
+reported in the paper.** Part B §B.4.5 and §B.8's Q2 verdict transfer verbatim to the 2012 paper, with
+two additions in our favour and one caution:
+
+* **In our favour (the advection worry is partly answered by the method, not by the data):** PGSA
+  exists precisely because `R = P^T` is wrong for nonsymmetric operators, so the 2012 preconditioner is
+  at least *designed* for a nonsymmetric system, which Manteuffel et al.'s classical-AMG Remark 3 is
+  not about (Part B §B.4.5 already said Remark 3 does not apply; that still holds).
+* **In our favour (the `dt` axis IS now covered, over seven decades):** graceful, mild degradation.
+* **The caution:** every one of those decades is traversed on a device that never leaves near
+  equilibrium, with SUPG numerical diffusion of unreported magnitude, and with `G` (generation/
+  recombination) present in the residual but never given a value. **Anyone quoting "coupled AMG
+  handles a seven-decade `dt` range" for SoPlasma's Scharfetter-Gummel FV species block at
+  `Co` 20-55 would be quoting it above its tier.** For our system this is **tier 4** (A7): it ran
+  somewhere else and nothing looked wrong.
+
+---
+
+## C.4 CHACÓN & KNOLL 2003 — the PRIMARY source for "semi-implicit ≡ Schur complement". Cite this, not the 2025 restatement.
+
+Full citation: **L. Chacón, D. A. Knoll, "A 2D high-β Hall MHD implicit nonlinear solver",
+*J. Comput. Phys.* **188** (2003) 573-592**, DOI 10.1016/S0021-9991(03)00193-1. Keywords, from the
+title page: "Hall MHD; Implicit differencing; Newton–Krylov; Jacobian-free; Nonlinear PDE; **Schur
+complement**".
+
+### C.4.1 The exact statement, with page and equation numbers
+
+**ESTABLISHED**, §4, journal **p. 579** (all of the following checked on the rendered page). They set
+up the model hyperbolic pair `∂_t u = ∂_x v`, `∂_t v = ∂_x u`, difference it with backward Euler as
+their eqs. (13)-(14), substitute one into the other to get the parabolic
+
+> **(15)** `(I − Δt² ∂_xx) u^{n+1} = u^n + Δt ∂_x v^n`
+
+"which is equivalent to the set of two discretized equations, but much better conditioned because the
+parabolic operator is **diagonally dominant**." Then, in the **unnumbered displayed factorization
+between eq. (15) and eq. (16)**, p. 579:
+
+> `[ I        −Δt∂_x ]     [ I   −Δt∂_x ] [ P_SC   0 ] [  I       0 ]`
+> `[ −Δt∂_x   I      ]  =  [ 0    I     ] [  0     I ] [ −Δt∂_x   I ]`
+
+followed by the sentence that is the whole reason we wanted this paper:
+
+> "**where `P_SC = I − Δt²∂²_x` is the so-called Schur complement. The connection between the
+> semi-implicit operator an[d] the Schur complement is now obvious.** The factorized matrix is trivial
+> to invert (pre- and post-triangular matrices are trivially invertible in an exact manner – they
+> correspond to forward elimination and backward substitution, respectively – and only the block
+> diagonal matrix requires an iterative treatment), and yields Eq. (15) as a result."
+
+(The `an` for `and` is a typo in the published paper, p. 579; I have marked it rather than silently
+corrected it.) They immediately add the lineage: "We note at this point that the semi-implicit
+preconditioner proposed in [3] for the Alfvén wave in resistive MHD can also be formulated as a Schur
+complement [21]." — [3] = Chacón, Knoll & Finn, *JCP* **178** (2002) 15; [21] is their Schur reference.
+The Conclusions, p. 589, restate it: "A useful preconditioning framework has been developed based on
+physics insight and a **Schur complement approach**. The connection of this approach with the
+physics-based preconditioning concept has been pointed out."
+
+**This is the citation to use. Knoll & Keyes 2004 §3.4.1's "In [43] a connection is made between the
+concept of the semi-implicit method as a preconditioner and the Schur complement of the Jacobian"
+(Part A §1.2) points exactly here, and it is now verified at source.**
+
+### C.4.2 The same thing on the real system — eqs. (17)-(21)
+
+**ESTABLISHED**, journal pp. 580-581 (rendered). The full HMHD Jacobian `J_k` is their eq. (17), a
+5×5 block matrix in `(Φ, Ψ, B_z, v_z, ω)` ordered "first by grid nodes and then by equations". Two
+upper-triangular wave-coupling blocks are **dropped** to give the approximate `P_k`, eq. (18), whose
+inversion reduces to three diagonal blocks plus the 2×2 block, eq. (19),
+
+> `[ D_Ψ      U_{B_z,Ψ} ]`
+> `[ L_{Ψ,B_z}  D_{B_z} ]`
+
+which is Schur-decomposed **two ways**, eqs. (20) and (21):
+
+> **(20)** `P_SC^{B_z} = D_{B_z} − L_{Ψ,B_z} D_Ψ^{−1} U_{B_z,Ψ}`
+> **(21)** `P_SC^{Ψ}   = D_Ψ   − U_{Ψ,B_z} D_{B_z}^{−1} L_{Ψ,B_z}`
+
+with the explicit remark "Which Schur complement is preferable is not obvious at this stage, and
+requires specific knowledge of the physics terms involved." **That non-uniqueness is precisely our
+`S_t`-vs-`S_f` choice** (our derivation note, "Two Schur complements are available"), and it now has a
+2003 primary source that also says the choice must be made on physics grounds rather than algebraically.
+
+*One notational flag, not built on:* the subscript ordering of the off-diagonal `U` is inconsistent
+between the matrices in (19)-(21) (`U_{B_z,Ψ}`) and the definition list in §4.2 (`U_{Ψ,B_z}`), on the
+same rendered pages. It does not affect anything quoted here. **If a paper of ours ever reproduces
+their eq. (20)/(21) verbatim, ask the user to check that subscript on p. 580-581 rather than picking
+the "sensible" one.**
+
+### C.4.3 Do they use `A_tt^{-1} ≈ dt·I`? **YES — explicitly, as "the first important simplification", and with a STATED condition.**
+
+**ESTABLISHED**, journal **p. 581** (rendered). They first define the diagonal blocks:
+
+> `D_Ψ    = 1/Δt + θ[ v⃗_e0·∇ − η∇² + ν_e∇⁴ ]`
+> `D_{B_z} = 1/Δt + θ[ v⃗_p0·∇ − η∇² + ν_e∇⁴ ]`
+
+with `θ = 1/2` for Crank–Nicolson. Then, quoted in full:
+
+> "**The first important simplification in the Schur complement operators is to approximate
+> `D_Ψ^{−1} ∼ Δt`, `D_{B_z}^{−1} ∼ Δt`** (one could also keep other diagonal entries from upwinded
+> advection and diffusion, although this is not done here). **This is consistent with the time step
+> ordering in Eq. (16) (except for the electron viscosity term)**, and yields:
+> `P_SC^{B_z} ≈ D_{B_z} − Δt L_{Ψ,B_z} U_{Ψ,B_z}` ,  `P_SC^{Ψ} ≈ D_Ψ − Δt U_{Ψ,B_z} L_{Ψ,B_z}`."
+
+**So the step is theirs, it is named, and it is conditioned.** The condition is their eq. (16),
+journal p. 580 (rendered):
+
+> **(16)** `Δt^w_CFL ≪ Δt ≲ Δt_A`
+> "where `Δt^w_CFL` is the explicit CFL condition associated with the dispersive whistler wave, and
+> **`Δt_A` is the CFL limit associated with the Alfvén speed (for subAlfvénic flows) or the FLOW SPEED
+> (for superAlfvénic flows)**. Owing to the dispersive nature of the whistler wave, Eq. (16) implies
+> that `C₁h² ≪ Δt ≲ C₂h`."
+
+and they close §4.2 with "This preconditioning strategy will be effective for `Δt^w_CFL ≪ Δt ≲ Δt_A`
+(Eq. (16))" (p. 583).
+
+**Read structurally, the two halves of eq. (16) do different jobs, and this is the part that matters
+to us.** The LOWER bound `Δt^w_CFL ≪ Δt` is what makes the parabolization worth doing at all — it is
+the stiff wave you are buying your way past. The UPPER bound `Δt ≲ Δt_A` is what makes `D^{-1} ≈ Δt`
+TRUE: `D = 1/Δt + θ[advection − diffusion + hyperviscosity]`, so `D^{-1} ≈ Δt` requires the `1/Δt`
+term to dominate the transport operator, i.e. **`Δt` must be at or below the ADVECTIVE CFL limit.**
+They also flag the one term the ordering does NOT cover, the electron viscosity `ν_e∇⁴` — and they
+were right to: Appendix A is devoted to choosing `ν_e` and they note `ν_e/(Δt d_i²) ≫ Δt^w_CFL`.
+
+### C.4.4 What happens when the condition is VIOLATED — they measured it, up to 4×
+
+**ESTABLISHED**, Table 5, journal **p. 588** (rendered), titled "Effect of surpassing the implicit time
+step limit `Δt_A` on the efficiency of the solver. The FBC problem with `d_i = 0.2` and the MGSI
+preconditioner are chosen for the study":
+
+| grid | `Δt/Δt_A` | Newton/`Δt` | GM/`Δt` | CPU (s) | CPU_exp/CPU | `Δt/Δt^w_CFL` |
+|---|---|---|---|---|---|---|
+| 128×128 | 1 | 2.6 | 0.6 | 46 | 8.5 | 147 |
+| 128×128 | 2 | 3.6 | 1.8 | 78 | 9.4 | 294 |
+| 128×128 | 4 | 4.8 | 5.8 | 147 | 9.3 | 588 |
+| 256×256 | 1 | 2 | 0 | 123 | 28.0 | 294 |
+| 256×256 | 2 | 2.8 | 0.8 | 214 | 30.0 | 588 |
+| 256×256 | 4 | 4.2 | 3.8 | 460 | 26.5 | 1176 |
+
+with their own reading, p. 588:
+
+> "increasing the time step above the prescribed limits **does not immediately degrade the solver
+> efficiency**, since the CPU speedup over the explicit solver remains essentially constant. However,
+> given a constant speedup, **it is preferable to run at the time step limit `Δt_A`** to enhance the
+> accuracy of the calculation."
+
+**Match their register: "does not IMMEDIATELY degrade".** GMRES per time step rises ~10× (0.6 → 5.8)
+over a 4× `Δt` increase, and Newton per step roughly doubles — the degradation is real and steep in
+iteration count, and is only masked in CPU-speedup terms because the explicit reference is getting
+more expensive at the same rate. **They never go beyond `Δt/Δt_A = 4`.**
+
+### C.4.5 Conditions of the whole paper, so nobody generalises it
+
+**ESTABLISHED.** 2D reduced high-β Hall MHD, five fields, Crank–Nicolson (`θ = 1/2`), JFNK with
+**flexible GMRES** and inexact Newton; two model problems (flux-bundle coalescence FBC, and
+collisionless tearing with flow KHT); grids 64² to 256²; `d_i` = 0.2 and 0.4; two preconditioner
+flavours (CGSI = unpreconditioned CG on the Schur operator; MGSI = coupled multigrid). Speedups over
+explicit "of an order of magnitude are common, and up to a factor of 30 in some instances", at time
+steps "in some instances approach[ing] 600 times the explicit CFL condition" (Conclusions, p. 589).
+Accuracy is defended (§5.2, Fig. 2) only on the grounds that `Δt/τ_dyn ∼ 10⁻²` — the DYNAMICAL time
+scale is respected even though the wave CFL is not. **There is no drift-diffusion, no Poisson
+constraint, no dielectric relaxation and no reaction chemistry anywhere in this paper.**
+
+### C.4.6 What this does to the WORDING of our claim — and it is our own note that says so first
+
+**This is the most important thing in Part C, and it is not a contradiction of anything: it is a
+primary citation for a caveat we already wrote down ourselves.**
+
+The parent agent's brief states our claim as "the exact Schur complement on the potential block is
+`S_f = div((eps + dt*sigma) grad .)`", and calls the `schurOnPhi true` arm "the CORRECT `S_f`".
+**Our own derivation note does not claim that**, and should not be quoted as if it did.
+`docs/design/schur-semiimplicit-poisson-preconditioner.md` says, under the heading *"What is actually
+approximate, then"*:
+
+> "Only the TRANSPORT part of `A_tt`. Writing `A_tt = I/dt + T − J_S` with `T` the advection-diffusion
+> operator, `q^T T != 0` ... The error in the operator is therefore **governed by how much of `A_tt` is
+> transport rather than `ddt`, i.e. by the transport CFL/diffusion numbers**, and NOT by the reaction
+> rate at all."
+
+**Chacón & Knoll's eq. (16) is the published, primary-source, 2003 version of exactly that statement**,
+expressed as a validity CONDITION (`Δt ≲ Δt_A`) rather than as a prediction, for a different physics.
+Two consequences, and they pull in opposite directions:
+
+* **It strengthens the derivation.** The step `A_tt^{-1} ≈ dt·I` is not an ad-hoc convenience; it is a
+  named, 20-year-old move with a stated regime of validity, and our note independently rediscovered
+  the regime. Note too that Part B §B.2.3 showed the *reason* our operator stays a differential
+  operator where Bank's collapses to a number is the `1/Δt` in `A_tt` — which is the same `1/Δt` that
+  makes `A_tt^{-1} ≈ Δt·I` legitimate. **The two facts are the same fact.** The chemistry cancellation
+  in our note (`q^T J_S = 0`, exact to all orders) is genuinely ours and has no counterpart in Chacón
+  & Knoll, whose `D` blocks carry no reaction term at all.
+* **It narrows what may be said about `S_f`.** `div((ε + Δt σ)∇·)` is **the Schur complement under the
+  approximation `A_tt^{-1} ≈ Δt·I`**, exact in the chemistry and approximate in the transport. It is
+  not "the exact Schur complement" and should never be written as such. The honest phrasing, which is
+  also the stronger one because it comes with a falsifiable prediction, is our note's own: *the
+  semi-implicit Poisson operator is the Schur complement of the coupled Jacobian on the potential
+  block, exactly in the reaction terms and to leading order in the transport Courant/diffusion
+  numbers.*
+
+---
+
+## C.5 Q3-residual — JEROME & KERKHOVEN. **It contains NOTHING quantitative about where the Gummel map stops converging. Part B's conclusion STANDS.**
+
+### C.5.1 What the paper is
+
+**ESTABLISHED**, title page and §1 (rendered p. 1). **J. W. Jerome & T. Kerkhoven, "A Finite Element
+Approximation Theory For The Drift Diffusion Semiconductor Model".** Received by the editors
+8 September 1989; accepted for publication (in revised form) 9 August 1990.
+
+From the Abstract:
+
+> "**Two-sided estimates are derived for the approximation of solutions to the drift-diffusion
+> steady-state semiconductor device system** which are identified with fixed points of Gummel's
+> solution map. The approximations are defined in terms of fixed points of numerical finite element
+> discretization maps. By use of a calculus developed by Krasnosel'skii and his coworkers, it is
+> possible, both to locate approximations near fixed points in an 'a priori' manner, as well as fixed
+> points near approximations in an 'a posteriori' manner."
+
+**This is a DISCRETISATION-ERROR theorem, not an iteration-convergence theorem.** It bounds
+`‖x_n − x_0‖`, the distance between the fixed point of the continuous Gummel map `T` and the fixed
+point of the finite-element Gummel map `T_n`. It says nothing about how many Gummel sweeps it takes to
+reach either, or whether the sweeps converge at all. The authors say so themselves, §1, p. 2 (rendered):
+
+> "**This paper does not deal with the actual algorithms for computing the fixed points of the
+> numerical maps**, i.e., for solving the system finite element equations."
+
+### C.5.2 The system is STEADY, and there is no `dt` anywhere
+
+**ESTABLISHED**, §2.1. Scaled by the thermal voltage `U_T = k_B T/q` and the intrinsic Debye length
+`l = √(U_T ε/n_i q)`, with `n = e^{u−v}`, `p = e^{w−u}`:
+
+> (2.1) `−∇·(ε∇u) + e^{u−v} − e^{w−u} = k₁`
+> (2.2) `−∇·(e^u ∇e^{−v}) = 0`
+> (2.3) `−∇·(e^{−u} ∇e^{w}) = 0`
+
+with mixed Dirichlet/homogeneous-Neumann BCs, vanishing generation-recombination, and constant
+diffusivity/mobility. `grep -i` over the full text: **"transient", "time step", "time-dependent",
+"dielectric relaxation" — zero occurrences.** The word "steady" occurs only in the abstract, §1, and
+three reference titles. **`dt/τ` has no referent here, exactly as in Bank et al. and Kerkhoven & Saad.**
+
+### C.5.3 The key hypothesis is INVERTIBILITY, not contraction — which is why no criterion appears
+
+**ESTABLISHED**, §4.1 Theorems 4.1 and 4.2, and §4.5 Corollary 4.1:
+
+> **Corollary 4.1.** "Assume the regularization hypothesis expressed in Assumption 1 of §2.3. Let `x₀`
+> be a fixed point of `T` and suppose that **`T′(x₀)` does not possess 1 as an eigenvalue.** Then there
+> exist an index `n₀` and a neighborhood of `x₀` containing fixed points `x_n` of `T_n`, `n ≥ n₀`,
+> satisfying `‖x₀ − x_n‖ ≤ C h^θ`."
+
+and, from §1, on the list of five hypotheses: "invertibility of `I − T′`... In our application of this
+theory, we shall work with energy norms and `T` will be compact, so that (i) above reduces to an
+eigenvalue hypothesis. **This is the only 'nonverifiable' hypothesis made in the a priori theory, and
+guarantees that solutions are isolated.**"
+
+**`I − T′(x₀)` invertible is strictly weaker than `‖T′‖ < 1`.** The theory is therefore *deliberately*
+constructed to hold in cases where the Gummel iteration does NOT converge — the fixed point still
+exists, is isolated, and is approximated to `O(h^θ)`. **A paper built on that hypothesis structurally
+cannot contain a Gummel divergence criterion**, and does not.
+
+The one place the Lipschitz constant of the Gummel map is mentioned, §1, p. 2 (rendered), is a
+**deferral**:
+
+> "For this alternative mapping, **the Lipschitz constant `L_T` has been examined in detail in
+> [15],[9],[17],[16].**"
+
+i.e. Jerome & Kerkhoven point at four *other* papers for the quantitative question — none of which we
+have. Elsewhere `L_T` and `L_V` appear only as unnamed constants inside error bounds (§3.4 eq. (3.19),
+§4.4 p. 18): no value, no formula, no dependence on bias, doping or mesh is ever given.
+
+**There are no numerical experiments in this paper at all** — no device, no bias, no doping, no mesh,
+no iteration counts. `grep`: zero occurrences of "numerical experiment", "doping", "injection", or any
+bias voltage.
+
+### C.5.4 What the paper DOES give us: the citations, fixed at source
+
+**ESTABLISHED**, reference list, pp. 22-24 (Kerkhoven is a co-author, so this is his own list). This
+**resolves the Part A/Part B citation discrepancy** flagged in §B.7.1:
+
+* **[15] T. Kerkhoven, "A proof of convergence of Gummel's algorithm for realistic BOUNDARY CONDITIONS",
+  *SIAM J. Numer. Anal.* **23** (1986) 1121-1137.** (Part A §0.3 item 3 said "realistic device
+  geometries" — **wrong title**. Part B was right that this and the next are separate papers.)
+* **[16] T. Kerkhoven, "A spectral analysis of the decoupling algorithm for semiconductor simulation",
+  *SIAM J. Numer. Anal.* **25** (1988) 1299-1312.** (Confirms Part B's correction over Part A.)
+* **[17] T. Kerkhoven, "On the effectiveness of Gummel's method", *SIAM J. Sci. Statist. Comput.* **9**
+  (1988) 48-60.** (Unchanged.)
+* **[14] T. Kerkhoven, *Coupled and Decoupled Algorithms for Semiconductor Simulation*, Ph.D. thesis,
+  Yale University, 1985; Tech. report #429.** — the origin of the whole line.
+* **[19] T. Kerkhoven & Y. Saad, "On Acceleration Methods for Systems of Coupled Nonlinear Partial
+  Differential Equations", Tech. report UIUCDCS-R-1363, Univ. of Illinois, February 1989** — the
+  preprint of the *Numer. Math.* **60** (1992) 525-548 paper read in Part B §B.3, under a different title.
+* **[12] J. W. Jerome, *Analysis of Charge Transport*, Springer, 1996** — the monograph carrying the
+  proofs omitted from Appendices A-C of this paper.
+
+**And one genuinely NEW and better-targeted lead, which is the most valuable thing in this paper for us:**
+
+* **[9] J. W. Jerome, "The role of semiconductor device DIAMETER and ENERGY-BAND BENDING in convergence
+  of Picard iteration for Gummel's map", *IEEE Trans. Electron Devices* **ED-32** (1985) 2045-2051.**
+
+**MY INFERENCE, labelled, with the reason checkable:** the two factors in Kerkhoven & Saad's Theorem
+A.2 (Part B §B.5.3) are exactly a DEVICE-LENGTH factor `(N+P)/((π/L)² + N + P)` and a BIAS factor
+`1/√(1 + (2π/V_B)²)`; "device diameter" and "energy-band bending" are the same two quantities.
+**That title is the closest thing yet seen to a paper whose entire subject is *when the Gummel Picard
+iteration converges, as a function of two named physical parameters*.** I have not read it and am not
+concluding from its title — but it, not Kerkhoven 1988, is now the paper I would ask for first.
+
+### C.5.5 A citation gap I cannot close, and will not guess
+
+**The PDF carries NO journal name, volume, or page numbers.** It is an author-prepared LaTeX reprint
+(its own reference [12] is a 1996 Springer monograph, six years after the paper's 1990 acceptance, so
+the file was re-typeset later). I can give authors, title, and the received/accepted dates from the
+rendered first page, and nothing more. **I am not going to supply a journal and volume from memory —
+that is precisely the class of claim that got "Hagelaar's Boltzmann factor" retracted.**
+**Ask: can you confirm the journal, volume, year and page range for Jerome & Kerkhoven, "A Finite
+Element Approximation Theory For The Drift Diffusion Semiconductor Model"?** Until then cite it as a
+1990-accepted paper by authors and title only, or not at all.
+
+### C.5.6 VERDICT ON Q3-residual
+
+**This paper does not change Part B §B.5.4 in any respect.** It is a fourth steady-state text
+(after Bank et al. 1989, Kerkhoven & Saad 1992, and Wang & Fan 1995 — the last still unread) in which:
+
+* the system has **no time derivative**, so `dt/τ` has no referent;
+* the only criterion is **spatial and topological** (Assumption 2's M-matrix/angle conditions on the
+  mesh, §3.1, and the `O(h^θ)` rate), not a convergence-rate criterion;
+* the governing hypothesis is **`1 ∉ σ(T′(x₀))`**, which is compatible with a divergent Gummel map and
+  therefore cannot predict one;
+* the quantitative Gummel question is **explicitly deferred** to four papers we do not have.
+
+**So Part B's conclusion stands, now on four independent texts: there is no published TRANSIENT
+Gummel↔Newton criterion, and `dt/τ` appears nowhere in this literature. Locating the crossover at
+`dt/τ ≈ 1` and deriving it from the Schur complement remains our stronger candidate contribution.**
+Both of Part B's caveats also stand unchanged: it rests on one mesh and one gas, and the ratio has
+**not** yet been verified to transfer to the 449k bed.
+
+---
+
+## C.6 The three-arm measurement — does anything in these papers explain it?
+
+**OUR OWN MEASUREMENT (parent agent, 2026-09-12, restated not re-derived).** At `dt/τ = 1.7` on the
+81,640-cell warm streamer bed:
+
+| arm | outcome |
+|---|---|
+| `fieldsplit` + default `a11` Schur | `DIVERGED_ITS` at 1000 Krylov iterations |
+| physics-based `PCSHELL` | `DIVERGED_ITS` at 1000, residual frozen |
+| `schurOnPhi true` (the `S_f` operator) | 66 min, 566 residual evaluations, **ZERO completed linear solves**, residual never moved off `6.9989e+02`. Killed. |
+
+**Short answer: NO published result I have read explains the third arm, and one of our own documents
+predicts it for a reason that has nothing to do with `S_f`.** Four points, tiered.
+
+**1. Nothing in the literature covers this regime.** The only measurement anywhere in these three
+papers of a physics-based Schur preconditioner past its own stated validity limit is Chacón & Knoll's
+Table 5 (§C.4.4): `Δt/Δt_A` = 1, 2, 4 — **graceful degradation, never a stall, and never beyond 4×**.
+Lin 2012 spans seven decades of `Δt` with no stall either, but with no Schur complement in the
+preconditioner at all and on a near-equilibrium device. **Neither is evidence about our case in either
+direction. For our system both are tier 4 (A7).**
+
+**2. The stated validity condition for `A_tt^{-1} ≈ Δt·I` is Chacón & Knoll eq. (16)'s upper bound
+`Δt ≲ Δt_A`, the ADVECTIVE CFL limit — and our bed is very likely far above it.** *(MY INFERENCE for
+the mapping: their `Δt_A` is the Alfvén/flow CFL, ours would be the drift CFL; the structural role —
+"the time scale of the transport terms inside the diagonal block" — is the same, and our own
+derivation note reaches the same conclusion independently.)* **But I will not put a number on it.**
+Part A §5.6 records `Co_conv(e)` 20-37 at `dt = 1e-9` on *a* bed, and Part B §B.5.4's failing arm is
+at `dt ≈ 1.97e-10` on the 81,640-cell warm bed; whether those are the same bed and how the Courant
+scales between them is not something to reconstruct across two entries (A2, A3). **The discriminating
+number is the convective Courant number ON THE FAILING ARM AT THE FAILING `dt`, and the solver already
+writes it per step with the limiter that set it (D3). Read it off; do not derive it.** If it is ≫ 1,
+then the `S_f` arm was run outside the only regime in which `S_f` is the Schur complement at all, and
+"supplying the correct Schur operator did not rescue `dt > τ`" is not the right description of what
+was measured — **`S_f` is not the correct Schur operator at `Co ≫ 1`; it is a leading-order-in-Courant
+approximation to it.**
+
+**3. The third arm's signature points at the INNER solve, not at `S_f` — and our own note predicted it
+in advance.** A frozen residual with **zero completed linear solves** in 66 minutes is not the
+signature of an inaccurate outer operator (that gives slow but progressing GMRES); it is the signature
+of an inner solve that never returns a consistent operator. `docs/design/schur-semiimplicit-poisson-preconditioner.md`,
+implementation plan **step 4**, headed *"THE TRAP TO AVOID, and it is the same one that caused today's
+SIGFPE"*:
+
+> "`A_tt^-1` now becomes the INNER solve, applied on every Schur application. It is bigger than the phi
+> block, so exact LU is not affordable and it must be iterative — which reintroduces precisely the
+> defect of section 25c: **an inner solve taking a varying number of iterations makes the Schur
+> operator NOT a fixed linear operator, and the outer Krylov method breaks down.**"
+
+with a prescribed mitigation that "must be in from the start rather than discovered again":
+`-fieldsplit_transport_ksp_type richardson`, `-fieldsplit_transport_ksp_max_it 5`,
+`-fieldsplit_transport_ksp_convergence_test skip`, and FGMRES outside.
+
+**This is not a literature finding and I am not asserting it as the cause. It is a documented,
+dated, pre-registered prediction of exactly this failure mode, and A5(a) says the first question is
+whether the per-application work actually ran as designed.** The cheap check, before any more
+preconditioner theory: **was the step-4 mitigation applied in the `schurOnPhi true` arm?** `-ksp_view`
+on that arm will say in one line. If the inner KSP was a converging solver rather than a fixed-work
+one, the arm measured the inner-solve nonlinearity and not `S_f`, and the result should not be counted
+against the `S_f` diagnosis at all. → `diagnostician` / `numerical-analyst`, not me.
+
+**4. Part B §B.6.2's caution survives untouched, and now has company.** "A divergent *nonlinear* Picard
+iteration and a poor *linear* preconditioner `A` are not the same object" — still a plausible
+mechanism, still not established. Part C adds a second unresolved mechanism (the inner-solve
+consistency defect above) and a third (violation of the `A_tt^{-1} ≈ Δt I` regime). **Three candidate
+mechanisms now sit under one symptom, and per `diagnostics-must-separate-causes` the next instrument
+should be chosen to tell them APART:** the GMRES residual history discriminates a stalling
+preconditioner from a merely bad one (flat vs slowly decreasing), `-ksp_view` discriminates the
+inner-solve defect, and the `k_eff`-vs-CFL sweep already written down at the end of our derivation
+note discriminates the Courant mechanism (quality should degrade with the transport numbers and be
+INDIFFERENT to `k_eff`). **That sweep has still never been run, and it is the only one of the three
+that tests the physics claim rather than the implementation.**
+
+---
+
+## C.7 What Part C could NOT settle, and the exact papers that would
+
+1. **Jerome, *IEEE Trans. Electron Devices* **ED-32** (1985) 2045-2051**, "The role of semiconductor
+   device diameter and energy-band bending in convergence of Picard iteration for Gummel's map".
+   **This is now the top request** — it is the only title seen so far that is explicitly about *when
+   Gummel's Picard iteration converges*, and its two named parameters match Kerkhoven & Saad Thm A.2's
+   two factors.
+2. **Kerkhoven 1986 (*SJNA* **23** 1121), 1988a (*SJNA* **25** 1299), 1988b (*SJSSC* **9** 48)** —
+   citations now exact (§C.5.4), none obtained. Part B §B.5.4 stands until at least one is read.
+3. **P. T. Lin, J. N. Shadid, R. S. Tuminaro, M. Sala, "Performance of a Petrov–Galerkin algebraic
+   multilevel preconditioner for finite element modeling of the semiconductor device drift–diffusion
+   equations", *Int. J. Numer. Meth. Engng* **84** (2010) 448-469.** **NEW LEAD, and the one that
+   should be read next in this line.** It is Lin 2012's reference [3] and carries the material the
+   2012 paper omits: the PGSA preconditioner's design, and the parameter study that fixed ILU fill and
+   overlap. It sits chronologically between the 2009 "we are pursuing physics-based preconditioning"
+   statement and the 2012 paper that does not mention it — so it is the remaining place in this series
+   where a block-factorization preconditioner could have appeared.
+4. **T. Clees, "AMG strategies for PDE systems with applications in industrial semiconductor
+   simulation", Ph.D. thesis, Universität zu Köln, 2005** — Lin 2012's reference [2], cited for "fully
+   coupled Newton". A German industrial-TCAD AMG thesis is a plausible home for a physics-based
+   drift-diffusion preconditioner and we have looked at nothing from that community.
+5. **Lin et al.'s reference [28]** (variational-multiscale FE vs Scharfetter-Gummel FV) — still not
+   obtained; still the only route to their `dt/τ` short of asking the author (§C.3.4).
+6. **Chacón, *Phys. Plasmas* **15** (2008) 056103** — no longer needed. §C.4 supplies the primary
+   statement from the 2003 paper Knoll & Keyes actually cite.
+7. **The journal/volume/pages of Jerome & Kerkhoven** (§C.5.5) — a question for the user, not a search.
+
+---
+
+## C.8 Bottom line — the three decisions after Part C
+
+* **Q1 — novelty.** **Lin 2012 does not contain our composition and contains no Schur complement at
+  all; the largest named residual risk is discharged** (§C.2.5). The transient Schur-on-`φ`
+  composition has now survived Bank et al. 1989, Kerkhoven & Saad 1992, Lin et al. 2009 and Lin 2012,
+  read in full. **Two things must still happen before the word "novel" is written:** items 3 and 4 of
+  §C.7 should be read, and the claim must be phrased as §C.4.6 requires — *the Schur complement under
+  `A_tt^{-1} ≈ Δt·I`, exact in the chemistry and leading-order in the transport Courant number*, with
+  Chacón & Knoll 2003 p. 579/581 cited for the identification and the approximation, and Bank et al.
+  1989 cited as the steady ancestor of the elimination.
+* **Q2 — coupled AMG in the advection-dominated regime.** **Still never placed on that axis.** The
+  2012 paper reports no Courant, no CFL, no grid Reynolds, no Péclet, no dielectric relaxation time;
+  the meshes are quadrilateral despite the title; the discretisation is SUPG-FE, not Scharfetter-Gummel
+  FV; the devices are a 0.3 V BJT and a near-equilibrium diode. **What it DOES add is a seven-decade
+  fixed-`Δt` sweep with mild, graceful degradation** (§C.3.3) and an author's attribution of that
+  degradation to loss of mass-matrix dominance — a third independent source for the mechanism, and
+  still not a criterion.
+* **Q3 — the crossover.** **Unchanged and now better supported.** Jerome & Kerkhoven is a fourth steady
+  text with no `dt`; its governing hypothesis is deliberately weaker than contraction, so it cannot
+  contain a divergence criterion; and it defers the quantitative question to four papers we do not
+  have. **`dt/τ ≈ 1`, derived from the Schur complement, remains unclaimed and remains the stronger of
+  our two candidate contributions.**
+* **On the three-arm measurement.** **Nothing in these papers explains it**, and before it is allowed
+  to weigh against the `S_f` diagnosis, two cheap checks should run: read the convective Courant number
+  on the failing arm (§C.6 point 2), and `-ksp_view` the inner transport KSP against step 4 of our own
+  derivation note (§C.6 point 3). **Three distinct mechanisms currently sit under one symptom.**
