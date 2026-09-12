@@ -170,7 +170,14 @@ the revised cost/benefit, and the alternatives including doing nothing — then 
 voltage/current and profile, `simulationType`, gas/pressure/temperature, `endTime`, dt strategy — for
 every case, arm and **relaunch**. Check storage (in WSL `df` is misleading; the real limit is the
 Windows C: drive). Prefer the SHORTEST run that proves the point, and ask whether a UNIT bed answers
-it better; state the discriminating observable and the earliest time it is visible. → `/validate`
+it better; state the discriminating observable and the earliest time it is visible — **and that
+time is when the FIRST CHECK GOES, not a round interval and not completion.** An arm that can die
+on STEP 1 (a restart, a new dict key, a rebuilt library) is checked in ~90 s; a failure RATE at
+~10% of the steps; a trajectory or endpoint verdict only by an armed waiter. Measured 2026-09-12:
+an immediate check answered a restart-vs-dt-limit question in 90 s that a completion waiter would
+have answered 20 minutes later — and reported 7 GB of 30 GB free, the quantitative reason ten
+concurrent 449k arms had frozen WSL twice that day. **The first check is also the resource check.**
+→ `/validate` §4b
 
 **B4) READ WHAT EXISTS BEFORE PROPOSING; PROVE THE NEED BEFORE ADDING; AUDIT EVERYWHERE AFTER
 FIXING.** *(30, 37)*

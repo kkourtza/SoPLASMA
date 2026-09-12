@@ -109,6 +109,33 @@ Then as a **separate** call (background it, or `Monitor`) the wake-up — all fo
       sleep 60
     done
 
+### 4b. WHEN the watcher first fires — set it from the earliest informative moment, not a round number
+
+Arming a watcher is only half the rule. The other half is **the first check goes at the
+earliest time the discriminating observable could appear** — which B3 already makes you
+state when you design the run, and which is then routinely ignored when deciding when to
+look. Get it wrong in either direction and the run teaches you nothing on schedule: poll
+every few seconds and you drown in noise; wait for completion and you are blind to a
+failure that was visible in the first second.
+
+| what the arm can tell you | when it can tell you | so the first check is |
+|---|---|---|
+| a restart, a new dict key, a config or mesh change, a rebuilt library — **anything that can die on STEP 1** | seconds after the solver starts | **immediately** (~60–90 s, enough for start-up) |
+| a failure RATE, a corrector count, an iteration histogram | once there are enough steps to BE a rate | ~10% of the planned steps |
+| a trajectory, an accuracy verdict, "did it reach the common endpoint" | only at the endpoint (A2) | arm the waiter and do NOT poll |
+
+**Measured 2026-09-12, which is why this exists.** A warm-restart ladder arm was launched
+and a completion-waiter armed. The user asked why it was not checked at once; the immediate
+check then returned the answer in 90 s — `picard dt=1e-11` running clean at 50 steps while
+every `dt >= 5e-11` arm had SIGFPE'd at step 1, so the restart was sound and the crashes
+were a real dt limit. A waiter would have delivered that ~20 minutes later. The same check
+also reported **7 GB of 30 GB free with four solvers running**, which is the quantitative
+reason ten concurrent 449k arms had frozen WSL twice that day.
+
+**The first check is also the resource check.** Report free memory alongside the step count
+whenever more than two arms of a large bed are running: this bed is ~1.5 GB resident per
+solver, and the failure mode is not a slow run, it is the machine going down.
+
 **The liveness fallback is the important half** — it catches endings whose log signature you did not
 anticipate, which is by definition the ones that matter. `[ -s "$f" ]` stops it firing during
 preprocessing (mesh, fields, seed, `decomposePar`, EEDF table rebuild run for MANY MINUTES with no
