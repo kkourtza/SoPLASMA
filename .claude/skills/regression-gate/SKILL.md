@@ -136,14 +136,18 @@ sys.exit(1 if bad else 0)
 PY
 ```
 
-PASS: `0 of N rows deviate`, with `in baseline only: 0`. Measured 2026-09-11: the 1D bed gives
-`0 of 504` (its two files are bit-identical, md5 `efe4eff01b11cd0ae4af242772d626ae`); the 2D bed
-gives `24 of 48`, max `rel=9.477e-01`, `dnCorr=+14`.
+PASS: `0 of N rows deviate`, with `in baseline only: 0`. **Measured 2026-09-12, after both
+baselines were refreshed: the 1D bed gives `0 of 504` and the 2D bed `0 of 72`.** Both beds are
+deterministic -- two consecutive runs are bit-identical -- which is what makes a refresh
+meaningful rather than a way of baking in drift. Costs: 1D 11.3 s / 37 MB, 2D 5.1 s / 42 MB.
+The 2D bed is 72 rows, not 48: `standard` was restored to its scheme loop (below).
 
-Two standing facts about these beds, so you do not re-derive them: the 2D `report.py` matches
+Three standing facts about these beds, so you do not re-derive them: the 2D `report.py` matches
 **0 of 48** rows (its regex predates the `shear=` prefix) and the 2D `Allrun` never calls it —
 never read 2D orders from it. The 1D `report.py` silently drops 72 of 504 rows (all `ROUNDW`,
-all `CompleteFlux`) via a hardcoded scheme list at line 29.
+all `CompleteFlux`) via a hardcoded scheme list at line 29. And the 2D `Allrun` used to hardcode
+`for SCH in ScharfetterGummel CompleteFlux`, so the bed could not reproduce the `standard`
+control row its own README quoted — fixed 2026-09-12; `SCHEMES` now defaults to all three.
 
 ## 4. CLASSIFY every changed number — this is the point of the skill
 
@@ -184,22 +188,29 @@ BINARY change, not a scheme change** — treat it as the first suspect, not the 
 5. The errors are ~2x **lower** and the fitted orders move from 0.00 to 0.97–1.00. A regression
    does not simultaneously improve the answer and fix a documented harness bug.
 
-→ **STALE BASELINE.** Consequence beyond the gate: the bed's `README.md` headline ("SG AND CFS DO
-NOT CONVERGE on a non-orthogonal mesh", order 0.00) quotes the stale rows and is refuted by the
-`results.txt` beside it. Report the contradiction under A3 rather than picking a side — and note
-`ScharfetterGummel.H:116` still uses orthogonal `mesh.deltaCoeffs()` (no `nonOrthDeltaCoeffs`,
-no `nonOrthCorrectionVectors`), so the operator-level defect is real even if the convergence
-claim is not.
+→ **STALE BASELINE.** *(Resolved 2026-09-12, `f110bac`; kept here because the reasoning is the
+point, not the instance.)* The bed's `README.md` headline ("SG AND CFS DO NOT CONVERGE on a
+non-orthogonal mesh", order 0.00) quoted the stale rows and was refuted by the `results.txt`
+beside it.
+
+**Where the first reading of this went wrong, and it is the lesson:** it concluded that
+"`ScharfetterGummel.H:116` still uses orthogonal `mesh.deltaCoeffs()`, so the operator-level
+defect is real even if the convergence claim is not." That grep had matched the HISTORICAL
+COMMENT that records the old defect, not the live code. The operator had already been fixed —
+`ScharfetterGummel.H:140` uses `mesh.nonOrthDeltaCoeffs()` plus an explicit `snGrad` correction,
+and SG/CFS now converge at order 0.98/1.01 against the control's 0.97. **Read the code, not a
+comment that quotes the code** (A3: never contradict a documented conclusion from a partial
+read; A1: the baseline was READ, not guessed).
 
 ### Second live instance — the 1D baseline predates the current binary
 
-`results.txt`/`results.baseline.txt` are 2026-09-08 00:11:34/00:11:37 (the baseline is a copy of
-the results, 3 s later — which is why they are bit-identical and why the 1D gate reads clean
-today). `testFluxScheme` was rebuilt at 00:40:46, **29 minutes later**. Measured at one point
-today (ROUNDF, N=40, Pe=100): the current binary gives `L2=8.47077435e-02` against the baseline's
-`8.48360063e-02` (1.51e-3 relative) and emits an `nCorr=50` field the baseline rows lack. So the
-first full 1D re-run will flag all 504 rows, and that is a **STALE BASELINE**, not a regression —
-but verify it the same way (mtimes, `nCorr`, direction of the error) before saying so.
+*(Predicted here on 2026-09-11 and CONFIRMED on 2026-09-12, `bcd7288` — the prediction was
+exactly right, which is why the reasoning is kept.)* The baseline was 2026-09-08 00:11:37 while
+`testFluxScheme` was rebuilt at 00:40:46, **29 minutes later**, so the baseline was output from a
+binary that no longer existed. The first full re-run duly flagged **all 504 rows**: every one
+gained an `nCorr` field the baseline lacked entirely, and the error IMPROVED (ROUNDF at Pe=100,
+N=20: 7.19e-01 → 3.52e-01). Verified as STALE the same four ways every time — mtimes, `nCorr`,
+direction of the error, and **two runs bit-identical** — then refreshed as its own stated act.
 
 ## 5. Never
 
