@@ -14,16 +14,54 @@ refuted list — and this file points at it rather than restating it. Keep both 
 ## 1. WHERE WE ARE RIGHT NOW
 
 **One thread is open: does the Newton/JFNK outer solver pay against the segregated
-Picard sweep?** It was re-opened hours before the last session ended, because a
-hardcoded `-ksp_max_it 100` was found to have produced **every negative Newton verdict
-on record**. All of them are invalidated and awaiting re-test.
+Picard sweep?** Overnight 2026-09-12 the "why is Newton slow" half was ANSWERED, and
+it is not a bug in SoPlasma — it is a PETSc default nobody overrode.
 
-**NEXT CONCRETE ACTION: the WARM-STARTED dt ladder on `positiveStreamer_fixedMesh`,
-with `kspMaxIt 1000`, limiters off, speed measured per ns of simulated time at equal
-accuracy.** Every ladder run so far is cold-started and cannot answer the question by
-construction (§4, Task 1).
+**Newton's convergence rate IS its Eisenstat-Walker forcing term eta**, measured:
+`||F_{k+1}||/||F_k||` equals the reduction the LINEAR solve delivered, to 1.5% median
+over 3.5 decades. So no quadratic term is being lost; an inexact Newton converges
+linearly at rate eta by definition. eta sits at ~0.85-0.9 because PETSc's EW
+`rtol_max` default is **0.9** and `snesNewtonSolver.C:1664` sets only `-snes_ksp_ew`,
+overriding none of the parameters. eta is PINNED at that ceiling for **68.7%** of
+Newton iterations, because EW v2 recomputes it from the LINE-SEARCH-DAMPED norm
+ratio, so one damped step resets the ladder.
 
----
+**TWO OPTIONS, NO CODE CHANGE, -55% COST** (verified twice, independently, both arms
+at an identical 110 steps): `petscOptions "-snes_ksp_ew_version 3
+-snes_linesearch_minlambda 1e-3"` takes 33.5 -> 12.4 SNES its/step and 376 -> 169
+cost/step. See [[newton-rate-is-the-EW-forcing-term]] for the caveats — it is NOT a
+blanket win and its behaviour under `adjustTimeStep true` is a PREDICTION, untested.
+
+**AND THE BENCHMARK'S CENTRAL ECONOMIC CLAIM NOW HAS A DIRECT MEASUREMENT.** At a
+common physical window, dt=1e-9 against dt=2e-10 on the same bed: **cost per ns of
+simulated time is identical to ~1%**, while the big step converges 8.3% of its steps
+and the small one 100%. **The larger timestep buys nothing** — the extra Newton work
+exactly cancels the longer step.
+
+**NEXT CONCRETE ACTION: finish the warm-started ladder on the streamer bed.** Picard's
+half is DONE (below). Newton's half needs arms that actually produce a result — the
+`kspMaxIt 200` arms gave `DIVERGED_ITS` at 200 with 0 usable steps. A one-variable
+pair (shipped vs EW-v3+minlambda) is running at dt=2e-10 with `kspMaxIt 1000`.
+
+### The warm-started ladder, Picard half — MEASURED 2026-09-12
+
+Coarse bed (81,640 cells, `$HOME/streamer-warm`), warm start t=1e-09 from a developed
+streamer (peak n_e 1.19e19, tau = eps0/(e mu_e n_e) = 1.16e-10 s), limiters OFF,
+common endpoint t=2e-09:
+
+| dt | dt/tau | Picard |
+|---|---|---|
+| 1e-11 | 0.09 | reached 2e-09 |
+| 5e-11 | 0.43 | reached 2e-09 |
+| 1e-10 | 0.86 | reached 2e-09 |
+| 2e-10 | 1.7 | **SIGFPE step 1** |
+| 5e-10 | 4.3 | **SIGFPE step 1** |
+
+**Picard's ceiling is dt ~ tau** — the dielectric relaxation constraint, on one mesh,
+with a named control (dt=1e-11 reaching the endpoint proves the restart is sound).
+At 449k it fails at 5e-11 instead: that bed is 2.35x finer, so the drift Courant
+number is 2.35x higher at the same dt. **Absolute dt ceilings do NOT transfer between
+beds; only the ratio does.** The final benchmark number must come from 449k.
 
 ## 2. IN FLIGHT
 
@@ -194,6 +232,41 @@ Task 1.
 ---
 
 ## 5. FAILED APPROACHES — DO NOT RETRY
+
+### Newton's linear convergence — four one-variable refutations (2026-09-12)
+
+All against `validation/diag_A0_control` at an identical endpoint. Each knob was
+PROVEN to move before its null result was believed.
+
+- **A non-smooth clamp in the residual.** The mean-energy floor was moved
+  0.0388 -> **1e-9 eV** (the banner confirms the 7.6-order move) and the result was
+  IDENTICAL IN EVERY DIGIT over 41 steps. This was the leading hypothesis and it is
+  dead. The `nEps_` write-back at `localEnergyEnergyModel.C:719-723` IS a real
+  non-smoothness and still fires — it is a symptom of a bad step, not the cause.
+- **Flux-scheme non-smoothness** — `Gauss ROUNDF` -> `Gauss linear`: refuted; the
+  collapse step moves 44 -> 42.
+- **The chemistry per-cell routing branch** — `adaptiveError` -> `implicitRate`:
+  identical in every digit.
+- **Tightening the matrix-free differencing** — `mffdErr` 1e-8 makes it WORSE (58
+  `DIVERGED_LINE_SEARCH`): the matvec relative error becomes eps_F/err = 25%. The
+  usable band is eta ~2.5e-4 .. 0.9.
+- **`adaptiveForcing false`** does not fix it, it RELOCATES it: PETSc's default KSP
+  rtol 1e-5 is BELOW F's 2.5e-9 matvec noise floor, so the solve cannot converge and
+  you get `DIVERGED_LINEAR_SOLVE` instead.
+
+**`-snes_ksp_ew_monitor` DOES NOT EXIST in PETSc 3.24.** An arm built on it was
+byte-identical to its control (222,906 lines both) and measured nothing. The forcing
+term is visible only via `PETSC_OPTIONS="-info :snes"` in the ENVIRONMENT — PetscInfo
+is consumed at `PetscInitialize`, so it cannot go in the case dict. **Third unverified
+PETSc option to cost real time in one day; verify with `-options_left` and confirm the
+monitor actually prints before building anything on it.**
+
+**`validation/diag_*` cold-started is an INVALID bed for solver diagnosis.** n_e is
+pinned at `minNumberDensity` 1e11 for the whole run — the clamp sits outside the
+equations so F=0 is unreachable (`newton-outer-solver-design.md` DEFECT A) — and at
+dt=1e-9 it runs at Co_conv(e) 20-37, Co_conv(energy) 30-55 with `adjustTimeStep
+false`. Its 42% failure rate is a property of the bed, not of Newton.
+
 
 Each is measured. Re-proposing one costs the measurement again. Full detail and dates
 in `docs/CAPABILITIES.md` §4/4b/4c.
