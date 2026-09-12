@@ -1173,12 +1173,35 @@ void plasmaTransport::solve(const bool finalIter)
         // added to the matrices further down and are NOT included here; they
         // are small against the chemistry where CFS matters and folding them
         // in would need the same lag argument made separately.
-        if
-        (
+        // TWO SOURCES OF THE SAME TERM, and CFS must read whichever exists.
+        //
+        // chemP_/chemL_ are populated by `ode`/`adaptive`/`adaptiveError`/
+        // `implicitRate`. `explicitSource` deliberately publishes into
+        // chemNetSrc_ instead (see the comment at the setChemNetSource call
+        // below): writing chemP_/chemL_ there would switch on the Co_chem
+        // limiter via maxChemStateRate() for every explicitSource case, which
+        // is why that separation exists and MUST NOT be collapsed here.
+        //
+        // The consequence, found 2026-09-12: with `solver explicitSource` the
+        // guard below never fired, so CompleteFlux was handed the zeroSrc
+        // fallback and computed EXACTLY ScharfetterGummel while the log
+        // announced "Discretizing transport with the Complete Flux scheme".
+        // Measured: SG and CFS arms bit-identical to 12 digits (initial
+        // residual 0.00147057414881), and distinct from `standard`.
+        // chemNetSrc_ was added for the Newton residual and its comment said
+        // "read by nothing else" -- true when written; CFS is the second
+        // reader (B4: a fix applied to one of N consumers).
+        const bool haveChemPL =
             i < chemP_.size() && i < chemL_.size()
          && chemP_[i].size() == mesh_.nCells()
-         && chemL_[i].size() == mesh_.nCells()
-        )
+         && chemL_[i].size() == mesh_.nCells();
+
+        const bool haveNetSrc =
+            !haveChemPL
+         && i < chemNetSrc_.size()
+         && chemNetSrc_[i].size() == mesh_.nCells();
+
+        if (haveChemPL || haveNetSrc)
         {
             const volScalarField& ni = species_.numberDensity(i);
 
@@ -1197,9 +1220,20 @@ void plasmaTransport::solve(const bool finalIter)
             scalarField& ns = netSrc.primitiveFieldRef();
             const scalarField& nif = ni.primitiveField();
 
-            forAll(ns, c)
+            if (haveChemPL)
             {
-                ns[c] = chemP_[i][c] - chemL_[i][c]*nif[c];
+                forAll(ns, c)
+                {
+                    ns[c] = chemP_[i][c] - chemL_[i][c]*nif[c];
+                }
+            }
+            else
+            {
+                // chemNetSrc_ is ALREADY the net source (production minus
+                // loss); there is no loss coefficient to apply, because that
+                // path is fully explicit. Same term, already assembled.
+                const scalarField& cn = chemNetSrc_[i];
+                forAll(ns, c) { ns[c] = cn[c]; }
             }
             netSrc.correctBoundaryConditions();
 
