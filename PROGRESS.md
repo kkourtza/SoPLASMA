@@ -143,6 +143,31 @@ valid track, not a lower-priority one.)
       "commercial interests, in particular" — which is exactly what SoPhy is headed for. The
       two sets already tracked are grandfathered exceptions; do not add more. The file was
       moved into `cross-sections/` so it is correctly ignored instead of showing as noise.
+- [x] 2026-09-12 — **first real run of `/regression-gate`, and the 2D bed contradiction settled.**
+      Tier 1 (analytic unit beds) PASS, all five exact strings. Tier 2 (electrostatics) PASS,
+      `6 ok, 0 failed`, 16.6 s / 91 MB. Tier 3: BOTH baselines were STALE, not regressions —
+      each verified four ways (mtimes, an `nCorr` field the baseline lacked, the error having
+      IMPROVED, and two runs bit-identical) then refreshed as separate stated acts (`bcd7288`,
+      `f110bac`). **No regressions anywhere.**
+      The 2D bed's headline — "SG AND CFS DO NOT CONVERGE ON A NON-ORTHOGONAL MESH" — is
+      **REFUTED by its own data**: SG order 0.98, CFS 1.01 against the control's 0.97. The
+      original 2026-09-08 finding was correct AND HAS BEEN FIXED (`ScharfetterGummel.H:140`
+      now uses `nonOrthDeltaCoeffs` + explicit `snGrad`, justified by the Bernoulli
+      factorisation rather than patched); the README documented a defect that no longer
+      existed. Its "DO NOT use SG or CFS on skewed meshes" line was **actively misleading
+      guidance** and is corrected. Still UNVERIFIED for genuinely unstructured or graded
+      meshes — one uniform 11.3° shear is not a claim about a tetrahedral mesh.
+      Also found: the 2D `Allrun` hardcoded its scheme loop and **could not reproduce the
+      `standard` control row its own README quoted** (A1). `SCHEMES` now defaults to all three;
+      the control reproduces to every digit.
+- [x] 2026-09-12 — **the WSL freezes are memory, measured not guessed.** Newton on the 449k bed
+      is **5.2–7.1 GB RSS per arm**; Picard on the same bed is **1.56 GB** — Newton costs ~4x the
+      memory, which is a genuine C3 cost result and not just a wall-clock question. Four arms =
+      20.3 GB of a 30 GB WSL cap (no `.wslconfig`, so the default ~50% of RAM). The eight arms
+      running during both freezes ≈ 40 GB, i.e. over the cap, and the VM swap-thrashes rather
+      than cleanly OOM-killing — which is why the terminal froze and would not reopen.
+      **Practical limit: at most 4 large-bed arms, no more than 3 of them Newton.**
+      The regression suite was NOT the cause: 91 MB peak, 16.6 s idle.
 - [~] **The regression gate is HALF done.** `/regression-gate` now carries the procedure and the
       classification B5 requires (REGRESSION vs INTENDED IMPROVEMENT vs STALE BASELINE), but it is
       a skill I execute — **there is still no script and no CI hook**, so nothing compares
